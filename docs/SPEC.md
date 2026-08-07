@@ -26,12 +26,39 @@ internal/
   processing/     — воркер-пул, ffmpeg/ffprobe обёртки, job runner
   events/         — Kafka consumer (за тоглом)
   config/         — env-конфиг
-pkg/              — то, что реально переиспользуемо наружу (клиент, ошибки)
+pkg/mediaservice/ — публичная встраиваемая библиотека (см. §2.1)
 proto/media/v1/media.proto
 migrations/
 docker-compose.yml
 .env.example
 ```
+
+Публичных интеграционных артефакта v1 два:
+1. `proto/media/v1/media.proto` и воспроизводимо сгенерированные stubs — для
+   вызова сервиса по сети.
+2. `pkg/mediaservice` — встраивание сервиса в чужое Go-приложение как
+   библиотеки, без поднятия gRPC (§2.1).
+
+### 2.1 Встраиваемая библиотека (`pkg/mediaservice`)
+
+Проект на Go может подключить медиа-сервис зависимостью и работать с ним
+напрямую, минуя сеть: библиотека сама ходит в Postgres и MinIO.
+
+Требования к контракту:
+- Публичные типы и ошибки живут в `pkg/mediaservice`; `internal/` наружу не
+  протекает. Доменная логика **не дублируется** — библиотека и gRPC-хендлеры
+  используют одно и то же ядро, gRPC остаётся тонким адаптером.
+- Конструктор принимает либо параметры подключения (DSN Postgres, реквизиты
+  MinIO), либо **уже готовые** `*pgxpool.Pool` и клиент MinIO — чтобы
+  встраивающий проект переиспользовал свои соединения и транзакционный пул.
+- Миграции схемы доступны встраивающему проекту: библиотека умеет применить их
+  сама и умеет отдать их наружу для применения чужим мигратором.
+- Потоковые методы принимают и отдают `io.Reader`/`io.ReadCloser` — файл не
+  поднимается в память целиком.
+- Асинхронная обработка (ffmpeg, воркеры) включается опцией: встраивающему
+  проекту она может быть не нужна, и без неё библиотека полностью рабочая.
+- Владение жизненным циклом явное: `Close()` освобождает только те ресурсы,
+  которые создала сама библиотека, чужие переданные соединения не трогает.
 
 ## 3. gRPC контракт (эскиз)
 
@@ -110,8 +137,9 @@ message DeleteByOwnerResponse { uint32 deleted_count=1; }
 ```
 client stream ──> handler
   1. recv UploadInit           validate(owner uuid, mime allowlist, size<=limit)
-  2. check idempotency (owner, key) -> если есть: вернуть media_id, drain stream
-  3. stream chunks -> temp file (io.Copy с лимитом)
+  2. stream chunks -> temp file + body fingerprint (io.Copy с лимитом)
+  3. check idempotency (owner, key, fingerprint + significant init fields)
+     same request -> вернуть media_id; другое тело/параметры -> AlreadyExists
   4. ffprobe(temp)             -> kind, duration, w/h, codec, bitrate
      mismatch(kind vs mime class) -> InvalidArgument, cleanup
   5. minio.Put(original)       key = {owner}/{media_id}/original.{ext}
