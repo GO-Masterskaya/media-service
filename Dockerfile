@@ -12,13 +12,17 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /app/mediaservice ./cmd/mediaservice
 # === Stage 2: Final ===
 FROM alpine:3.19
 
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg && adduser -D app
 
 WORKDIR /app
 
-COPY --from=builder /app/mediaservice /usr/local/bin/mediaservice
+COPY --from=builder /app/mediaservice /app/mediaservice
 
 COPY --from=builder /app/migrations ./migrations
+
+RUN chown -R app:app /app
+
+USER app
 
 # gRPC-порт
 EXPOSE 9090
