@@ -24,7 +24,7 @@ func main() {
 	slog.Info("starting media service", "config", cfg)
 
 	// 3. Контекст жизни сервиса. Отменяется по сигналу ОС.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 
 	// 4. Запуск компонентов
