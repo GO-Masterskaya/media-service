@@ -106,7 +106,10 @@ func (s *MinIOSuite) TestPutAndGet() {
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer rc.Close()
+
+	defer func() {
+		require.NoError(t, rc.Close())
+	}()
 
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
@@ -128,7 +131,9 @@ func (s *MinIOSuite) TestPutStreamingWithoutSize() {
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() {
+		require.NoError(t, rc.Close())
+	}()
 
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
@@ -158,15 +163,18 @@ func (s *MinIOSuite) TestPresign() {
 	resp, err := http.Get(ps.URL)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 	assert.Equal(t, data, body)
 
 	// Ждём протухания.
 	time.Sleep(6 * time.Second)
 	resp2, err := http.Get(ps.URL)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() {
+		s.Require().NoError(resp2.Body.Close())
+	}()
 	assert.Equal(t, http.StatusForbidden, resp2.StatusCode) // MinIO отдаёт 403 на expired presign
 }
 
@@ -233,7 +241,9 @@ func (s *MinIOSuite) TestKeySanitization() {
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() {
+		require.NoError(t, rc.Close())
+	}()
 
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
@@ -256,7 +266,9 @@ func (s *MinIOSuite) TestPutDoesNotBufferInMemory() {
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() {
+		require.NoError(t, rc.Close())
+	}()
 
 	n, err := io.Copy(io.Discard, rc)
 	require.NoError(t, err)
