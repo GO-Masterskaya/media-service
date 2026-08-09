@@ -27,4 +27,4 @@ USER app
 # gRPC-порт
 EXPOSE 9090
 
-ENTRYPOINT ["/usr/local/bin/mediaservice"]
+ENTRYPOINT ["/app/mediaservice"]
