@@ -295,3 +295,13 @@ func (g *byteGenerator) Read(p []byte) (int, error) {
 	}
 	return n, nil
 }
+
+func (s *MinIOSuite) TestGetObject_NotFound() {
+	t := s.T()
+	owner := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	media := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+	key, _ := BuildKey(owner, media, VariantOriginal, "image/png", "x.png")
+
+	_, err := s.storage.GetObject(s.ctx, key)
+	require.Error(t, err)
+}
