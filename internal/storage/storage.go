@@ -14,7 +14,10 @@ type PresignedURL struct {
 
 // Interface — адаптер объектного хранилища.
 type Interface interface {
-	// PutObject загружает reader по ключу. size=-1 если размер неизвестен (streaming).
+	// PutObject загружает reader в хранилище.
+	// Реализация НЕ ДОЛЖНА загружать файл целиком в память.
+	// size=-1 означает неизвестный размер (streaming); reader должен поддерживать
+	// последовательное чтение без Seek.
 	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 
 	// GetObject возвращает reader объекта.
