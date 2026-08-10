@@ -18,6 +18,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ShutdownTimeout != 30*time.Second {
 		t.Errorf("ShutdownTimeout: want 30s, got %s", cfg.ShutdownTimeout)
 	}
+	if cfg.PostgresConnectTimeout != 5*time.Second {
+		t.Errorf("PostgresConnectTimeout: want 5s, got %s", cfg.PostgresConnectTimeout)
+	}
+	if cfg.PostgresQueryTimeout != 30*time.Second {
+		t.Errorf("PostgresQueryTimeout: want 30s, got %s", cfg.PostgresQueryTimeout)
+	}
 	if cfg.WorkerConcurrency != 2 {
 		t.Errorf("WorkerConcurrency: want 2, got %d", cfg.WorkerConcurrency)
 	}
@@ -28,6 +34,8 @@ func TestLoadOverride(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("GRPC_ADDR", ":9999")
 	t.Setenv("SHUTDOWN_TIMEOUT", "5s")
+	t.Setenv("POSTGRES_CONNECT_TIMEOUT", "2s")
+	t.Setenv("POSTGRES_QUERY_TIMEOUT", "10s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -38,6 +46,12 @@ func TestLoadOverride(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != 5*time.Second {
 		t.Errorf("want 5s, got %s", cfg.ShutdownTimeout)
+	}
+	if cfg.PostgresConnectTimeout != 2*time.Second {
+		t.Errorf("want 2s, got %s", cfg.PostgresConnectTimeout)
+	}
+	if cfg.PostgresQueryTimeout != 10*time.Second {
+		t.Errorf("want 10s, got %s", cfg.PostgresQueryTimeout)
 	}
 }
 
