@@ -69,7 +69,8 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 	var hasVideo, hasAudio bool
 
 	for _, s := range raw.Streams {
-		if s.CodecType == "video" {
+		switch s.CodecType{
+		case "video":
 			hasVideo = true
 			info.Width = s.Width
 			info.Height = s.Height
@@ -82,7 +83,7 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 				}
 				info.FrameCount = fc
 			}
-		} else if s.CodecType == "audio" {
+		case "audio":
 			hasAudio = true
 			info.AudioChannels = s.Channels
 			if info.Codec == "" {
