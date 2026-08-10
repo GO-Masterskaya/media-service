@@ -46,7 +46,7 @@ func TestMainGracefulShutdown(t *testing.T) {
 
 	// Посылаем SIGTERM.
 	if err := run.Process.Signal(syscall.SIGTERM); err != nil {
-		run.Process.Kill()
+		_ = run.Process.Kill()
 		t.Fatalf("send SIGTERM: %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestMainGracefulShutdown(t *testing.T) {
 			t.Fatalf("wait error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		run.Process.Kill()
+		_ = run.Process.Kill()
 		t.Fatal("process did not exit after SIGTERM within timeout — possible goroutine leak")
 	}
 
