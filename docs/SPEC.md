@@ -223,6 +223,8 @@ RATE_LIMIT_RPS=50                     # per-caller
 MAX_CONCURRENT_STREAMS=8              # per-caller upload/download стримов
 
 POSTGRES_DSN=postgres://media:media@postgres:5432/media?sslmode=disable
+POSTGRES_CONNECT_TIMEOUT=5s
+POSTGRES_QUERY_TIMEOUT=30s
 
 MINIO_ENDPOINT=minio:9000
 MINIO_ACCESS_KEY=minioadmin

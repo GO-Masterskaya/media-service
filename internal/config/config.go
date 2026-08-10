@@ -19,45 +19,47 @@ import (
 // Дефолты заданы через тег env-default; env переопределяет их.
 type Config struct {
 	// gRPC
-	GRPCAddr             string        `env:"GRPC_ADDR"             env-default:":9090"`
-	GRPCAuthToken        string        `env:"GRPC_AUTH_TOKEN"       env-default:"change-me"`
+	GRPCAddr      string `env:"GRPC_ADDR"             env-default:":9090"`
+	GRPCAuthToken string `env:"GRPC_AUTH_TOKEN"       env-default:"change-me"`
 
 	// Upload
-	MaxUploadBytes       int64         `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
-	MIMEAllowlist        []string      `env:"MIME_ALLOWLIST"        env-default:"image/*,video/*,audio/*" env-separator:","`
+	MaxUploadBytes int64    `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
+	MIMEAllowlist  []string `env:"MIME_ALLOWLIST"        env-default:"image/*,video/*,audio/*" env-separator:","`
 
 	// Processing
-	WorkerConcurrency    int           `env:"WORKER_CONCURRENCY"    env-default:"2"`
-	QueueBuffer          int           `env:"QUEUE_BUFFER"          env-default:"64"`
-	FFMPEGTimeout        time.Duration `env:"FFMPEG_TIMEOUT"        env-default:"10m"`
-	ShutdownTimeout      time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
-	Rendition            int           `env:"RENDITION"             env-default:"720"`
-	ThumbSecond          int           `env:"THUMB_SECOND"          env-default:"1"`
+	WorkerConcurrency int           `env:"WORKER_CONCURRENCY"    env-default:"2"`
+	QueueBuffer       int           `env:"QUEUE_BUFFER"          env-default:"64"`
+	FFMPEGTimeout     time.Duration `env:"FFMPEG_TIMEOUT"        env-default:"10m"`
+	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
+	Rendition         int           `env:"RENDITION"             env-default:"720"`
+	ThumbSecond       int           `env:"THUMB_SECOND"          env-default:"1"`
 
 	// Storage / TTL
-	PresignTTL           time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
-	TTLReapInterval      time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
+	TTLReapInterval time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
 
 	// Limits
-	RateLimitRPS         int           `env:"RATE_LIMIT_RPS"        env-default:"50"`
-	MaxConcurrentStreams int           `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
+	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
+	MaxConcurrentStreams int `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
 
 	// Postgres
-	PostgresDSN          string        `env:"POSTGRES_DSN"          env-default:"postgres://media:media@postgres:5432/media?sslmode=disable"`
-	
+	PostgresDSN            string        `env:"POSTGRES_DSN"              env-default:"postgres://media:media@postgres:5432/media?sslmode=disable"`
+	PostgresConnectTimeout time.Duration `env:"POSTGRES_CONNECT_TIMEOUT"  env-default:"5s"`
+	PostgresQueryTimeout   time.Duration `env:"POSTGRES_QUERY_TIMEOUT"    env-default:"30s"`
+
 	// MinIO
-	MinIOEndpoint        string        `env:"MINIO_ENDPOINT"        env-default:"minio:9000"`
-	MinIOAccessKey       string        `env:"MINIO_ACCESS_KEY"      env-default:"minioadmin"`
-	MinIOSecretKey       string        `env:"MINIO_SECRET_KEY"      env-default:"minioadmin"`
-	MinIOBucket          string        `env:"MINIO_BUCKET"          env-default:"media"`
-	MinIOUseSSL          bool          `env:"MINIO_USE_SSL"         env-default:"false"`
-	
+	MinIOEndpoint  string `env:"MINIO_ENDPOINT"        env-default:"minio:9000"`
+	MinIOAccessKey string `env:"MINIO_ACCESS_KEY"      env-default:"minioadmin"`
+	MinIOSecretKey string `env:"MINIO_SECRET_KEY"      env-default:"minioadmin"`
+	MinIOBucket    string `env:"MINIO_BUCKET"          env-default:"media"`
+	MinIOUseSSL    bool   `env:"MINIO_USE_SSL"         env-default:"false"`
+
 	// Kafka
-	KafkaEnabled         bool          `env:"KAFKA_ENABLED"         env-default:"false"`
-	KafkaBrokers         []string      `env:"KAFKA_BROKERS"         env-default:"kafka:9092" env-separator:","`
-	KafkaTopic           string        `env:"KAFKA_TOPIC"           env-default:"media.events"`
-	KafkaDLQTopic        string        `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
-	KafkaGroup           string        `env:"KAFKA_GROUP"           env-default:"media-service"`
+	KafkaEnabled  bool     `env:"KAFKA_ENABLED"         env-default:"false"`
+	KafkaBrokers  []string `env:"KAFKA_BROKERS"         env-default:"kafka:9092" env-separator:","`
+	KafkaTopic    string   `env:"KAFKA_TOPIC"           env-default:"media.events"`
+	KafkaDLQTopic string   `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
+	KafkaGroup    string   `env:"KAFKA_GROUP"           env-default:"media-service"`
 }
 
 // Load читает .env (если есть), накладывает переменные окружения на дефолтные значения и валидирует.
@@ -95,6 +97,8 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "PresignTTL:%s, ", c.PresignTTL)
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
 	fmt.Fprintf(&b, "PostgresDSN:%q, ", maskDSN(c.PostgresDSN))
+	fmt.Fprintf(&b, "PostgresConnectTimeout:%s, ", c.PostgresConnectTimeout)
+	fmt.Fprintf(&b, "PostgresQueryTimeout:%s, ", c.PostgresQueryTimeout)
 	fmt.Fprintf(&b, "RateLimitRPS:%d, ", c.RateLimitRPS)
 	fmt.Fprintf(&b, "MaxConcurrentStreams:%d, ", c.MaxConcurrentStreams)
 	fmt.Fprintf(&b, "MinIOEndpoint:%q, ", c.MinIOEndpoint)

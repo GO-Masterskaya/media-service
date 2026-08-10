@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"mediaservice/internal/config"
 	"mediaservice/internal/repo"
@@ -37,8 +36,8 @@ func main() {
 
 	pool, err := repo.NewPool(ctx, repo.PoolConfig{
 		DSN:            cfg.PostgresDSN,
-		ConnectTimeout: 5 * time.Second,
-		QueryTimeout:   30 * time.Second,
+		ConnectTimeout: cfg.PostgresConnectTimeout,
+		QueryTimeout:   cfg.PostgresQueryTimeout,
 	})
 	if err != nil {
 		slog.Error("create pool", "error", err)
