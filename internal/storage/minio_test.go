@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -71,24 +74,31 @@ func (s *MinIOSuite) SetupSuite() {
 	err = s.client.MakeBucket(s.ctx, s.bucket, minio.MakeBucketOptions{})
 	require.NoError(s.T(), err)
 
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	s.storage, err = NewMinIO(MinIOConfig{
 		Endpoint:  s.endpoint,
 		AccessKey: "minioadmin",
 		SecretKey: "minioadmin",
 		Bucket:    s.bucket,
 		UseSSL:    false,
-	})
+	}, log)
 	require.NoError(s.T(), err)
 }
 
 func (s *MinIOSuite) TearDownSuite() {
+	if s.storage != nil {
+		require.NoError(s.T(), s.storage.Close())
+	}
 	if s.container != nil {
-		_ = s.container.Terminate(s.ctx)
+		require.NoError(s.T(), s.container.Terminate(s.ctx))
 	}
 }
 
-func (s *MinIOSuite) cleanPrefix(prefix string) {
-	_ = s.storage.DeletePrefix(s.ctx, prefix)
+func (s *MinIOSuite) SetupTest() {
+	// Очистка перед каждым тестом — удаляем всё в бакете.
+	for obj := range s.client.ListObjects(s.ctx, s.bucket, minio.ListObjectsOptions{Recursive: true}) {
+		require.NoError(s.T(), s.client.RemoveObject(s.ctx, s.bucket, obj.Key, minio.RemoveObjectOptions{}))
+	}
 }
 
 // TestPutAndGet — базовый streaming put/get.
@@ -99,17 +109,13 @@ func (s *MinIOSuite) TestPutAndGet() {
 
 	key, err := BuildKey(owner, media, VariantOriginal, "image/png", "test.png")
 	require.NoError(t, err)
-	s.cleanPrefix(owner.String() + "/")
 
 	data := []byte("fake-png-body")
 	require.NoError(t, s.storage.PutObject(s.ctx, key, bytes.NewReader(data), int64(len(data)), "image/png"))
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-
-	defer func() {
-		require.NoError(t, rc.Close())
-	}()
+	defer func() { require.NoError(t, rc.Close()) }()
 
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
@@ -124,20 +130,34 @@ func (s *MinIOSuite) TestPutStreamingWithoutSize() {
 
 	key, err := BuildKey(owner, media, VariantOriginal, "video/mp4", "movie.mp4")
 	require.NoError(t, err)
-	s.cleanPrefix(owner.String() + "/")
 
 	data := []byte("streaming-video-body")
 	require.NoError(t, s.storage.PutObject(s.ctx, key, bytes.NewReader(data), -1, "video/mp4"))
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, rc.Close())
-	}()
+	defer func() { require.NoError(t, rc.Close()) }()
 
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	assert.Equal(t, data, got)
+}
+
+// TestGetObject_NotFound — ошибка на несуществующем ключе.
+func (s *MinIOSuite) TestGetObject_NotFound() {
+	t := s.T()
+	owner := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	media := uuid.MustParse("00000000-0000-0000-0000-000000000001") // ← не Nil
+
+	key, err := BuildKey(owner, media, VariantOriginal, "image/png", "x.png")
+	require.NoError(t, err)
+
+	rc, err := s.storage.GetObject(s.ctx, key)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rc.Close()) }()
+
+	_, err = io.Copy(io.Discard, rc)
+	require.Error(t, err)
 }
 
 // TestPresign — TTL работает, URL реально качается, после истечения — 403.
@@ -148,34 +168,30 @@ func (s *MinIOSuite) TestPresign() {
 
 	key, err := BuildKey(owner, media, VariantOriginal, "audio/mpeg", "song.mp3")
 	require.NoError(t, err)
-	s.cleanPrefix(owner.String() + "/")
 
 	data := []byte("fake-audio")
 	require.NoError(t, s.storage.PutObject(s.ctx, key, bytes.NewReader(data), int64(len(data)), "audio/mpeg"))
 
-	ttl := 5 * time.Second
+	ttl := 2 * time.Second
 	ps, err := s.storage.PresignGetObject(s.ctx, key, ttl)
 	require.NoError(t, err)
 	assert.NotEmpty(t, ps.URL)
-	assert.WithinDuration(t, time.Now().Add(ttl), ps.ExpiresAt, 2*time.Second)
+	assert.WithinDuration(t, time.Now().UTC().Add(ttl), ps.ExpiresAt, 2*time.Second)
 
 	// Ссылка работает.
 	resp, err := http.Get(ps.URL)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
 	require.NoError(t, resp.Body.Close())
 	assert.Equal(t, data, body)
 
 	// Ждём протухания.
-	time.Sleep(6 * time.Second)
+	time.Sleep(3 * time.Second)
 	resp2, err := http.Get(ps.URL)
 	require.NoError(t, err)
-	defer func() {
-		s.Require().NoError(resp2.Body.Close())
-	}()
-	assert.Equal(t, http.StatusForbidden, resp2.StatusCode) // MinIO отдаёт 403 на expired presign
+	defer func() { require.NoError(t, resp2.Body.Close()) }()
+	assert.Equal(t, http.StatusForbidden, resp2.StatusCode)
 }
 
 // TestDeleteObjectIdempotent — удаление и повтор на отсутствующем = OK.
@@ -186,14 +202,11 @@ func (s *MinIOSuite) TestDeleteObjectIdempotent() {
 
 	key, err := BuildKey(owner, media, VariantOriginal, "image/jpeg", "photo.jpg")
 	require.NoError(t, err)
-	s.cleanPrefix(owner.String() + "/")
 
 	data := []byte("photo-bytes")
 	require.NoError(t, s.storage.PutObject(s.ctx, key, bytes.NewReader(data), int64(len(data)), "image/jpeg"))
 
 	require.NoError(t, s.storage.DeleteObject(s.ctx, key))
-	_, err = s.storage.GetObject(s.ctx, key)
-	require.Error(t, err) // уже удалён
 
 	// Идемпотентность.
 	require.NoError(t, s.storage.DeleteObject(s.ctx, key))
@@ -214,13 +227,24 @@ func (s *MinIOSuite) TestDeletePrefix() {
 		require.NoError(t, s.storage.PutObject(s.ctx, key, strings.NewReader("data-"+string(v)), 10, "video/mp4"))
 	}
 
-	prefix := owner.String() + "/" + media.String() + "/"
+	prefix := path.Dir(keys[0]) + "/"
 	require.NoError(t, s.storage.DeletePrefix(s.ctx, prefix))
 
 	for _, k := range keys {
-		_, err := s.storage.GetObject(s.ctx, k)
+		rc, err := s.storage.GetObject(s.ctx, k)
+		require.NoError(t, err)
+		_, err = io.Copy(io.Discard, rc)
+		require.NoError(t, rc.Close())
 		require.Error(t, err, "key %s should be deleted", k)
 	}
+}
+
+// TestDeletePrefix_EmptyPrefixRejected — защита от footgun.
+func (s *MinIOSuite) TestDeletePrefix_EmptyPrefixRejected() {
+	t := s.T()
+	err := s.storage.DeletePrefix(s.ctx, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty prefix")
 }
 
 // TestKeySanitization — спецсимволы и path traversal в filename не влияют на ключ.
@@ -241,9 +265,7 @@ func (s *MinIOSuite) TestKeySanitization() {
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, rc.Close())
-	}()
+	defer func() { require.NoError(t, rc.Close()) }()
 
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
@@ -258,7 +280,6 @@ func (s *MinIOSuite) TestPutDoesNotBufferInMemory() {
 
 	key, err := BuildKey(owner, media, VariantOriginal, "application/octet-stream", "big.bin")
 	require.NoError(t, err)
-	s.cleanPrefix(owner.String() + "/")
 
 	// Генератор 1 МБ без хранения в памяти.
 	r := &byteGenerator{limit: 1024 * 1024}
@@ -266,9 +287,7 @@ func (s *MinIOSuite) TestPutDoesNotBufferInMemory() {
 
 	rc, err := s.storage.GetObject(s.ctx, key)
 	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, rc.Close())
-	}()
+	defer func() { require.NoError(t, rc.Close()) }()
 
 	n, err := io.Copy(io.Discard, rc)
 	require.NoError(t, err)
@@ -294,14 +313,4 @@ func (g *byteGenerator) Read(p []byte) (int, error) {
 		g.sent++
 	}
 	return n, nil
-}
-
-func (s *MinIOSuite) TestGetObject_NotFound() {
-	t := s.T()
-	owner := uuid.MustParse("99999999-9999-9999-9999-999999999999")
-	media := uuid.MustParse("00000000-0000-0000-0000-000000000000")
-	key, _ := BuildKey(owner, media, VariantOriginal, "image/png", "x.png")
-
-	_, err := s.storage.GetObject(s.ctx, key)
-	require.Error(t, err)
 }

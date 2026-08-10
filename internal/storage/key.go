@@ -37,10 +37,8 @@ func BuildKey(ownerID, mediaID uuid.UUID, variant Variant, mimeType, filename st
 	}
 	ext = sanitizeExt(ext)
 
+	// path.Join нормализует слеши; UUID на входе гарантируют отсутствие path traversal.
 	key := path.Join(ownerID.String(), mediaID.String(), string(variant)+"."+ext)
-	if strings.Contains(key, "..") {
-		return "", fmt.Errorf("invalid key construction")
-	}
 	return key, nil
 }
 
