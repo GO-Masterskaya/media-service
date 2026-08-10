@@ -4,15 +4,26 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
 )
 
 func TestMainGracefulShutdown(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Process.Signal is not supported on Windows; covered on Linux CI")
+	}
+
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set; shutdown test needs a reachable Postgres")
+	}
+
 	// Собираем бинарь сервиса во временную директорию.
 	tmpDir := t.TempDir()
-	bin := tmpDir + "/mediaservice"
+	bin := filepath.Join(tmpDir, "mediaservice")
 
 	build := exec.Command("go", "build", "-o", bin, ".")
 	out, err := build.CombinedOutput()
@@ -25,7 +36,7 @@ func TestMainGracefulShutdown(t *testing.T) {
 	run := exec.Command(bin)
 	run.Dir = tmpDir
 	run.Env = append(os.Environ(),
-		"POSTGRES_DSN=postgres://u:p@localhost/db",
+		"POSTGRES_DSN="+dsn,
 		"MINIO_ENDPOINT=minio:9000",
 		"MINIO_ACCESS_KEY=minioadmin",
 		"MINIO_SECRET_KEY=minioadmin",
