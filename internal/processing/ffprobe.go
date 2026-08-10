@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,8 @@ const (
 	KindImage Kind = "image"
 	KindVideo Kind = "video"
 	KindAudio Kind = "audio"
+
+	defaultProbeTimeout = 30 * time.Second
 )
 
 type ffprobeStream struct {
@@ -48,15 +51,26 @@ type MediaInfo struct {
 	Bitrate       int64
 	FrameCount    int64
 	AudioChannels int
+	AudioCodec    string
 	FormatName    string
 }
 
+// Probe извлекает метаданные через ffprobe.
+// Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 30s.
 func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultProbeTimeout)
+		defer cancel()
+	}
+
 	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "quiet", "-print_format",
 		"json", "-show_format", "-show_streams", inputPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("ffprobe failed: %w", err)
+		return nil, fmt.Errorf("ffprobe failed: %w, stderr: %s", err, stderr.String())
 	}
 
 	var raw ffprobeOutput
@@ -69,13 +83,13 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 	var hasVideo, hasAudio bool
 
 	for _, s := range raw.Streams {
-		switch s.CodecType{
+		switch s.CodecType {
 		case "video":
 			hasVideo = true
 			info.Width = s.Width
 			info.Height = s.Height
 			info.Codec = s.CodecName
-			if s.NbFrames != "" {
+			if isValidNumber(s.NbFrames) {
 				fc, err := strconv.ParseInt(s.NbFrames, 10, 64)
 				if err != nil {
 					return nil, fmt.Errorf("error parsing NbFrames: %w", err)
@@ -86,6 +100,7 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 		case "audio":
 			hasAudio = true
 			info.AudioChannels = s.Channels
+			info.AudioCodec = s.CodecName
 			if info.Codec == "" {
 				info.Codec = s.CodecName
 			}
@@ -94,7 +109,7 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 
 	info.FormatName = raw.Format.FormatName
 
-	if raw.Format.Duration != "" {
+	if isValidNumber(raw.Format.Duration) {
 		sec, err := strconv.ParseFloat(raw.Format.Duration, 64)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing info.Duration: %w", err)
@@ -102,7 +117,7 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 		info.Duration = time.Duration(sec * float64(time.Second))
 	}
 
-	if raw.Format.BitRate != "" {
+	if isValidNumber(raw.Format.BitRate) {
 		br, err := strconv.ParseInt(raw.Format.BitRate, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing info.Bitrate: %w", err)
@@ -114,10 +129,12 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 	case hasVideo && hasAudio:
 		info.Kind = KindVideo
 	case hasVideo && !hasAudio:
-		if info.FrameCount <= 1 && info.Duration == 0 {
-			info.Kind = KindImage
-		} else {
+		if info.Duration > 0 {
 			info.Kind = KindVideo
+		} else if info.FrameCount > 1 {
+			info.Kind = KindVideo
+		} else {
+			info.Kind = KindImage
 		}
 	case !hasVideo && hasAudio:
 		info.Kind = KindAudio
@@ -126,4 +143,8 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 	}
 
 	return info, nil
+}
+
+func isValidNumber(s string) bool {
+	return s != "" && s != "N/A"
 }

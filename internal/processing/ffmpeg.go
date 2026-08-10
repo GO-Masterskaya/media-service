@@ -1,13 +1,38 @@
 package processing
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 )
 
+const (
+	defaultThumbnailTimeout = 2 * time.Minute
+	defaultTranscodeTimeout = 10 * time.Minute
+)
+
+// GenerateThumbnail создаёт превью через ffmpeg.
+// Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 2m.
 func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind Kind, sec int) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultThumbnailTimeout)
+		defer cancel()
+	}
+
+	outputPath = filepath.Clean(outputPath)
+	if !filepath.IsAbs(outputPath) {
+		return fmt.Errorf("outputPath must be absolute: %s", outputPath)
+	}
+	if strings.Contains(outputPath, "..") {
+		return fmt.Errorf("outputPath contains invalid segments: %s", outputPath)
+	}
+
 	var args []string
 
 	switch kind {
@@ -40,14 +65,32 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg thumbnail failed: %w", err)
+		return fmt.Errorf("ffmpeg thumbnail failed: %w, stderr: %s", err, stderr.String())
 	}
 
 	return nil
 }
 
+// Transcode создаёт рендицию через ffmpeg.
+// Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 10m.
 func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultTranscodeTimeout)
+		defer cancel()
+	}
+
+	outputPath = filepath.Clean(outputPath)
+	if !filepath.IsAbs(outputPath) {
+		return fmt.Errorf("outputPath must be absolute: %s", outputPath)
+	}
+	if strings.Contains(outputPath, "..") {
+		return fmt.Errorf("outputPath contains invalid segments: %s", outputPath)
+	}
+
 	var args []string
 	switch kind {
 	case KindVideo:
@@ -78,8 +121,10 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) err
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg transcode failed: %w", err)
+		return fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", err, stderr.String())
 	}
 
 	return nil

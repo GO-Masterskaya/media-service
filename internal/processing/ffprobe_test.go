@@ -44,10 +44,11 @@ func TestProbeAudio(t *testing.T) {
 
 func TestProbeFakeExtension(t *testing.T) {
 	ctx := context.Background()
-	info, err := Probe(ctx, "testdata/fake.jpg")
+	info, err := Probe(ctx, "testdata/fake.png")
 
 	require.NoError(t, err)
 	assert.Equal(t, KindImage, info.Kind)
+	assert.Contains(t, info.FormatName, "jpeg")
 }
 
 func TestProbeCorrupt(t *testing.T) {
@@ -57,6 +58,19 @@ func TestProbeCorrupt(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestProbeMuteVideo(t *testing.T) {
+	ctx := context.Background()
+	info, err := Probe(ctx, "testdata/mute_video.mp4")
+	require.NoError(t, err)
+	assert.Equal(t, KindVideo, info.Kind)
+}
+
+func TestProbeAnimatedGIF(t *testing.T) {
+	ctx := context.Background()
+	info, err := Probe(ctx, "testdata/animated.gif")
+	require.NoError(t, err)
+	assert.Equal(t, KindVideo, info.Kind)
+}
 func TestProbeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
