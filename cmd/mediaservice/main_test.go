@@ -4,15 +4,28 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
 
 func TestMainGracefulShutdown(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Process.Signal is not supported on Windows; covered on Linux CI")
+	}
+
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set; shutdown test needs a reachable Postgres")
+	}
+
 	// Собираем бинарь сервиса во временную директорию.
 	tmpDir := t.TempDir()
-	bin := tmpDir + "/mediaservice"
+	bin := filepath.Join(tmpDir, "mediaservice")
 
 	build := exec.Command("go", "build", "-o", bin, ".")
 	out, err := build.CombinedOutput()
@@ -25,7 +38,7 @@ func TestMainGracefulShutdown(t *testing.T) {
 	run := exec.Command(bin)
 	run.Dir = tmpDir
 	run.Env = append(os.Environ(),
-		"POSTGRES_DSN=postgres://u:p@localhost/db",
+		"POSTGRES_DSN="+dsn,
 		"MINIO_ENDPOINT=minio:9000",
 		"MINIO_ACCESS_KEY=minioadmin",
 		"MINIO_SECRET_KEY=minioadmin",
@@ -33,7 +46,7 @@ func TestMainGracefulShutdown(t *testing.T) {
 		"SHUTDOWN_TIMEOUT=2s",
 	)
 
-	var stdout bytes.Buffer
+	var stdout safeBuffer
 	run.Stdout = &stdout
 	run.Stderr = &stdout
 
@@ -41,18 +54,34 @@ func TestMainGracefulShutdown(t *testing.T) {
 		t.Fatalf("start process: %v", err)
 	}
 
-	// Даём процессу время на инициализацию.
-	time.Sleep(200 * time.Millisecond)
+	exitDone := make(chan error, 1)
+	go func() { exitDone <- run.Wait() }()
+
+	// Ждём, пока main зарегистрирует NotifyContext и залогирует готовность.
+	// Фиксированный sleep гоняет гонку: SIGTERM до NotifyContext → exit -1.
+	const readyMarker = "all components started successfully"
+	readyDeadline := time.After(15 * time.Second)
+waitReady:
+	for {
+		select {
+		case err := <-exitDone:
+			t.Fatalf("process exited before ready: %v\noutput:\n%s", err, stdout.String())
+		case <-readyDeadline:
+			_ = run.Process.Kill()
+			t.Fatalf("timeout waiting for %q\noutput:\n%s", readyMarker, stdout.String())
+		default:
+			if strings.Contains(stdout.String(), readyMarker) {
+				break waitReady
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
 
 	// Посылаем SIGTERM.
 	if err := run.Process.Signal(syscall.SIGTERM); err != nil {
 		_ = run.Process.Kill()
 		t.Fatalf("send SIGTERM: %v", err)
 	}
-
-	// Ждём завершения процесса.
-	exitDone := make(chan error, 1)
-	go func() { exitDone <- run.Wait() }()
 
 	select {
 	case err := <-exitDone:
@@ -67,9 +96,26 @@ func TestMainGracefulShutdown(t *testing.T) {
 		t.Fatal("process did not exit after SIGTERM within timeout — possible goroutine leak")
 	}
 
-	// Проверяем, что в логе есть сообщение о graceful shutdown.
 	outStr := stdout.String()
-	if !bytes.Contains([]byte(outStr), []byte("media service stopped gracefully")) {
+	if !strings.Contains(outStr, "media service stopped gracefully") {
 		t.Errorf("expected graceful shutdown message in output:\n%s", outStr)
 	}
+}
+
+// safeBuffer — io.Writer для concurrent записи процесса и чтения из теста.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

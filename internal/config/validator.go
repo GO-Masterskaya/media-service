@@ -49,6 +49,12 @@ func (c *Config) validate() error {
 	if c.PostgresDSN == "" {
 		return fmt.Errorf("POSTGRES_DSN is required")
 	}
+	if c.PostgresConnectTimeout <= 0 {
+		return fmt.Errorf("POSTGRES_CONNECT_TIMEOUT must be > 0, got %s", c.PostgresConnectTimeout)
+	}
+	if c.PostgresQueryTimeout <= 0 {
+		return fmt.Errorf("POSTGRES_QUERY_TIMEOUT must be > 0, got %s", c.PostgresQueryTimeout)
+	}
 	if c.MinIOEndpoint == "" {
 		return fmt.Errorf("MINIO_ENDPOINT is required")
 	}

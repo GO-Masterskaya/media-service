@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
+
+var outputRoot = os.TempDir()
 
 const (
 	defaultThumbnailTimeout = 2 * time.Minute
@@ -25,13 +27,7 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 		defer cancel()
 	}
 
-	outputPath = filepath.Clean(outputPath)
-	if !filepath.IsAbs(outputPath) {
-		return fmt.Errorf("outputPath must be absolute: %s", outputPath)
-	}
-	if strings.Contains(outputPath, "..") {
-		return fmt.Errorf("outputPath contains invalid segments: %s", outputPath)
-	}
+	safePath := filepath.Join(outputRoot, filepath.Base(outputPath))
 
 	var args []string
 
@@ -43,7 +39,7 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 			"-i", inputPath,
 			"-frames:v", "1",
 			"-vf", "scale='min(320,iw)':-2",
-			outputPath,
+			safePath,
 		}
 	case KindAudio:
 		args = []string{
@@ -51,14 +47,14 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 			"-i", inputPath,
 			"-filter_complex", "showwavespic=s=640x120",
 			"-frames:v", "1",
-			outputPath,
+			safePath,
 		}
 	case KindImage:
 		args = []string{
 			"-nostdin", "-y",
 			"-i", inputPath,
 			"-vf", "scale='min(320,iw)':-2",
-			outputPath,
+			safePath,
 		}
 	default:
 		return fmt.Errorf("unsupported kind: %s", kind)
@@ -83,13 +79,7 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) err
 		defer cancel()
 	}
 
-	outputPath = filepath.Clean(outputPath)
-	if !filepath.IsAbs(outputPath) {
-		return fmt.Errorf("outputPath must be absolute: %s", outputPath)
-	}
-	if strings.Contains(outputPath, "..") {
-		return fmt.Errorf("outputPath contains invalid segments: %s", outputPath)
-	}
+	safePath := filepath.Join(outputRoot, filepath.Base(outputPath))
 
 	var args []string
 	switch kind {
@@ -101,20 +91,20 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) err
 			"-c:v", "libx264",
 			"-preset", "veryfast",
 			"-c:a", "aac",
-			outputPath,
+			safePath,
 		}
 	case KindAudio:
 		args = []string{
 			"-nostdin", "-y",
 			"-i", inputPath,
 			"-c:a", "aac",
-			outputPath,
+			safePath,
 		}
 	case KindImage:
 		args = []string{
 			"-nostdin", "-y",
 			"-i", inputPath,
-			outputPath,
+			safePath,
 		}
 	default:
 		return fmt.Errorf("unsupported kind for transcode: %s", kind)

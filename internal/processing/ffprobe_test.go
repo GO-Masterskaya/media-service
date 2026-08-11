@@ -20,7 +20,7 @@ func TestProbeImage(t *testing.T) {
 	assert.NotEmpty(t, info.Codec)
 }
 
-func TestProbeVideo(t *testing.T) {
+func TestProbeMuteVideo(t *testing.T) {
 	ctx := context.Background()
 	info, err := Probe(ctx, "testdata/video.mp4")
 
@@ -30,6 +30,16 @@ func TestProbeVideo(t *testing.T) {
 	assert.Equal(t, 240, info.Height)
 	assert.NotEmpty(t, info.Codec)
 	assert.Greater(t, info.Duration, time.Duration(0))
+	assert.Equal(t, 0, info.AudioChannels)
+}
+
+func TestProbeVideoWithAudio(t *testing.T) {
+	ctx := context.Background()
+	info, err := Probe(ctx, "testdata/video_with_audio.mp4")
+	require.NoError(t, err)
+	assert.Equal(t, KindVideo, info.Kind)
+	assert.Greater(t, info.AudioChannels, 0)
+	assert.NotEmpty(t, info.AudioCodec)
 }
 
 func TestProbeAudio(t *testing.T) {
@@ -58,18 +68,12 @@ func TestProbeCorrupt(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestProbeMuteVideo(t *testing.T) {
-	ctx := context.Background()
-	info, err := Probe(ctx, "testdata/mute_video.mp4")
-	require.NoError(t, err)
-	assert.Equal(t, KindVideo, info.Kind)
-}
-
 func TestProbeAnimatedGIF(t *testing.T) {
 	ctx := context.Background()
 	info, err := Probe(ctx, "testdata/animated.gif")
 	require.NoError(t, err)
 	assert.Equal(t, KindVideo, info.Kind)
+	assert.Greater(t, info.FrameCount, int64(1))
 }
 func TestProbeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

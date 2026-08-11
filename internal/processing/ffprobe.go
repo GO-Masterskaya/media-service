@@ -90,12 +90,9 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 			info.Height = s.Height
 			info.Codec = s.CodecName
 			if isValidNumber(s.NbFrames) {
-				fc, err := strconv.ParseInt(s.NbFrames, 10, 64)
-				if err != nil {
-					return nil, fmt.Errorf("error parsing NbFrames: %w", err)
-
+				if fc, err := strconv.ParseInt(s.NbFrames, 10, 64); err == nil {
+					info.FrameCount = fc
 				}
-				info.FrameCount = fc
 			}
 		case "audio":
 			hasAudio = true
@@ -110,28 +107,24 @@ func Probe(ctx context.Context, inputPath string) (*MediaInfo, error) {
 	info.FormatName = raw.Format.FormatName
 
 	if isValidNumber(raw.Format.Duration) {
-		sec, err := strconv.ParseFloat(raw.Format.Duration, 64)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing info.Duration: %w", err)
+		if sec, err := strconv.ParseFloat(raw.Format.Duration, 64); err == nil {
+			info.Duration = time.Duration(sec * float64(time.Second))
 		}
-		info.Duration = time.Duration(sec * float64(time.Second))
 	}
 
 	if isValidNumber(raw.Format.BitRate) {
-		br, err := strconv.ParseInt(raw.Format.BitRate, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing info.Bitrate: %w", err)
+		if br, err := strconv.ParseInt(raw.Format.BitRate, 10, 64); err == nil {
+			info.Bitrate = br
 		}
-		info.Bitrate = br
 	}
 
 	switch {
 	case hasVideo && hasAudio:
 		info.Kind = KindVideo
 	case hasVideo && !hasAudio:
-		if info.Duration > 0 {
+		if info.FrameCount > 1 {
 			info.Kind = KindVideo
-		} else if info.FrameCount > 1 {
+		} else if info.Duration > 0 {
 			info.Kind = KindVideo
 		} else {
 			info.Kind = KindImage
