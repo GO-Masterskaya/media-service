@@ -60,6 +60,11 @@ type Config struct {
 	KafkaTopic    string   `env:"KAFKA_TOPIC"           env-default:"media.events"`
 	KafkaDLQTopic string   `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
 	KafkaGroup    string   `env:"KAFKA_GROUP"           env-default:"media-service"`
+	KafkaUsername string   `env:"KAFKA_USERNAME"        env-default:""`
+	KafkaPassword string   `env:"KAFKA_PASSWORD"        env-default:""`
+	KafkaTLS      bool     `env:"KAFKA_TLS"             env-default:"false"`
+	KafkaPollTimeout time.Duration `env:"KAFKA_POLL_TIMEOUT" env-default:"1s"`
+	KafkaReconnectMaxBackoff time.Duration `env:"KAFKA_RECONNECT_MAX_BACKOFF" env-default:"10s"`
 }
 
 // Load читает .env (если есть), накладывает переменные окружения на дефолтные значения и валидирует.
@@ -109,6 +114,9 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
 	fmt.Fprintf(&b, "KafkaGroup:%q", c.KafkaGroup)
+	fmt.Fprintf(&b, ", KafkaTLS:%v", c.KafkaTLS)
+	fmt.Fprintf(&b, ", KafkaPollTimeout:%s", c.KafkaPollTimeout)
+	fmt.Fprintf(&b, ", KafkaReconnectMaxBackoff:%s", c.KafkaReconnectMaxBackoff)
 	b.WriteString("}")
 	return b.String()
 }

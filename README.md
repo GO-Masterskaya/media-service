@@ -38,6 +38,10 @@ make up
 make test
 ```
 
+Для локальной проверки Kafka запустите профиль `kafka`: `docker compose --profile kafka up -d`.
+Контейнер `createkafkatopics` создаёт `media.events` и `media.events.dlq`; для
+потребления задайте `KAFKA_ENABLED=true`.
+
 ## Команды
 
 ```bash
