@@ -10,6 +10,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.98
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/twmb/franz-go v1.20.5
 )
 
 require (

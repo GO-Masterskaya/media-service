@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"mediaservice/internal/config"
+	"mediaservice/internal/events"
 	"mediaservice/internal/repo"
 )
 
@@ -41,6 +42,19 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("create pool", "error", err)
+		os.Exit(1)
+	}
+
+	// Kafka starts only after required application dependencies are ready.
+	kafkaRuntime, err := events.Start(ctx, events.Config{
+		Enabled: cfg.KafkaEnabled, Brokers: cfg.KafkaBrokers, Topic: cfg.KafkaTopic,
+		DLQTopic: cfg.KafkaDLQTopic, Group: cfg.KafkaGroup, Username: cfg.KafkaUsername,
+		Password: cfg.KafkaPassword, PollTimeout: cfg.KafkaPollTimeout,
+		ReconnectMaxBackoff: cfg.KafkaReconnectMaxBackoff,
+	}, events.HandlerFunc(events.RejectingHandler), slog.Default())
+	if err != nil {
+		pool.Close()
+		slog.Error("start Kafka runtime", "error", err)
 		os.Exit(1)
 	}
 
@@ -77,7 +91,9 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// kafka.Shutdown(shutdownCtx)
+			if err := kafkaRuntime.Shutdown(shutdownCtx); err != nil && shutdownCtx.Err() == nil {
+				slog.Error("shutdown Kafka runtime", "error", err)
+			}
 		}()
 
 		// Дождаться завершения стримов upload/download.

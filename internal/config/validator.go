@@ -80,6 +80,15 @@ func (c *Config) validate() error {
 		if c.KafkaGroup == "" {
 			return fmt.Errorf("KAFKA_GROUP is required when KAFKA_ENABLED=true")
 		}
+		if c.KafkaPollTimeout <= 0 {
+			return fmt.Errorf("KAFKA_POLL_TIMEOUT must be > 0, got %s", c.KafkaPollTimeout)
+		}
+		if c.KafkaReconnectMaxBackoff <= 0 {
+			return fmt.Errorf("KAFKA_RECONNECT_MAX_BACKOFF must be > 0, got %s", c.KafkaReconnectMaxBackoff)
+		}
+		if (c.KafkaUsername == "") != (c.KafkaPassword == "") {
+			return fmt.Errorf("KAFKA_USERNAME and KAFKA_PASSWORD must be set together")
+		}
 	}
 	return nil
 }

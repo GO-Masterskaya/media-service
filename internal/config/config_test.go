@@ -27,6 +27,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WorkerConcurrency != 2 {
 		t.Errorf("WorkerConcurrency: want 2, got %d", cfg.WorkerConcurrency)
 	}
+	if cfg.KafkaPollTimeout != time.Second || cfg.KafkaReconnectMaxBackoff != 10*time.Second {
+		t.Errorf("unexpected Kafka timeouts: poll=%s backoff=%s", cfg.KafkaPollTimeout, cfg.KafkaReconnectMaxBackoff)
+	}
 }
 
 func TestLoadOverride(t *testing.T) {
@@ -74,6 +77,8 @@ func TestConfigStringRedactsSecrets(t *testing.T) {
 		MinIOSecretKey: "secret-key",
 		MinIOEndpoint:  "minio:9000",
 		MinIOBucket:    "media",
+		KafkaUsername:  "kafka-user",
+		KafkaPassword:  "kafka-password",
 	}
 
 	s := cfg.String()
@@ -89,6 +94,9 @@ func TestConfigStringRedactsSecrets(t *testing.T) {
 	}
 	if strings.Contains(s, "secret-key") {
 		t.Error("String() must not contain MinIOSecretKey")
+	}
+	if strings.Contains(s, "kafka-user") || strings.Contains(s, "kafka-password") {
+		t.Error("String() must not contain Kafka credentials")
 	}
 	// Хост из DSN должен присутствовать (маскированный)
 	if !strings.Contains(s, "dbhost:5432") {
