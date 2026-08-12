@@ -89,6 +89,9 @@ func (c *Config) validate() error {
 		if (c.KafkaUsername == "") != (c.KafkaPassword == "") {
 			return fmt.Errorf("KAFKA_USERNAME and KAFKA_PASSWORD must be set together")
 		}
+		if c.KafkaUsername != "" && !c.KafkaTLS {
+			return fmt.Errorf("KAFKA_TLS must be true when Kafka credentials are configured")
+		}
 	}
 	return nil
 }

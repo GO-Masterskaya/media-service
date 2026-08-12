@@ -21,6 +21,7 @@ type Config struct {
 	Group               string
 	Username            string
 	Password            string
+	TLS                 bool
 	PollTimeout         time.Duration
 	ReconnectMaxBackoff time.Duration
 }
@@ -104,6 +105,9 @@ func (r *Runtime) run(ctx context.Context) {
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil { return }
+			// A per-poll deadline is normal when the topic is idle; it is not a
+			// connectivity failure and must not trigger reconnect backoff.
+			if errors.Is(err, context.DeadlineExceeded) { continue }
 			r.logger.Warn("kafka poll failed; retrying", "error", err, "backoff", backoff)
 			if !wait(ctx, backoff) { return }
 			backoff *= 2
@@ -113,30 +117,34 @@ func (r *Runtime) run(ctx context.Context) {
 		backoff = 100 * time.Millisecond
 		for _, record := range records {
 			if ctx.Err() != nil { return }
-			r.handle(ctx, record)
+			// Never process a later offset in this batch after an uncommitted
+			// record, otherwise its commit could skip the failed record.
+			if !r.handle(ctx, record) { break }
 		}
 	}
 }
 
-func (r *Runtime) handle(ctx context.Context, record Record) {
+// handle returns true only when the record was committed. Returning false
+// stops the current batch and lets Kafka redeliver the record later.
+func (r *Runtime) handle(ctx context.Context, record Record) bool {
 	result, err := r.handler.Handle(ctx, record)
 	if err != nil {
-		r.logger.Error("kafka event handler failed", "topic", record.Topic, "partition", record.Partition, "offset", record.Offset, "error", err)
-		return
+		result = DLQ(err.Error())
 	}
 	if !result.valid() {
-		r.logger.Error("kafka event handler returned invalid result", "topic", record.Topic, "partition", record.Partition, "offset", record.Offset)
-		return
+		result = DLQ("kafka event handler returned invalid result")
 	}
 	if result.dlqReason != "" {
 		if err := r.client.ProduceDLQ(ctx, record, result.dlqReason); err != nil {
 			r.logger.Error("publish kafka event to DLQ", "topic", record.Topic, "partition", record.Partition, "offset", record.Offset, "error", err)
-			return
+			return false
 		}
 	}
 	if err := r.client.Commit(ctx, record); err != nil {
 		r.logger.Error("commit kafka offset", "topic", record.Topic, "partition", record.Partition, "offset", record.Offset, "error", err)
+		return false
 	}
+	return true
 }
 
 func (r *Runtime) Shutdown(ctx context.Context) error {

@@ -49,7 +49,7 @@ func main() {
 	kafkaRuntime, err := events.Start(ctx, events.Config{
 		Enabled: cfg.KafkaEnabled, Brokers: cfg.KafkaBrokers, Topic: cfg.KafkaTopic,
 		DLQTopic: cfg.KafkaDLQTopic, Group: cfg.KafkaGroup, Username: cfg.KafkaUsername,
-		Password: cfg.KafkaPassword, PollTimeout: cfg.KafkaPollTimeout,
+		Password: cfg.KafkaPassword, TLS: cfg.KafkaTLS, PollTimeout: cfg.KafkaPollTimeout,
 		ReconnectMaxBackoff: cfg.KafkaReconnectMaxBackoff,
 	}, events.HandlerFunc(events.RejectingHandler), slog.Default())
 	if err != nil {

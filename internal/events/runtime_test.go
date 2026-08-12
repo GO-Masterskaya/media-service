@@ -13,6 +13,7 @@ type fakeClient struct {
 	records [][]Record
 	commits []Record
 	dlqs []string
+	dlqErr error
 	closed bool
 	pollStarted chan struct{}
 }
@@ -26,7 +27,7 @@ func (c *fakeClient) Poll(ctx context.Context) ([]Record, error) {
 	return nil, ctx.Err()
 }
 func (c *fakeClient) Commit(_ context.Context, r Record) error { c.mu.Lock(); defer c.mu.Unlock(); c.commits = append(c.commits, r); return nil }
-func (c *fakeClient) ProduceDLQ(_ context.Context, _ Record, reason string) error { c.mu.Lock(); defer c.mu.Unlock(); c.dlqs = append(c.dlqs, reason); return nil }
+func (c *fakeClient) ProduceDLQ(_ context.Context, _ Record, reason string) error { c.mu.Lock(); defer c.mu.Unlock(); c.dlqs = append(c.dlqs, reason); return c.dlqErr }
 func (c *fakeClient) Close() { c.mu.Lock(); defer c.mu.Unlock(); c.closed = true }
 
 func testConfig() Config { return Config{Enabled:true, Topic:"input", DLQTopic:"dlq", Group:"group", PollTimeout:time.Second, ReconnectMaxBackoff:time.Second} }
@@ -57,14 +58,26 @@ func TestDLQPublishesBeforeCommit(t *testing.T) {
 	if err := r.Shutdown(context.Background()); err != nil { t.Fatal(err) }
 }
 
-func TestHandlerErrorDoesNotCommit(t *testing.T) {
+func TestHandlerErrorPublishesDLQThenCommits(t *testing.T) {
 	c := &fakeClient{records:[][]Record{{{Topic:"input", Offset:3}}}, pollStarted:make(chan struct{})}
 	r, err := start(context.Background(), testConfig(), HandlerFunc(func(context.Context, Record) (Result, error) { return Result{}, errors.New("temporary failure") }), nil, func(Config) (client, error) { return c, nil })
 	if err != nil { t.Fatal(err) }
 	<-c.pollStarted
+	eventually(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return len(c.dlqs) == 1 && len(c.commits) == 1 })
+	c.mu.Lock(); reason := c.dlqs[0]; c.mu.Unlock()
+	if reason != "temporary failure" { t.Fatalf("DLQ reason = %q", reason) }
+	if err := r.Shutdown(context.Background()); err != nil { t.Fatal(err) }
+}
+
+func TestDLQFailureDoesNotSkipLaterOffset(t *testing.T) {
+	c := &fakeClient{records:[][]Record{{{Topic:"input", Offset:5}, {Topic:"input", Offset:6}}}, dlqErr:errors.New("DLQ unavailable"), pollStarted:make(chan struct{})}
+	r, err := start(context.Background(), testConfig(), HandlerFunc(func(context.Context, Record) (Result, error) { return DLQ("invalid"), nil }), nil, func(Config) (client, error) { return c, nil })
+	if err != nil { t.Fatal(err) }
+	<-c.pollStarted
 	time.Sleep(20*time.Millisecond)
-	c.mu.Lock(); commits := len(c.commits); c.mu.Unlock()
-	if commits != 0 { t.Fatal("failed handler must not commit offset") }
+	c.mu.Lock(); commits, dlqs := len(c.commits), len(c.dlqs); c.mu.Unlock()
+	if commits != 0 { t.Fatalf("committed %d records after DLQ failure", commits) }
+	if dlqs != 1 { t.Fatalf("attempted DLQ %d times for one batch", dlqs) }
 	if err := r.Shutdown(context.Background()); err != nil { t.Fatal(err) }
 }
 
