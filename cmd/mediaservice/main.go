@@ -132,7 +132,9 @@ func main() {
 
 		// 8.3 Инфраструктура — быстрые закрытия соединений.
 		pool.Close()
-		sto.Close() // +++ ADDED
+		if err := sto.Close(); err != nil {
+			slog.Error("storage close", "error", err)
+		}
 	}()
 
 	// 9. Дожидаемся остановки компонентов или истечения контекста.
