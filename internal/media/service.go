@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ type Service struct {
 	derivRepo  repo.DerivativeRepo
 	storage    storage.Interface
 	presignTTL time.Duration
+	log        *slog.Logger
 }
 
 func NewService(
@@ -25,42 +27,52 @@ func NewService(
 	derivRepo repo.DerivativeRepo,
 	storage storage.Interface,
 	presignTTL time.Duration,
+	log *slog.Logger,
 ) *Service {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Service{
 		mediaRepo:  mediaRepo,
 		derivRepo:  derivRepo,
 		storage:    storage,
 		presignTTL: presignTTL,
+		log:        log,
 	}
 }
 
 // GetDownloadURL возвращает presigned URL для original/thumbnail/r_720.
 // Ошибки:
-//   - NotFound        — нет media или нет derivative для запрошенного variant.
-//   - FailedPrecondition — вариант существует, но не готов (media failed/deleting/не ready).
-func (s *Service) GetDownloadURL(ctx context.Context, mediaID uuid.UUID, variant storage.Variant) (*storage.PresignedURL, error) {
+//   - NotFound           — нет media или нет derivative для variant.
+//   - FailedPrecondition — вариант существует, но не готов.
+//   - PermissionDenied   — caller не является владельцем объекта.
+//   - Internal           — ошибка хранилища/БД.
+func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant storage.Variant) (*storage.PresignedURL, error) {
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "media not found")
 		}
-		return nil, status.Errorf(codes.Internal, "get media: %v", err)
+		s.log.Error("get media failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	// IDOR fix: проверяем владельца до любой другой логики.
+	if media.OwnerID != callerID {
+		return nil, status.Error(codes.PermissionDenied, "access denied")
 	}
 
 	var storageKey string
 
 	switch variant {
 	case storage.VariantOriginal:
-		// Original есть в хранилище сразу после upload, но недоступен
-		// если медиа в процессе жёсткого удаления или упала навсегда.
 		switch media.Status {
 		case repo.MediaStatusFailed, repo.MediaStatusDeleting:
-			return nil, status.Errorf(codes.FailedPrecondition, "media status is %s", media.Status)
+			return nil, status.Errorf(codes.FailedPrecondition, "media not available, status: %s", media.Status)
 		}
 		storageKey = media.StorageKey
 
-	case storage.VariantThumb, storage.VariantR720, storage.VariantPreview, storage.VariantR360:
-		// Производные появляются только при статусе ready.
+	case storage.VariantThumb, storage.VariantR720:
 		if media.Status != repo.MediaStatusReady {
 			return nil, status.Errorf(codes.FailedPrecondition, "media not ready, status: %s", media.Status)
 		}
@@ -69,7 +81,12 @@ func (s *Service) GetDownloadURL(ctx context.Context, mediaID uuid.UUID, variant
 			if errors.Is(err, repo.ErrNotFound) {
 				return nil, status.Errorf(codes.NotFound, "derivative %s not found", variant)
 			}
-			return nil, status.Errorf(codes.Internal, "get derivative: %v", err)
+			s.log.Error("get derivative failed",
+				slog.Any("error", err),
+				slog.String("media_id", mediaID.String()),
+				slog.String("variant", string(variant)),
+			)
+			return nil, status.Error(codes.Internal, "internal error")
 		}
 		storageKey = deriv.StorageKey
 
@@ -78,12 +95,17 @@ func (s *Service) GetDownloadURL(ctx context.Context, mediaID uuid.UUID, variant
 	}
 
 	if storageKey == "" {
-		return nil, status.Error(codes.Internal, "empty storage key")
+		s.log.Error("empty storage key",
+			slog.String("media_id", mediaID.String()),
+			slog.String("variant", string(variant)),
+		)
+		return nil, status.Error(codes.Internal, "internal error")
 	}
 
 	presigned, err := s.storage.PresignGetObject(ctx, storageKey, s.presignTTL)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "presign: %v", err)
+		s.log.Error("presign failed", slog.Any("error", err), slog.String("key", storageKey))
+		return nil, status.Error(codes.Internal, "internal error")
 	}
 	return presigned, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -57,10 +58,18 @@ func (s *stubStorage) Close() error                                          { r
 
 // ---------- helpers ----------
 
+func ownerID() uuid.UUID {
+	return uuid.MustParse("22222222-2222-2222-2222-222222222222")
+}
+
+func otherOwnerID() uuid.UUID {
+	return uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+}
+
 func mediaWithStatus(st repo.MediaStatus) *repo.Media {
 	return &repo.Media{
 		ID:         uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-		OwnerID:    uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+		OwnerID:    ownerID(),
 		Status:     st,
 		StorageKey: "22222222-2222-2222-2222-222222222222/11111111-1111-1111-1111-111111111111/original.png",
 	}
@@ -88,8 +97,8 @@ func TestGetDownloadURL_Original_Success(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
 	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/presign", ExpiresAt: time.Now().Add(15 * time.Minute)}}
 
-	svc := NewService(mr, &stubDerivRepo{}, sr, 15*time.Minute)
-	url, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantOriginal)
+	svc := NewService(mr, &stubDerivRepo{}, sr, 15*time.Minute, slog.Default())
+	url, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantOriginal)
 
 	require.NoError(t, err)
 	assert.Equal(t, "http://minio/presign", url.URL)
@@ -97,17 +106,17 @@ func TestGetDownloadURL_Original_Success(t *testing.T) {
 
 func TestGetDownloadURL_Original_FailedStatus(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusFailed)}
-	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute)
+	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
 
-	_, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantOriginal)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantOriginal)
 	requireGRPCCode(t, err, codes.FailedPrecondition)
 }
 
 func TestGetDownloadURL_Original_DeletingStatus(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusDeleting)}
-	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute)
+	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
 
-	_, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantOriginal)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantOriginal)
 	requireGRPCCode(t, err, codes.FailedPrecondition)
 }
 
@@ -116,8 +125,8 @@ func TestGetDownloadURL_Derivative_Success(t *testing.T) {
 	dr := &stubDerivRepo{deriv: derivFor("r_720")}
 	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/r720", ExpiresAt: time.Now().Add(15 * time.Minute)}}
 
-	svc := NewService(mr, dr, sr, 15*time.Minute)
-	url, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantR720)
+	svc := NewService(mr, dr, sr, 15*time.Minute, slog.Default())
+	url, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantR720)
 
 	require.NoError(t, err)
 	assert.Equal(t, "http://minio/r720", url.URL)
@@ -125,34 +134,42 @@ func TestGetDownloadURL_Derivative_Success(t *testing.T) {
 
 func TestGetDownloadURL_Derivative_NotReady(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusProcessing)}
-	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute)
+	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
 
-	_, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantR720)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantR720)
 	requireGRPCCode(t, err, codes.FailedPrecondition)
 }
 
 func TestGetDownloadURL_Derivative_NotFound(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
 	dr := &stubDerivRepo{err: repo.ErrNotFound}
-	svc := NewService(mr, dr, &stubStorage{}, time.Minute)
+	svc := NewService(mr, dr, &stubStorage{}, time.Minute, slog.Default())
 
-	_, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantThumb)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantThumb)
 	requireGRPCCode(t, err, codes.NotFound)
 }
 
 func TestGetDownloadURL_MediaNotFound(t *testing.T) {
 	mr := &stubMediaRepo{err: repo.ErrNotFound}
-	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute)
+	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
 
-	_, err := svc.GetDownloadURL(context.Background(), uuid.New(), storage.VariantOriginal)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), uuid.New(), storage.VariantOriginal)
 	requireGRPCCode(t, err, codes.NotFound)
+}
+
+func TestGetDownloadURL_WrongOwner_PermissionDenied(t *testing.T) {
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
+	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
+
+	_, err := svc.GetDownloadURL(context.Background(), otherOwnerID(), mr.media.ID, storage.VariantOriginal)
+	requireGRPCCode(t, err, codes.PermissionDenied)
 }
 
 func TestGetDownloadURL_StorageError(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
 	sr := &stubStorage{err: errors.New("minio down")}
-	svc := NewService(mr, &stubDerivRepo{}, sr, time.Minute)
+	svc := NewService(mr, &stubDerivRepo{}, sr, time.Minute, slog.Default())
 
-	_, err := svc.GetDownloadURL(context.Background(), mr.media.ID, storage.VariantOriginal)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantOriginal)
 	requireGRPCCode(t, err, codes.Internal)
 }
