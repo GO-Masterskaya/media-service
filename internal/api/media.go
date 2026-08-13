@@ -16,16 +16,23 @@ import (
 
 type MediaServer struct {
 	mediav1.UnimplementedMediaServiceServer
-	svc *media.Service
+	svc              *media.Service
+	strictOwnerCheck bool
 }
 
-func NewMediaServer(svc *media.Service) *MediaServer {
-	return &MediaServer{svc: svc}
+func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
+	return &MediaServer{
+		svc:              svc,
+		strictOwnerCheck: strictOwnerCheck,
+	}
 }
 
 // callerIDFromMetadata извлекает owner_id из gRPC metadata.
-// По ТЗ v1 сервис не валидирует токен, но использует identity из metadata
-// для проверки доступа к объекту (IDOR-fix).
+//
+// По ТЗ v1 сервис не валидирует токен — он доверяет вызывающему (gateway/mesh).
+// x-owner-id должен инжектиться доверенным посредником; прямой доступ клиента
+// к gRPC media-service исключён архитектурно. Полноценная валидация auth —
+// TODO (#5, флаг GRPC_AUTH_VALIDATE).
 func callerIDFromMetadata(ctx context.Context) (uuid.UUID, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -66,6 +73,12 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 
 	callerID, err := callerIDFromMetadata(ctx)
 	if err != nil {
+		if s.strictOwnerCheck {
+			// В strict mode gateway ОБЯЗАН прокидывать x-owner-id.
+			// Если нет — значит deploy-модель нарушена.
+			return nil, status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
+		}
+		// ТЗ v1: без strict mode пропускаем (но owner-проверка в сервисе всё равно отрежет IDOR).
 		return nil, err
 	}
 

@@ -84,6 +84,10 @@ func requireGRPCCode(t *testing.T, err error, want codes.Code) {
 	assert.Equal(t, want, st.Code(), "error message: %s", st.Message())
 }
 
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
 // ---------- tests ----------
 
 func TestGetDownloadURL_Success(t *testing.T) {
@@ -91,7 +95,7 @@ func TestGetDownloadURL_Success(t *testing.T) {
 	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/presign", ExpiresAt: time.Now().Add(15 * time.Minute)}}
 
 	svc := media.NewService(mr, &stubDerivRepo{}, sr, 15*time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	server := NewMediaServer(svc, false)
 
 	resp, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",
@@ -104,8 +108,8 @@ func TestGetDownloadURL_Success(t *testing.T) {
 }
 
 func TestGetDownloadURL_MissingMediaID(t *testing.T) {
-	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		Variant: "original",
@@ -115,8 +119,8 @@ func TestGetDownloadURL_MissingMediaID(t *testing.T) {
 }
 
 func TestGetDownloadURL_InvalidMediaID(t *testing.T) {
-	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "not-a-uuid",
@@ -127,8 +131,8 @@ func TestGetDownloadURL_InvalidMediaID(t *testing.T) {
 }
 
 func TestGetDownloadURL_InvalidVariant(t *testing.T) {
-	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",
@@ -140,7 +144,7 @@ func TestGetDownloadURL_InvalidVariant(t *testing.T) {
 
 func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	server := NewMediaServer(svc, false)
 
 	// Нет metadata вообще
 	_, err := server.GetDownloadURL(context.Background(), &mediav1.GetDownloadURLRequest{
@@ -153,8 +157,8 @@ func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
 
 func TestGetDownloadURL_WrongOwner(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
-	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
 
 	otherOwner := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	_, err := server.GetDownloadURL(ctxWithOwner(otherOwner), &mediav1.GetDownloadURLRequest{
@@ -167,8 +171,8 @@ func TestGetDownloadURL_WrongOwner(t *testing.T) {
 
 func TestGetDownloadURL_ServiceError(t *testing.T) {
 	mr := &stubMediaRepo{err: repo.ErrNotFound}
-	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc)
+	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",

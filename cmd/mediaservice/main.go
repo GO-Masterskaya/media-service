@@ -72,7 +72,7 @@ func main() {
 
 	// +++ ADDED: 4.7 gRPC server + registration
 	grpcServer := grpc.NewServer()
-	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc))
+	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
