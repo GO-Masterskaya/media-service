@@ -1,0 +1,81 @@
+// Package api — тонкий gRPC-адаптер (SPEC §3).
+// Полный сервер и регистрация в gRPC runtime — задача #5.
+// Здесь реализован только DownloadStream (#12).
+package api
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"mediaservice/internal/media"
+	"mediaservice/proto/media/v1"
+)
+
+// MediaServer реализует v1.MediaServiceServer.
+// Зависит от сгенерированных proto/stubs задачи #4.
+// Регистрация сервера в gRPC runtime происходит в #5.
+type MediaServer struct {
+	v1.UnimplementedMediaServiceServer
+	svc *media.Service
+}
+
+func NewMediaServer(svc *media.Service) *MediaServer {
+	return &MediaServer{svc: svc}
+}
+
+// DownloadStream отдаёт файл клиенту чанками (server-streaming).
+// Per-caller stream limit и rate limit обеспечиваются interceptor'ами задачи #21.
+func (s *MediaServer) DownloadStream(req *v1.DownloadStreamRequest, stream v1.MediaService_DownloadStreamServer) error {
+	ctx := stream.Context()
+
+	// Проверяем отмену до начала работы.
+	if ctx.Err() != nil {
+		return status.Error(codes.Canceled, "request canceled")
+	}
+
+	slog.Info("download started", slog.String("mediaID", req.MediaId), slog.String("variant", req.Variant))
+	// счетчик отображающий размер отправленных байт для логирования
+	var bytesSent int64
+	defer slog.Info("download finished", slog.String("mediaID", req.MediaId), slog.Int64("bytesSent", bytesSent))
+
+	err := s.svc.DownloadStream(ctx, req.MediaId, req.Variant, func(chunk []byte) error {
+		bytesSent += int64(len(chunk))
+		return stream.Send(&v1.DownloadChunk{
+			Data: chunk,
+		})
+	})
+
+	if err != nil {
+		// гарантия получения клиентом Canceled, при мертвом контексте, независимо от ошибки из DownloadStream
+		if ctx.Err() != nil {
+        	switch ctx.Err() {
+    			case context.DeadlineExceeded:
+        			return status.Error(codes.DeadlineExceeded, ctx.Err().Error())
+    			default:
+        			return status.Error(codes.Canceled, ctx.Err().Error())
+   			}
+    	}
+    	return mapDownloadError(err)
+	}
+	return nil
+}
+
+// mapDownloadError возвращает представление доменной ошибки в gRPC статусе
+func mapDownloadError(err error) error {
+	switch {
+	case errors.Is(err, media.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, media.ErrInvalidArgument):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, media.ErrFailedPrecondition):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	default:
+		return status.Error(codes.Internal, err.Error())
+	}
+}
