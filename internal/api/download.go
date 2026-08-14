@@ -54,7 +54,7 @@ func (s *MediaServer) DownloadStream(req *v1.DownloadStreamRequest, stream v1.Me
 	})
 
 	if err != nil {
-		// гарантия получения клиентом Canceled, при мертвом контексте, независимо от ошибки из DownloadStream
+		// гарантия получения клиентом Canceled/DeadlineExceeded, при мертвом контексте, независимо от ошибки из DownloadStream
 		if ctx.Err() != nil {
         	switch ctx.Err() {
     			case context.DeadlineExceeded:
