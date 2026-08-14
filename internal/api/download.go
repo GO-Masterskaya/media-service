@@ -25,7 +25,7 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "invalid media_id")
 	}
-	
+
 	// Проверяем отмену до начала работы.
 	if ctx.Err() != nil {
 		return status.Error(codes.Canceled, "request canceled")
@@ -44,14 +44,14 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 	if err != nil {
 		// гарантия получения клиентом Canceled/DeadlineExceeded, при мертвом контексте, независимо от ошибки из DownloadStream
 		if ctx.Err() != nil {
-        	switch ctx.Err() {
-    			case context.DeadlineExceeded:
-        			return status.Error(codes.DeadlineExceeded, ctx.Err().Error())
-    			default:
-        			return status.Error(codes.Canceled, ctx.Err().Error())
-   			}
-    	}
-    	return mapDownloadError(err)
+			switch ctx.Err() {
+			case context.DeadlineExceeded:
+				return status.Error(codes.DeadlineExceeded, ctx.Err().Error())
+			default:
+				return status.Error(codes.Canceled, ctx.Err().Error())
+			}
+		}
+		return mapDownloadError(err)
 	}
 	return nil
 }
