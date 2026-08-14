@@ -13,24 +13,12 @@ import (
 	"google.golang.org/grpc/status"
 
 	"mediaservice/internal/media"
-	"mediaservice/proto/media/v1"
+	mediav1 "mediaservice/proto/media/v1"
 )
-
-// MediaServer реализует v1.MediaServiceServer.
-// Зависит от сгенерированных proto/stubs задачи #4.
-// Регистрация сервера в gRPC runtime происходит в #5.
-type MediaServer struct {
-	v1.UnimplementedMediaServiceServer
-	svc *media.Service
-}
-
-func NewMediaServer(svc *media.Service) *MediaServer {
-	return &MediaServer{svc: svc}
-}
 
 // DownloadStream отдаёт файл клиенту чанками (server-streaming).
 // Per-caller stream limit и rate limit обеспечиваются interceptor'ами задачи #21.
-func (s *MediaServer) DownloadStream(req *v1.DownloadStreamRequest, stream v1.MediaService_DownloadStreamServer) error {
+func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream mediav1.MediaService_DownloadStreamServer) error {
 	ctx := stream.Context()
 
 	id, err := uuid.Parse(req.MediaId)
@@ -50,7 +38,7 @@ func (s *MediaServer) DownloadStream(req *v1.DownloadStreamRequest, stream v1.Me
 
 	err = s.svc.DownloadStream(ctx, id, req.Variant, func(chunk []byte) error {
 		bytesSent += int64(len(chunk))
-		return stream.Send(&v1.DownloadChunk{Data: chunk})
+		return stream.Send(&mediav1.DownloadChunk{Data: chunk})
 	})
 
 	if err != nil {

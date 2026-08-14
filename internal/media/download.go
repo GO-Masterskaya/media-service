@@ -10,36 +10,9 @@ import (
 	"io"
 
 	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 
 	"github.com/google/uuid"
 )
-
-var (
-	ErrNotFound           = errors.New("media not found")
-	ErrInvalidArgument    = errors.New("invalid argument")
-	ErrFailedPrecondition = errors.New("media not ready")
-)
-
-// ChunkSender отправляет один чанк данных в транспорт.
-// Реализация предоставляется gRPC handler'ом (internal/api).
-type ChunkSender func([]byte) error
-
-// Service содержит доменную логику медиа.
-// Полный конструктор и методы нужно добавить по мере реализации задач #9–#13.
-type Service struct {
-	mediaRepo repo.MediaRepo
-	derivRepo repo.DerivativeRepo
-	storage   storage.Interface
-}
-
-func NewService(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, storage storage.Interface) *Service {
-	return &Service{
-		mediaRepo: mediaRepo,
-		derivRepo: derivRepo,
-		storage:   storage,
-	}
-}
 
 // DownloadStream отдаёт содержимое объекта чанками.
 // Все проверки (media, variant, доступность) выполняются ДО первого вызова sender.
@@ -52,7 +25,7 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant
 	}
 
 	// 1. Проверяем метаданные медиа в БД (#10).
-	media, err := s.mediaRepo.GetMedia(ctx, mediaID)
+	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return fmt.Errorf("media %s: %w", mediaID, ErrNotFound)

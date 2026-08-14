@@ -5,20 +5,31 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"mediaservice/internal/media"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
-	"mediaservice/proto/media/v1"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	v1 "mediaservice/proto/media/v1"
 )
+
+// newTestServer создаёт MediaServer с тестовым сервисом.
+func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
+	discardLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+	svc := media.NewService(mediaRepo, derivRepo, st, 15*time.Minute, discardLog)
+	// strictOwnerCheck = false для тестов download stream (#12)
+	return NewMediaServer(svc, false)
+}
 
 type mockMediaRepo struct {
 	media    *repo.Media
@@ -56,18 +67,19 @@ func (m *mockStorage) DeleteObject(_ context.Context, _ string) error { return n
 func (m *mockStorage) DeletePrefix(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error                                   { return nil }
 
+// mockStream реализует v1.MediaService_DownloadStreamServer.
 type mockStream struct {
 	ctx  context.Context
 	send func(*v1.DownloadChunk) error
 }
 
-func (m *mockStream) Context() context.Context       { return m.ctx }
-func (m *mockStream) Send(c *v1.DownloadChunk) error { return m.send(c) }
-
-func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
-	return NewMediaServer(media.NewService(mediaRepo, derivRepo, st))
-}
-
+func (m *mockStream) Context() context.Context                  { return m.ctx }
+func (m *mockStream) Send(c *v1.DownloadChunk) error            { return m.send(c) }
+func (m *mockStream) SendMsg(_ any) error                       { return nil }
+func (m *mockStream) RecvMsg(_ any) error                       { return nil }
+func (m *mockStream) SetHeader(_ metadata.MD) error           { return nil }
+func (m *mockStream) SendHeader(_ metadata.MD) error            { return nil }
+func (m *mockStream) SetTrailer(_ metadata.MD)                  {}
 func TestMapDownloadError(t *testing.T) {
 	tests := []struct {
 		name     string
