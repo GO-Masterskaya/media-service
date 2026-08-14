@@ -44,7 +44,11 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant
 	if err != nil {
 		return fmt.Errorf("get object: %w", err)
 	}
-	defer rc.Close()
+	defer func() {
+		if closeErr := rc.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close object reader: %w", closeErr)
+		}
+	}()
 
 	// 4. Потоковая передача чанками. Файл не загружается целиком в RAM.
 	return s.streamChunks(ctx, rc, sender)
