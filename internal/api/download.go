@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -32,6 +33,11 @@ func NewMediaServer(svc *media.Service) *MediaServer {
 func (s *MediaServer) DownloadStream(req *v1.DownloadStreamRequest, stream v1.MediaService_DownloadStreamServer) error {
 	ctx := stream.Context()
 
+	id, err := uuid.Parse(req.MediaId)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, "invalid media_id")
+	}
+	
 	// Проверяем отмену до начала работы.
 	if ctx.Err() != nil {
 		return status.Error(codes.Canceled, "request canceled")
@@ -42,11 +48,9 @@ func (s *MediaServer) DownloadStream(req *v1.DownloadStreamRequest, stream v1.Me
 	var bytesSent int64
 	defer slog.Info("download finished", slog.String("mediaID", req.MediaId), slog.Int64("bytesSent", bytesSent))
 
-	err := s.svc.DownloadStream(ctx, req.MediaId, req.Variant, func(chunk []byte) error {
+	err = s.svc.DownloadStream(ctx, id, req.Variant, func(chunk []byte) error {
 		bytesSent += int64(len(chunk))
-		return stream.Send(&v1.DownloadChunk{
-			Data: chunk,
-		})
+		return stream.Send(&v1.DownloadChunk{Data: chunk})
 	})
 
 	if err != nil {

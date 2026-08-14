@@ -11,6 +11,8 @@ import (
 
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -26,21 +28,23 @@ type ChunkSender func([]byte) error
 // Service содержит доменную логику медиа.
 // Полный конструктор и методы нужно добавить по мере реализации задач #9–#13.
 type Service struct {
-	repo    repo.MediaRepository
-	storage storage.Interface
+	mediaRepo repo.MediaRepo
+	derivRepo repo.DerivativeRepo
+	storage   storage.Interface
 }
 
-func NewService(repo repo.MediaRepository, storage storage.Interface) *Service {
+func NewService(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, storage storage.Interface) *Service {
 	return &Service{
-		repo: repo, 
-		storage: storage,
+		mediaRepo: mediaRepo,
+		derivRepo: derivRepo,
+		storage:   storage,
 	}
 }
 
 // DownloadStream отдаёт содержимое объекта чанками.
 // Все проверки (media, variant, доступность) выполняются ДО первого вызова sender.
-func (s *Service) DownloadStream(ctx context.Context, mediaID, variant string, sender ChunkSender) error {
-	if mediaID == "" {
+func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant string, sender ChunkSender) error {
+	if mediaID == uuid.Nil {
 		return fmt.Errorf("media_id is required: %w", ErrInvalidArgument)
 	}
 	if variant == "" {
@@ -48,7 +52,7 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID, variant string, s
 	}
 
 	// 1. Проверяем метаданные медиа в БД (#10).
-	media, err := s.repo.GetMedia(ctx, mediaID)
+	media, err := s.mediaRepo.GetMedia(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return fmt.Errorf("media %s: %w", mediaID, ErrNotFound)
@@ -77,7 +81,7 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID, variant string, s
 func (s *Service) resolveKey(ctx context.Context, media *repo.Media, variant string) (string, error) {
 	switch variant {
 	case "original":
-		if media.Status == "deleting" || media.Status == "failed" {
+		if media.Status == repo.MediaStatusDeleting || media.Status == repo.MediaStatusFailed {
 			return "", fmt.Errorf("media status %q: %w", media.Status, ErrFailedPrecondition)
 		}
 		if media.StorageKey == "" {
@@ -85,15 +89,12 @@ func (s *Service) resolveKey(ctx context.Context, media *repo.Media, variant str
 		}
 		return media.StorageKey, nil
 	case "thumbnail", "r_720", "preview":
-		deriv, err := s.repo.GetDerivative(ctx, media.ID, variant)
+		deriv, err := s.derivRepo.GetByMediaAndVariant(ctx, media.ID, variant)
 		if err != nil {
 			if errors.Is(err, repo.ErrNotFound) {
 				return "", fmt.Errorf("derivative %q: %w", variant, ErrNotFound)
 			}
 			return "", fmt.Errorf("get derivative: %w", err)
-		}
-		if deriv.Status == "failed" {
-			return "", fmt.Errorf("derivative status failed: %w", ErrFailedPrecondition)
 		}
 		if deriv.StorageKey == "" {
 			return "", fmt.Errorf("storage key empty for %q: %w", variant, ErrNotFound)

@@ -6,7 +6,8 @@ import (
 	"errors"
 	"io"
 	"testing"
-	"time"
+
+	"github.com/google/uuid"
 
 	"mediaservice/internal/media"
 	"mediaservice/internal/repo"
@@ -19,22 +20,24 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// mockRepo — заглушка repo.MediaRepository.
-type mockRepo struct {
-	media      *repo.Media
-	derivative *repo.Derivative
-	mediaErr   error
-	derivErr   error
+type mockMediaRepo struct {
+	media    *repo.Media
+	mediaErr error
 }
 
-func (m *mockRepo) GetMedia(_ context.Context, _ string) (*repo.Media, error) {
+func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, error) {
 	return m.media, m.mediaErr
 }
-func (m *mockRepo) GetDerivative(_ context.Context, _, _ string) (*repo.Derivative, error) {
-	return m.derivative, m.derivErr
+
+type mockDerivRepo struct {
+	deriv    *repo.Derivative
+	derivErr error
 }
 
-// mockStorage — заглушка storage.Interface.
+func (m *mockDerivRepo) GetByMediaAndVariant(_ context.Context, _ uuid.UUID, _ string) (*repo.Derivative, error) {
+	return m.deriv, m.derivErr
+}
+
 type mockStorage struct {
 	reader io.ReadCloser
 	err    error
@@ -53,7 +56,6 @@ func (m *mockStorage) DeleteObject(_ context.Context, _ string) error { return n
 func (m *mockStorage) DeletePrefix(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error                                   { return nil }
 
-// mockStream — заглушка v1.MediaService_DownloadStreamServer.
 type mockStream struct {
 	ctx  context.Context
 	send func(*v1.DownloadChunk) error
@@ -62,8 +64,8 @@ type mockStream struct {
 func (m *mockStream) Context() context.Context       { return m.ctx }
 func (m *mockStream) Send(c *v1.DownloadChunk) error { return m.send(c) }
 
-func newTestServer(repo repo.MediaRepository, st storage.Interface) *MediaServer {
-	return NewMediaServer(media.NewService(repo, st))
+func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
+	return NewMediaServer(media.NewService(mediaRepo, derivRepo, st))
 }
 
 func TestMapDownloadError(t *testing.T) {
@@ -89,11 +91,12 @@ func TestMapDownloadError(t *testing.T) {
 
 func TestDownloadStream_Handler_Success(t *testing.T) {
 	data := []byte("handler test data")
-	repoMock := &mockRepo{
-		media: &repo.Media{ID: "m1", Status: "stored", StorageKey: "key"},
+	id := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
-	srv := newTestServer(repoMock, storageMock)
+	srv := newTestServer(mediaRepo, &mockDerivRepo{}, storageMock)
 
 	var received []byte
 	stream := &mockStream{
@@ -104,20 +107,30 @@ func TestDownloadStream_Handler_Success(t *testing.T) {
 		},
 	}
 
-	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: "m1", Variant: "original"}, stream)
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
 	require.NoError(t, err)
 	assert.Equal(t, data, received)
 }
 
+func TestDownloadStream_Handler_InvalidUUID(t *testing.T) {
+	srv := newTestServer(&mockMediaRepo{}, &mockDerivRepo{}, &mockStorage{})
+	stream := &mockStream{ctx: context.Background(), send: func(*v1.DownloadChunk) error { return nil }}
+
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: "not-a-uuid", Variant: "original"}, stream)
+	require.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
 func TestDownloadStream_Handler_ContextCanceled_BeforeStart(t *testing.T) {
-	repoMock := &mockRepo{media: &repo.Media{ID: "m1", Status: "stored", StorageKey: "key"}}
-	srv := newTestServer(repoMock, &mockStorage{})
+	id := uuid.New()
+	mediaRepo := &mockMediaRepo{media: &repo.Media{ID: id, Status: repo.MediaStatusStored, StorageKey: "key"}}
+	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	stream := &mockStream{ctx: ctx, send: func(*v1.DownloadChunk) error { return nil }}
-	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: "m1", Variant: "original"}, stream)
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
 
 	require.Error(t, err)
 	assert.Equal(t, codes.Canceled, status.Code(err))
@@ -125,11 +138,12 @@ func TestDownloadStream_Handler_ContextCanceled_BeforeStart(t *testing.T) {
 
 func TestDownloadStream_Handler_ContextCanceled_DuringSend(t *testing.T) {
 	data := []byte("some data")
-	repoMock := &mockRepo{
-		media: &repo.Media{ID: "m1", Status: "stored", StorageKey: "key"},
+	id := uuid.New()
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
-	srv := newTestServer(repoMock, storageMock)
+	srv := newTestServer(mediaRepo, &mockDerivRepo{}, storageMock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
@@ -145,27 +159,29 @@ func TestDownloadStream_Handler_ContextCanceled_DuringSend(t *testing.T) {
 		},
 	}
 
-	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: "m1", Variant: "original"}, stream)
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
 	require.Error(t, err)
 	assert.Equal(t, codes.Canceled, status.Code(err))
 }
 
 func TestDownloadStream_Handler_NotFound(t *testing.T) {
-	repoMock := &mockRepo{mediaErr: repo.ErrNotFound}
-	srv := newTestServer(repoMock, &mockStorage{})
+	id := uuid.New()
+	mediaRepo := &mockMediaRepo{mediaErr: repo.ErrNotFound}
+	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{ctx: context.Background(), send: func(*v1.DownloadChunk) error { return nil }}
 
-	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: "missing", Variant: "original"}, stream)
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
 }
 
-func TestDownloadStream_Handler_InvalidArgument(t *testing.T) {
-	repoMock := &mockRepo{media: &repo.Media{ID: "m1", Status: "stored", StorageKey: "key"}}
-	srv := newTestServer(repoMock, &mockStorage{})
+func TestDownloadStream_Handler_InvalidVariant(t *testing.T) {
+	id := uuid.New()
+	mediaRepo := &mockMediaRepo{media: &repo.Media{ID: id, Status: repo.MediaStatusStored, StorageKey: "key"}}
+	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{ctx: context.Background(), send: func(*v1.DownloadChunk) error { return nil }}
 
-	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: "m1", Variant: "unknown_variant"}, stream)
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "unknown_variant"}, stream)
 	require.Error(t, err)
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 }
