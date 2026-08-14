@@ -52,7 +52,7 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant
 	}
 
 	// 1. Проверяем метаданные медиа в БД (#10).
-	media, err := s.mediaRepo.GetMedia(ctx, mediaID)
+	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return fmt.Errorf("media %s: %w", mediaID, ErrNotFound)
