@@ -12,6 +12,12 @@ type PresignedURL struct {
 	ExpiresAt time.Time
 }
 
+// ObjectInfo — метаданные объекта из хранилища.
+type ObjectInfo struct {
+	Key          string
+	LastModified time.Time
+}
+
 // Interface — адаптер объектного хранилища.
 type Interface interface {
 	// PutObject загружает reader по ключу.
@@ -32,6 +38,11 @@ type Interface interface {
 
 	// DeletePrefix удаляет все объекты по префиксу. Пустой префикс отклоняется.
 	DeletePrefix(ctx context.Context, prefix string) error
+
+	// ListObjects возвращает список объектов по префиксу с ключом и временем модификации.
+	// prefix="" означает листинг от корня бакета; вызывающий обязан фильтровать
+	// чужие ключи (ownership guard).
+	ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error)
 
 	Close() error
 }

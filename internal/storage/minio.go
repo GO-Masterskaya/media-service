@@ -156,3 +156,18 @@ func (s *minioStorage) DeletePrefix(ctx context.Context, prefix string) error {
 }
 
 func (s *minioStorage) Close() error { return nil }
+
+func (s *minioStorage) ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	opts := minio.ListObjectsOptions{Prefix: prefix, Recursive: true}
+	var result []ObjectInfo
+	for obj := range s.client.ListObjects(ctx, s.bucket, opts) {
+		if obj.Err != nil {
+			return nil, fmt.Errorf("list objects: %w", obj.Err)
+		}
+		result = append(result, ObjectInfo{
+			Key:          obj.Key,
+			LastModified: obj.LastModified,
+		})
+	}
+	return result, nil
+}

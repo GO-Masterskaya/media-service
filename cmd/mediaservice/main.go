@@ -70,6 +70,16 @@ func main() {
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
+	reconcilerCfg := media.ReconcilerConfig{
+		Interval:    cfg.ReconcilerInterval,
+		GracePeriod: cfg.ReconcilerGracePeriod,
+		BatchSize:   cfg.ReconcilerBatchSize,
+	}
+	rec := media.NewReconciler(mediaRepo, sto, reconcilerCfg, slog.Default())
+
+	// В горутине:
+	go rec.Run(ctx)
+
 	// +++ ADDED: 4.7 gRPC server + registration
 	grpcServer := grpc.NewServer()
 	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
