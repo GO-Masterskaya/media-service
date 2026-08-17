@@ -6,7 +6,6 @@ package upload
 import (
 	"errors"
 	"io"
-	"syscall"
 )
 
 // Ошибки, возвращаемые LimitedWriter.
@@ -60,9 +59,4 @@ func (lw *LimitedWriter) Write(p []byte) (int, error) {
 // Written возвращает количество успешно записанных байт.
 func (lw *LimitedWriter) Written() int64 {
 	return lw.written
-}
-
-// isENOSPC проверяет, является ли ошибка ENOSPC (нет места на устройстве).
-func isENOSPC(err error) bool {
-	return errors.Is(err, syscall.ENOSPC)
 }

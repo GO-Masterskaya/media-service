@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -19,6 +18,9 @@ const (
 	filePrefix = "media-upload-"
 	// fileSuffix — расширение temp-файлов.
 	fileSuffix = ".tmp"
+
+	// defaultCleanupInterval — интервал periodic cleanup по умолчанию.
+	defaultCleanupInterval = 10 * time.Minute
 )
 
 // Config содержит параметры TempStore.
@@ -34,8 +36,12 @@ type Config struct {
 	// Если свободного места меньше — новые upload'ы отклоняются.
 	ReserveBytes int64
 
-	// StaleGrace — файлы старше этого считаются stale при startup cleanup.
+	// StaleGrace — файлы старше этого считаются stale при cleanup.
 	StaleGrace time.Duration
+
+	// CleanupInterval — интервал между periodic cleanup.
+	// По умолчанию 10 минут.
+	CleanupInterval time.Duration
 }
 
 // TempStore управляет жизненным циклом временных файлов при upload.
@@ -45,6 +51,7 @@ type Config struct {
 //   - Файлы создаются с правами 0600 (только владелец).
 //   - При создании проверяется свободное место на диске.
 //   - Startup cleanup удаляет stale файлы, не трогая активные.
+//   - Periodic cleanup повторяет проверку по интервалу.
 //   - Все операции потокобезопасны.
 type TempStore struct {
 	dir          string
@@ -57,9 +64,13 @@ type TempStore struct {
 
 	metrics *Metrics
 	logger  *slog.Logger
+
+	stopCleanup chan struct{} // сигнал остановки periodic cleanup
+	cleanupDone chan struct{} // горутина завершилась
 }
 
-// New создаёт TempStore, создаёт директорию (если нет) и запускает startup cleanup.
+// New создаёт TempStore, создаёт директорию (если нет), запускает startup cleanup
+// и запускает периодический cleanup в фоне.
 func New(cfg Config, metrics *Metrics, logger *slog.Logger) (*TempStore, error) {
 	if cfg.Dir == "" {
 		return nil, fmt.Errorf("upload: temp dir is required")
@@ -69,6 +80,9 @@ func New(cfg Config, metrics *Metrics, logger *slog.Logger) (*TempStore, error) 
 	}
 	if cfg.StaleGrace <= 0 {
 		cfg.StaleGrace = time.Hour
+	}
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = defaultCleanupInterval
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -87,6 +101,8 @@ func New(cfg Config, metrics *Metrics, logger *slog.Logger) (*TempStore, error) 
 		activeFiles:  make(map[string]int64),
 		metrics:      metrics,
 		logger:       logger,
+		stopCleanup:  make(chan struct{}),
+		cleanupDone:  make(chan struct{}),
 	}
 
 	// Startup cleanup.
@@ -99,7 +115,46 @@ func New(cfg Config, metrics *Metrics, logger *slog.Logger) (*TempStore, error) 
 			"removed_files", removed)
 	}
 
+	// Periodic cleanup.
+	go s.periodicCleanup(cfg.CleanupInterval)
+
 	return s, nil
+}
+
+// periodicCleanup запускает cleanupStale по тикеру до получения сигнала остановки.
+func (s *TempStore) periodicCleanup(interval time.Duration) {
+	defer close(s.cleanupDone)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			removed, err := s.cleanupStale()
+			if err != nil {
+				s.logger.Warn("periodic cleanup completed with errors",
+					"removed", removed, "error", err)
+			} else if removed > 0 {
+				s.logger.Info("periodic cleanup completed",
+					"removed_files", removed)
+			}
+		case <-s.stopCleanup:
+			return
+		}
+	}
+}
+
+// Stop останавливает periodic cleanup и ожидает завершения горутины.
+// Безопасно вызывать несколько раз.
+func (s *TempStore) Stop() {
+	select {
+	case <-s.stopCleanup:
+		// Уже остановлен.
+	default:
+		close(s.stopCleanup)
+	}
+	<-s.cleanupDone
 }
 
 // TempFile — временный файл с отслеживанием записи.
@@ -134,6 +189,11 @@ func (tf *TempFile) Written() int64 {
 // Рекомендуется использовать вместо прямого tf.Writer().Write().
 func (tf *TempFile) WriteChunk(p []byte) (int, error) {
 	n, err := tf.writer.Write(p)
+
+	// Обновляем gauge: байты уже на диске после Write.
+	if n > 0 && tf.store.metrics != nil {
+		tf.store.metrics.TempBytesActive.Add(float64(n))
+	}
 
 	if err != nil && tf.store.metrics != nil {
 		switch {
@@ -264,14 +324,4 @@ func (s *TempStore) ActiveFiles() int {
 // Dir возвращает директорию temp-файлов.
 func (s *TempStore) Dir() string {
 	return s.dir
-}
-
-// availableSpace возвращает доступное место на файловой системе, содержащей path.
-func availableSpace(path string) (int64, error) {
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, fmt.Errorf("statfs %q: %w", path, err)
-	}
-	// Bavail — блоки, доступные непривилегированным пользователям.
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
 }

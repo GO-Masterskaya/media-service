@@ -41,7 +41,8 @@ type Config struct {
 	// Upload temp storage
 	UploadTempDir      string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
 	UploadReserveBytes int64         `env:"UPLOAD_RESERVE_BYTES"  env-default:"104857600"` // 100MB
-	UploadStaleGrace   time.Duration `env:"UPLOAD_STALE_GRACE"    env-default:"1h"`
+	UploadStaleGrace      time.Duration `env:"UPLOAD_STALE_GRACE"       env-default:"1h"`
+	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
 
 	// Limits
 	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
@@ -104,6 +105,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "UploadTempDir:%q, ", c.UploadTempDir)
 	fmt.Fprintf(&b, "UploadReserveBytes:%d, ", c.UploadReserveBytes)
 	fmt.Fprintf(&b, "UploadStaleGrace:%s, ", c.UploadStaleGrace)
+	fmt.Fprintf(&b, "UploadCleanupInterval:%s, ", c.UploadCleanupInterval)
 	fmt.Fprintf(&b, "PostgresDSN:%q, ", maskDSN(c.PostgresDSN))
 	fmt.Fprintf(&b, "PostgresConnectTimeout:%s, ", c.PostgresConnectTimeout)
 	fmt.Fprintf(&b, "PostgresQueryTimeout:%s, ", c.PostgresQueryTimeout)

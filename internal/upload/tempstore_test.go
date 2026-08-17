@@ -1,3 +1,5 @@
+//go:build unix
+
 package upload
 
 import (
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,10 +27,11 @@ func newTestStore(t *testing.T, opts ...func(*Config)) *TempStore {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	cfg := Config{
-		Dir:          dir,
-		MaxFileSize:  1024 * 1024, // 1 MB
-		ReserveBytes: 0,           // без проверки места в тестах
-		StaleGrace:   time.Minute,
+		Dir:             dir,
+		MaxFileSize:     1024 * 1024, // 1 MB
+		ReserveBytes:    0,           // без проверки места в тестах
+		StaleGrace:      time.Minute,
+		CleanupInterval: time.Hour, // большой интервал чтобы тикер не срабатывал в обычных тестах
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -36,7 +40,19 @@ func newTestStore(t *testing.T, opts ...func(*Config)) *TempStore {
 	store, err := New(cfg, metrics, logger)
 	require.NoError(t, err)
 
+	t.Cleanup(func() {
+		store.Stop()
+	})
+
 	return store
+}
+
+// gaugeValue извлекает текущее значение Prometheus Gauge.
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m io_prometheus.Metric
+	require.NoError(t, g.Write(&m))
+	return m.GetGauge().GetValue()
 }
 
 func TestTempStore_CreateAndRemove(t *testing.T) {
@@ -193,13 +209,14 @@ func TestCleanupStale(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	store, err := New(Config{
-		Dir:          dir,
-		MaxFileSize:  1024,
-		ReserveBytes: 0,
-		StaleGrace:   time.Hour, // файлы старше 1 часа = stale
+		Dir:             dir,
+		MaxFileSize:     1024,
+		ReserveBytes:    0,
+		StaleGrace:      time.Hour, // файлы старше 1 часа = stale
+		CleanupInterval: time.Hour,
 	}, metrics, logger)
 	require.NoError(t, err)
-	_ = store
+	defer store.Stop()
 
 	// stale файл удалён.
 	_, err = os.Stat(stalePath)
@@ -237,7 +254,12 @@ func TestCleanupStale_SkipsActiveFiles(t *testing.T) {
 		activeFiles:  map[string]int64{activeName: 0},
 		metrics:      metrics,
 		logger:       logger,
+		stopCleanup:  make(chan struct{}),
+		cleanupDone:  make(chan struct{}),
 	}
+	// Запускаем горутину чтобы Stop() не зависал; interval большой — не тикнет.
+	go store.periodicCleanup(time.Hour)
+	defer store.Stop()
 
 	removed, err := store.cleanupStale()
 	require.NoError(t, err)
@@ -246,4 +268,78 @@ func TestCleanupStale_SkipsActiveFiles(t *testing.T) {
 	// Файл остался.
 	_, err = os.Stat(activePath)
 	assert.NoError(t, err, "active file should remain")
+}
+
+func TestTempStore_PeriodicCleanup(t *testing.T) {
+	dir := t.TempDir()
+
+	// Создаём stale файл.
+	staleName := filePrefix + "periodic-stale" + fileSuffix
+	stalePath := filepath.Join(dir, staleName)
+	require.NoError(t, os.WriteFile(stalePath, []byte("data"), 0600))
+	past := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stalePath, past, past))
+
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(reg)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Короткий интервал — тикер сработает быстро.
+	store, err := New(Config{
+		Dir:             dir,
+		MaxFileSize:     1024,
+		ReserveBytes:    0,
+		StaleGrace:      time.Hour,
+		CleanupInterval: 50 * time.Millisecond,
+	}, metrics, logger)
+	require.NoError(t, err)
+	defer store.Stop()
+
+	// Startup cleanup уже удалил stale файл, создаём новый для periodic.
+	staleName2 := filePrefix + "periodic-stale-2" + fileSuffix
+	stalePath2 := filepath.Join(dir, staleName2)
+	require.NoError(t, os.WriteFile(stalePath2, []byte("more data"), 0600))
+	require.NoError(t, os.Chtimes(stalePath2, past, past))
+
+	// Ждём тик periodic cleanup.
+	assert.Eventually(t, func() bool {
+		_, err := os.Stat(stalePath2)
+		return os.IsNotExist(err)
+	}, 2*time.Second, 25*time.Millisecond, "periodic cleanup should remove stale file")
+}
+
+func TestTempStore_StopIdempotent(t *testing.T) {
+	store := newTestStore(t)
+
+	// Двойной Stop не паникует и не блокирует.
+	store.Stop()
+	store.Stop()
+}
+
+func TestTempStore_TempBytesActive(t *testing.T) {
+	store := newTestStore(t)
+
+	ctx := context.Background()
+	tf, err := store.Create(ctx)
+	require.NoError(t, err)
+
+	// До записи — gauge = 0.
+	assert.Equal(t, float64(0), gaugeValue(t, store.metrics.TempBytesActive))
+
+	// Пишем через WriteChunk — gauge должен вырасти.
+	data := []byte("hello world!") // 12 байт
+	n, err := tf.WriteChunk(data)
+	require.NoError(t, err)
+	assert.Equal(t, len(data), n)
+	assert.Equal(t, float64(12), gaugeValue(t, store.metrics.TempBytesActive))
+
+	// Ещё запись.
+	data2 := []byte("more") // 4 байта
+	_, err = tf.WriteChunk(data2)
+	require.NoError(t, err)
+	assert.Equal(t, float64(16), gaugeValue(t, store.metrics.TempBytesActive))
+
+	// Remove — gauge обратно в 0.
+	tf.Remove()
+	assert.Equal(t, float64(0), gaugeValue(t, store.metrics.TempBytesActive))
 }

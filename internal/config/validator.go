@@ -55,6 +55,9 @@ func (c *Config) validate() error {
 	if c.UploadStaleGrace <= 0 {
 		return fmt.Errorf("UPLOAD_STALE_GRACE must be > 0, got %s", c.UploadStaleGrace)
 	}
+	if c.UploadCleanupInterval <= 0 {
+		return fmt.Errorf("UPLOAD_CLEANUP_INTERVAL must be > 0, got %s", c.UploadCleanupInterval)
+	}
 	if c.PostgresDSN == "" {
 		return fmt.Errorf("POSTGRES_DSN is required")
 	}
