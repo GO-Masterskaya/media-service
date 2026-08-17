@@ -64,13 +64,13 @@ func (h *ThumbnailHandler) downloadSource(ctx context.Context, key, targetPath s
 	if err != nil {
 		return fmt.Errorf("error get object: %w", err)
 	}
-	defer res.Close()
+	defer func() { _ = res.Close() }()
 
 	out, err := os.Create(targetPath)
 	if err != nil {
 		return fmt.Errorf("error create file: %w", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if _, err := io.Copy(out, res); err != nil {
 		return fmt.Errorf("error copy file: %w", err)
@@ -97,7 +97,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	if err != nil {
 		return nil, fmt.Errorf("error create dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	sourcePath := filepath.Join(tempDir, "source")
 	if err := h.downloadSource(ctx, media.SourceKey, sourcePath); err != nil {
@@ -114,13 +114,13 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		return nil, fmt.Errorf("error call ffmpeg: %w", err)
 	}
 	actualOutputPath := filepath.Join(os.TempDir(), filepath.Base(outputPath))
-	defer os.Remove(actualOutputPath)
+	defer func() { _ = os.Remove(actualOutputPath) }()
 
 	file, err := os.Open(actualOutputPath)
 	if err != nil {
 		return nil, fmt.Errorf("error open file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	info, err := file.Stat()
 	if err != nil {
