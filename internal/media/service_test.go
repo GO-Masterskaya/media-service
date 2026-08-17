@@ -23,10 +23,46 @@ import (
 type stubMediaRepo struct {
 	media *repo.Media
 	err   error
+
+	// --- delete/TTL (issues #13, #17) ---
+	markDeletingFound bool
+	markDeletingErr   error
+	hardDeleteErr     error
+
+	listDeletableByOwner func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error)
+	listExpiredIDs       func(ctx context.Context, limit int) ([]uuid.UUID, error)
 }
 
 func (s *stubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
+}
+
+func (s *stubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+	if s.markDeletingErr != nil {
+		return nil, false, s.markDeletingErr
+	}
+	if !s.markDeletingFound {
+		return nil, false, nil
+	}
+	return s.media, true, nil
+}
+
+func (s *stubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return s.hardDeleteErr
+}
+
+func (s *stubMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if s.listDeletableByOwner != nil {
+		return s.listDeletableByOwner(ctx, ownerID, limit)
+	}
+	return nil, nil
+}
+
+func (s *stubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if s.listExpiredIDs != nil {
+		return s.listExpiredIDs(ctx, limit)
+	}
+	return nil, nil
 }
 
 type stubDerivRepo struct {

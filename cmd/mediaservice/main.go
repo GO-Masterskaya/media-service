@@ -72,7 +72,12 @@ func main() {
 
 	// +++ ADDED: 4.7 gRPC server + registration
 	grpcServer := grpc.NewServer()
-	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
+	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck, cfg.DeleteBatchSize))
+
+	// +++ ADDED: TTL reaper (#17). Останавливается сам по ctx.Done() вместе
+	// с остальными компонентами при graceful shutdown.
+	reaper := media.NewReaper(mediaSvc, cfg.TTLReapInterval, cfg.TTLReapBatchSize, slog.Default())
+	go reaper.Run(ctx)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {

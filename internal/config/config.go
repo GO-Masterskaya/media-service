@@ -35,8 +35,12 @@ type Config struct {
 	ThumbSecond       int           `env:"THUMB_SECOND"          env-default:"1"`
 
 	// Storage / TTL
-	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
-	TTLReapInterval time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	PresignTTL       time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
+	TTLReapInterval  time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	TTLReapBatchSize int           `env:"TTL_REAP_BATCH_SIZE"   env-default:"100"`
+
+	// Delete
+	DeleteBatchSize int `env:"DELETE_BATCH_SIZE" env-default:"100"`
 
 	// Limits
 	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
@@ -100,6 +104,8 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "ThumbSecond:%d, ", c.ThumbSecond)
 	fmt.Fprintf(&b, "PresignTTL:%s, ", c.PresignTTL)
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
+	fmt.Fprintf(&b, "TTLReapBatchSize:%d, ", c.TTLReapBatchSize)
+	fmt.Fprintf(&b, "DeleteBatchSize:%d, ", c.DeleteBatchSize)
 	fmt.Fprintf(&b, "PostgresDSN:%q, ", maskDSN(c.PostgresDSN))
 	fmt.Fprintf(&b, "PostgresConnectTimeout:%s, ", c.PostgresConnectTimeout)
 	fmt.Fprintf(&b, "PostgresQueryTimeout:%s, ", c.PostgresQueryTimeout)
