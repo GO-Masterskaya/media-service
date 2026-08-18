@@ -271,7 +271,10 @@ func (r *Reconciler) reconcileOrphans(ctx context.Context) {
 		return
 	}
 	if len(batch) > 0 {
-		r.processOrphanBatch(ctx, batch)
+		if berr := r.processOrphanBatch(ctx, batch); berr != nil {
+			r.log.Error("orphan batch failed", slog.Any("error", berr))
+			r.failedCounter.WithLabelValues("storage").Inc()
+		}
 	}
 }
 

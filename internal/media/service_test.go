@@ -26,11 +26,6 @@ type svcStubMediaRepo struct {
 	err   error
 }
 
-type srvObjectInfo struct {
-	Key          string
-	LastModified time.Time
-}
-
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
 }
