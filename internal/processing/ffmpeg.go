@@ -72,7 +72,7 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 
 // Transcode создаёт рендицию через ffmpeg.
 // Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 10m.
-func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) error {
+func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (string, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTranscodeTimeout)
@@ -107,15 +107,16 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) err
 			safePath,
 		}
 	default:
-		return fmt.Errorf("unsupported kind for transcode: %s", kind)
+		return "", fmt.Errorf("unsupported kind for transcode: %s", kind)
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", err, stderr.String())
+		_ = os.Remove(safePath)
+		return "", fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", err, stderr.String())
 	}
 
-	return nil
+	return safePath, nil
 }

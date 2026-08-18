@@ -58,7 +58,7 @@ func TestTranscodeVideo(t *testing.T) {
 	defer func() { outputRoot = oldRoot }()
 
 	ctx := context.Background()
-	err := Transcode(ctx, "testdata/video.mp4", "output.mp4", KindVideo)
+	_, err := Transcode(ctx, "testdata/video.mp4", "output.mp4", KindVideo)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(filepath.Join(outputRoot, "output.mp4"))
@@ -86,6 +86,6 @@ func TestTranscodeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := Transcode(ctx, "testdata/video.mp4", "out.mp4", KindVideo)
+	_, err := Transcode(ctx, "testdata/video.mp4", "out.mp4", KindVideo)
 	require.Error(t, err)
 }
