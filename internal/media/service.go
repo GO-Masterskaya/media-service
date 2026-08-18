@@ -69,8 +69,8 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 	}
 
 	// IDOR fix: проверяем владельца до любой другой логики.
-	if media.OwnerID != callerID {
-		return nil, status.Error(codes.PermissionDenied, "access denied")
+	if callerID != uuid.Nil && media.OwnerID != callerID {
+    	return nil, ErrAccessDenied
 	}
 
 	var storageKey string

@@ -162,7 +162,7 @@ func TestGetDownloadURL_WrongOwner_PermissionDenied(t *testing.T) {
 	svc := NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
 
 	_, err := svc.GetDownloadURL(context.Background(), otherOwnerID(), mr.media.ID, storage.VariantOriginal)
-	requireGRPCCode(t, err, codes.PermissionDenied)
+	require.Error(t, err, ErrAccessDenied)
 }
 
 func TestGetDownloadURL_StorageError(t *testing.T) {

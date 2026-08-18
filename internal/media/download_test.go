@@ -17,7 +17,6 @@ import (
 	"mediaservice/internal/storage"
 )
 
-// newTestService скрывает сигнатуру конструктора из service.go.
 func newTestService(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *Service {
 	discardLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 	return NewService(mediaRepo, derivRepo, st, 15*time.Minute, discardLog)
@@ -59,7 +58,7 @@ func (m *mockStorage) DeleteObject(_ context.Context, _ string) error { return n
 func (m *mockStorage) DeletePrefix(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error                                   { return nil }
 
-func TestDownloadStream_Success_Original(t *testing.T) {
+func TestDownloadStream_Success_Original_Strict(t *testing.T) {
 	data := []byte("hello world from media service")
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	callerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -72,6 +71,27 @@ func TestDownloadStream_Success_Original(t *testing.T) {
 	var received []byte
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
 		DownloadStream(context.Background(), callerID, id, "original", func(chunk []byte) error {
+			received = append(received, chunk...)
+			return nil
+		})
+
+	require.NoError(t, err)
+	assert.Equal(t, data, received)
+}
+
+func TestDownloadStream_Success_Original_NonStrict(t *testing.T) {
+	data := []byte("non-strict download")
+	id := uuid.MustParse("11111112-1111-1111-1111-111111111112")
+	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
+
+	var received []byte
+	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
+		DownloadStream(context.Background(), uuid.Nil, id, "original", func(chunk []byte) error {
 			received = append(received, chunk...)
 			return nil
 		})
@@ -128,7 +148,7 @@ func TestDownloadStream_NotFound_BeforeSend(t *testing.T) {
 	assert.False(t, called, "sender must not be called for missing media")
 }
 
-func TestDownloadStream_AccessDenied(t *testing.T) {
+func TestDownloadStream_AccessDenied_Strict(t *testing.T) {
 	id := uuid.New()
 	callerID := uuid.New()
 	ownerID := uuid.New()
@@ -137,6 +157,21 @@ func TestDownloadStream_AccessDenied(t *testing.T) {
 		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 
+	err := newTestService(mediaRepo, &mockDerivRepo{}, &mockStorage{}).
+		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error { return nil })
+	require.ErrorIs(t, err, ErrAccessDenied)
+}
+
+func TestDownloadStream_AccessDenied_NonStrict_WithCallerID(t *testing.T) {
+	id := uuid.New()
+	callerID := uuid.New()
+	ownerID := uuid.New()
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+
+	// callerID != uuid.Nil, но != ownerID — проверка срабатывает даже в non-strict
 	err := newTestService(mediaRepo, &mockDerivRepo{}, &mockStorage{}).
 		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrAccessDenied)
