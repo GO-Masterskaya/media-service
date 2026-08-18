@@ -71,7 +71,7 @@ func TestDownloadStream_Success_Original(t *testing.T) {
 
 	var received []byte
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
-		DownloadStream(context.Background(), callerID, id, "original", true, func(chunk []byte) error {
+		DownloadStream(context.Background(), callerID, id, "original", func(chunk []byte) error {
 			received = append(received, chunk...)
 			return nil
 		})
@@ -95,7 +95,7 @@ func TestDownloadStream_Success_Derivative(t *testing.T) {
 
 	var received []byte
 	err := newTestService(mediaRepo, derivRepo, storageMock).
-		DownloadStream(context.Background(), callerID, id, "thumb", true, func(c []byte) error {
+		DownloadStream(context.Background(), callerID, id, "thumb", func(c []byte) error {
 			received = append(received, c...)
 			return nil
 		})
@@ -107,7 +107,7 @@ func TestDownloadStream_Success_Derivative(t *testing.T) {
 func TestDownloadStream_NilUUID(t *testing.T) {
 	callerID := uuid.New()
 	err := newTestService(&mockMediaRepo{}, &mockDerivRepo{}, &mockStorage{}).
-		DownloadStream(context.Background(), callerID, uuid.Nil, "original", true, func([]byte) error { return nil })
+		DownloadStream(context.Background(), callerID, uuid.Nil, "original", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
@@ -119,7 +119,7 @@ func TestDownloadStream_NotFound_BeforeSend(t *testing.T) {
 
 	called := false
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
-		DownloadStream(context.Background(), callerID, id, "original", true, func([]byte) error {
+		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error {
 			called = true
 			return nil
 		})
@@ -138,7 +138,7 @@ func TestDownloadStream_AccessDenied(t *testing.T) {
 	}
 
 	err := newTestService(mediaRepo, &mockDerivRepo{}, &mockStorage{}).
-		DownloadStream(context.Background(), callerID, id, "original", true, func([]byte) error { return nil })
+		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrAccessDenied)
 }
 
@@ -151,7 +151,7 @@ func TestDownloadStream_VariantNotFound(t *testing.T) {
 	derivRepo := &mockDerivRepo{derivErr: repo.ErrNotFound}
 
 	err := newTestService(mediaRepo, derivRepo, &mockStorage{}).
-		DownloadStream(context.Background(), callerID, id, "r_720", true, func([]byte) error { return nil })
+		DownloadStream(context.Background(), callerID, id, "r_720", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -168,7 +168,7 @@ func TestDownloadStream_ClientCancel_ClosesReader(t *testing.T) {
 
 	calls := 0
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
-		DownloadStream(ctx, callerID, id, "original", true, func([]byte) error {
+		DownloadStream(ctx, callerID, id, "original", func([]byte) error {
 			calls++
 			if calls == 2 {
 				cancel()
