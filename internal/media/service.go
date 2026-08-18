@@ -22,6 +22,7 @@ var (
 	ErrNotFound           = errors.New("media not found")
 	ErrInvalidArgument    = errors.New("invalid argument")
 	ErrFailedPrecondition = errors.New("media not ready")
+	ErrAccessDenied       = errors.New("access denied")
 )
 
 type Service struct {

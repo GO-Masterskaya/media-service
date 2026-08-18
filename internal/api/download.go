@@ -21,7 +21,7 @@ import (
 func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream mediav1.MediaService_DownloadStreamServer) error {
 	ctx := stream.Context()
 
-	id, err := uuid.Parse(req.MediaId)
+	mediaID, err := uuid.Parse(req.MediaId)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "invalid media_id")
 	}
@@ -31,12 +31,20 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 		return status.Error(codes.Canceled, "request canceled")
 	}
 
+	callerID, err := callerIDFromMetadata(ctx)
+	if err != nil {
+		if s.strictOwnerCheck {
+			return status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
+		}
+		return err
+	}
+
 	slog.Info("download started", slog.String("mediaID", req.MediaId), slog.String("variant", req.Variant))
 	// счетчик отображающий размер отправленных байт для логирования
 	var bytesSent int64
 	defer slog.Info("download finished", slog.String("mediaID", req.MediaId), slog.Int64("bytesSent", bytesSent))
 
-	err = s.svc.DownloadStream(ctx, id, req.Variant, func(chunk []byte) error {
+	err = s.svc.DownloadStream(ctx, callerID, mediaID, req.Variant, func(chunk []byte) error {
 		bytesSent += int64(len(chunk))
 		return stream.Send(&mediav1.DownloadChunk{Data: chunk})
 	})
@@ -61,6 +69,8 @@ func mapDownloadError(err error) error {
 	switch {
 	case errors.Is(err, media.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, media.ErrAccessDenied):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, media.ErrInvalidArgument):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, media.ErrFailedPrecondition):

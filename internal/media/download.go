@@ -10,13 +10,14 @@ import (
 	"io"
 
 	"mediaservice/internal/repo"
+	"mediaservice/internal/storage"
 
 	"github.com/google/uuid"
 )
 
 // DownloadStream отдаёт содержимое объекта чанками.
 // Все проверки (media, variant, доступность) выполняются ДО первого вызова sender.
-func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant string, sender ChunkSender) error {
+func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant string, sender ChunkSender) (err error) {
 	if mediaID == uuid.Nil {
 		return fmt.Errorf("media_id is required: %w", ErrInvalidArgument)
 	}
@@ -33,13 +34,18 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant
 		return fmt.Errorf("get media: %w", err)
 	}
 
-	// 2. Определяем storage key.
+	// 2. Проверяем владельца до открытия объекта.
+	if media.OwnerID != callerID {
+		return ErrAccessDenied
+	}
+
+	// 3. Определяем storage key.
 	key, err := s.resolveKey(ctx, media, variant)
 	if err != nil {
 		return err
 	}
 
-	// 3. Открываем объект в хранилище (#7).
+	// 4. Открываем объект в хранилище (#7).
 	rc, err := s.storage.GetObject(ctx, key)
 	if err != nil {
 		return fmt.Errorf("get object: %w", err)
@@ -50,14 +56,14 @@ func (s *Service) DownloadStream(ctx context.Context, mediaID uuid.UUID, variant
 		}
 	}()
 
-	// 4. Потоковая передача чанками. Файл не загружается целиком в RAM.
+	// 5. Потоковая передача чанками. Файл не загружается целиком в RAM.
 	return s.streamChunks(ctx, rc, sender)
 }
 
 // resolveKey определяет storage key в зависимости от варианта и проверяет статусы.
 func (s *Service) resolveKey(ctx context.Context, media *repo.Media, variant string) (string, error) {
 	switch variant {
-	case "original":
+	case string(storage.VariantOriginal):
 		if media.Status == repo.MediaStatusDeleting || media.Status == repo.MediaStatusFailed {
 			return "", fmt.Errorf("media status %q: %w", media.Status, ErrFailedPrecondition)
 		}
@@ -65,7 +71,10 @@ func (s *Service) resolveKey(ctx context.Context, media *repo.Media, variant str
 			return "", fmt.Errorf("storage key empty for original: %w", ErrNotFound)
 		}
 		return media.StorageKey, nil
-	case "thumbnail", "r_720", "preview":
+	case string(storage.VariantThumb), string(storage.VariantR360), string(storage.VariantR720), string(storage.VariantPreview):
+		if media.Status != repo.MediaStatusReady {
+			return "", fmt.Errorf("media status %q: %w", media.Status, ErrFailedPrecondition)
+		}
 		deriv, err := s.derivRepo.GetByMediaAndVariant(ctx, media.ID, variant)
 		if err != nil {
 			if errors.Is(err, repo.ErrNotFound) {

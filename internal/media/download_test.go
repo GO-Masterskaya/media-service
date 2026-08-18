@@ -18,7 +18,6 @@ import (
 )
 
 // newTestService скрывает сигнатуру конструктора из service.go.
-// Если в service.go другие аргументы — поправьте здесь.
 func newTestService(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *Service {
 	discardLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 	return NewService(mediaRepo, derivRepo, st, 15*time.Minute, discardLog)
@@ -63,14 +62,16 @@ func (m *mockStorage) Close() error                                   { return n
 func TestDownloadStream_Success_Original(t *testing.T) {
 	data := []byte("hello world from media service")
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	callerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
 	mediaRepo := &mockMediaRepo{
-		media: &repo.Media{ID: id, Status: repo.MediaStatusStored, StorageKey: "key"},
+		media: &repo.Media{ID: id, OwnerID: callerID, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
 
 	var received []byte
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
-		DownloadStream(context.Background(), id, "original", func(chunk []byte) error {
+		DownloadStream(context.Background(), callerID, id, "original", func(chunk []byte) error {
 			received = append(received, chunk...)
 			return nil
 		})
@@ -82,17 +83,19 @@ func TestDownloadStream_Success_Original(t *testing.T) {
 func TestDownloadStream_Success_Derivative(t *testing.T) {
 	data := []byte("thumbnail bytes")
 	id := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	callerID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
 	mediaRepo := &mockMediaRepo{
-		media: &repo.Media{ID: id, Status: repo.MediaStatusReady, StorageKey: "orig-key"},
+		media: &repo.Media{ID: id, OwnerID: callerID, Status: repo.MediaStatusReady, StorageKey: "orig-key"},
 	}
 	derivRepo := &mockDerivRepo{
-		deriv: &repo.Derivative{MediaID: id, Variant: "thumbnail", StorageKey: "thumb-key"},
+		deriv: &repo.Derivative{MediaID: id, Variant: "thumb", StorageKey: "thumb-key"},
 	}
 	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
 
 	var received []byte
 	err := newTestService(mediaRepo, derivRepo, storageMock).
-		DownloadStream(context.Background(), id, "thumbnail", func(c []byte) error {
+		DownloadStream(context.Background(), callerID, id, "thumb", func(c []byte) error {
 			received = append(received, c...)
 			return nil
 		})
@@ -102,19 +105,21 @@ func TestDownloadStream_Success_Derivative(t *testing.T) {
 }
 
 func TestDownloadStream_NilUUID(t *testing.T) {
+	callerID := uuid.New()
 	err := newTestService(&mockMediaRepo{}, &mockDerivRepo{}, &mockStorage{}).
-		DownloadStream(context.Background(), uuid.Nil, "original", func([]byte) error { return nil })
+		DownloadStream(context.Background(), callerID, uuid.Nil, "original", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
 func TestDownloadStream_NotFound_BeforeSend(t *testing.T) {
 	id := uuid.New()
+	callerID := uuid.New()
 	mediaRepo := &mockMediaRepo{mediaErr: repo.ErrNotFound}
 	storageMock := &mockStorage{}
 
 	called := false
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
-		DownloadStream(context.Background(), id, "original", func([]byte) error {
+		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error {
 			called = true
 			return nil
 		})
@@ -123,23 +128,39 @@ func TestDownloadStream_NotFound_BeforeSend(t *testing.T) {
 	assert.False(t, called, "sender must not be called for missing media")
 }
 
+func TestDownloadStream_AccessDenied(t *testing.T) {
+	id := uuid.New()
+	callerID := uuid.New()
+	ownerID := uuid.New()
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+
+	err := newTestService(mediaRepo, &mockDerivRepo{}, &mockStorage{}).
+		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error { return nil })
+	require.ErrorIs(t, err, ErrAccessDenied)
+}
+
 func TestDownloadStream_VariantNotFound(t *testing.T) {
 	id := uuid.New()
+	callerID := uuid.New()
 	mediaRepo := &mockMediaRepo{
-		media: &repo.Media{ID: id, Status: repo.MediaStatusReady, StorageKey: "key"},
+		media: &repo.Media{ID: id, OwnerID: callerID, Status: repo.MediaStatusReady, StorageKey: "key"},
 	}
 	derivRepo := &mockDerivRepo{derivErr: repo.ErrNotFound}
 
 	err := newTestService(mediaRepo, derivRepo, &mockStorage{}).
-		DownloadStream(context.Background(), id, "r_720", func([]byte) error { return nil })
+		DownloadStream(context.Background(), callerID, id, "r_720", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestDownloadStream_ClientCancel_ClosesReader(t *testing.T) {
 	sr := &slowReader{data: make([]byte, 1024*1024), delay: 5 * time.Millisecond}
 	id := uuid.New()
+	callerID := uuid.New()
 	mediaRepo := &mockMediaRepo{
-		media: &repo.Media{ID: id, Status: repo.MediaStatusStored, StorageKey: "key"},
+		media: &repo.Media{ID: id, OwnerID: callerID, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 	storageMock := &mockStorage{reader: sr}
 
@@ -147,7 +168,7 @@ func TestDownloadStream_ClientCancel_ClosesReader(t *testing.T) {
 
 	calls := 0
 	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
-		DownloadStream(ctx, id, "original", func([]byte) error {
+		DownloadStream(ctx, callerID, id, "original", func([]byte) error {
 			calls++
 			if calls == 2 {
 				cancel()
