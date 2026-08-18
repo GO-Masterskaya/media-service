@@ -39,8 +39,8 @@ type Config struct {
 	TTLReapInterval time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
 
 	// Upload temp storage
-	UploadTempDir      string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
-	UploadReserveBytes int64         `env:"UPLOAD_RESERVE_BYTES"  env-default:"104857600"` // 100MB
+	UploadTempDir         string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
+	UploadReserveBytes    int64         `env:"UPLOAD_RESERVE_BYTES"  env-default:"104857600"` // 100MB
 	UploadStaleGrace      time.Duration `env:"UPLOAD_STALE_GRACE"       env-default:"1h"`
 	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
 

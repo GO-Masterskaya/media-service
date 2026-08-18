@@ -10,6 +10,7 @@ import (
 
 	"mediaservice/internal/config"
 	"mediaservice/internal/repo"
+	"mediaservice/internal/upload"
 )
 
 func main() {
@@ -45,8 +46,19 @@ func main() {
 	}
 
 	// 5. Запуск компонентов
-	//
-	// Думаю пока можем реализовать запуск-остановку просто списком,  но в идеале хотелось бы в отдельный менеджер вынести.
+	uploadMetrics := upload.NewMetrics(nil)
+	uploadStore, err := upload.New(upload.Config{
+		Dir:             cfg.UploadTempDir,
+		MaxFileSize:     cfg.MaxUploadBytes,
+		ReserveBytes:    cfg.UploadReserveBytes,
+		StaleGrace:      cfg.UploadStaleGrace,
+		CleanupInterval: cfg.UploadCleanupInterval,
+	}, uploadMetrics, slog.Default())
+	if err != nil {
+		slog.Error("create upload temp store", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("all components started successfully")
 
 	// 6. Ждём сигнала завершения.
@@ -67,6 +79,13 @@ func main() {
 		// 8.2 Внутренние компоненты останавливаем параллельно:
 		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.
 		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			uploadStore.Stop()
+			slog.Info("upload temp store stopped")
+		}()
 
 		wg.Add(1)
 		go func() {
