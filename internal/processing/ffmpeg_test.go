@@ -16,7 +16,7 @@ func TestGenerateThumbnailVideo(t *testing.T) {
 	defer func() { outputRoot = oldRoot }()
 
 	ctx := context.Background()
-	err := GenerateThumbnail(ctx, "testdata/video.mp4", "thumb.jpg", KindVideo, 0)
+	_, err := GenerateThumbnail(ctx, "testdata/video.mp4", "thumb.jpg", KindVideo, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(filepath.Join(outputRoot, "thumb.jpg"))
@@ -30,7 +30,7 @@ func TestGenerateThumbnailAudio(t *testing.T) {
 	defer func() { outputRoot = oldRoot }()
 
 	ctx := context.Background()
-	err := GenerateThumbnail(ctx, "testdata/audio.mp3", "waveform.png", KindAudio, 0)
+	_, err := GenerateThumbnail(ctx, "testdata/audio.mp3", "waveform.png", KindAudio, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(filepath.Join(outputRoot, "waveform.png"))
@@ -44,7 +44,7 @@ func TestGenerateThumbnailImage(t *testing.T) {
 	defer func() { outputRoot = oldRoot }()
 
 	ctx := context.Background()
-	err := GenerateThumbnail(ctx, "testdata/image.png", "thumb.jpg", KindImage, 0)
+	_, err := GenerateThumbnail(ctx, "testdata/image.png", "thumb.jpg", KindImage, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(filepath.Join(outputRoot, "thumb.jpg"))
@@ -58,7 +58,7 @@ func TestTranscodeVideo(t *testing.T) {
 	defer func() { outputRoot = oldRoot }()
 
 	ctx := context.Background()
-	err := Transcode(ctx, "testdata/video.mp4", "output.mp4", KindVideo)
+	_, err := Transcode(ctx, "testdata/video.mp4", "output.mp4", KindVideo)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(filepath.Join(outputRoot, "output.mp4"))
@@ -74,7 +74,7 @@ func TestGenerateThumbnailCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := GenerateThumbnail(ctx, "testdata/video.mp4", "thumb.jpg", KindVideo, 0)
+	_, err := GenerateThumbnail(ctx, "testdata/video.mp4", "thumb.jpg", KindVideo, 0)
 	require.Error(t, err)
 }
 
@@ -86,6 +86,6 @@ func TestTranscodeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := Transcode(ctx, "testdata/video.mp4", "out.mp4", KindVideo)
+	_, err := Transcode(ctx, "testdata/video.mp4", "out.mp4", KindVideo)
 	require.Error(t, err)
 }
