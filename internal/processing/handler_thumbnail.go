@@ -88,50 +88,68 @@ func (h *ThumbnailHandler) resolveThumbFormat(kind Kind) (ext string, mime strin
 	}
 }
 
+func (h *ThumbnailHandler) logError(msg string, mediaID uuid.UUID, err error) {
+	if h.log != nil {
+		h.log.Error(msg, "media_id", mediaID, "error", err)
+	}
+}
+
 func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaRecord) (*DerivativeRecord, error) {
 	if media.ID == uuid.Nil || media.OwnerID == uuid.Nil {
-		return nil, errors.New("invalid media_id or owner_id")
+		err := errors.New("invalid media_id or owner_id")
+		h.logError("validation failed", media.ID, err)
+		return nil, err
 	}
 
 	tempDir, err := os.MkdirTemp("", "thumb_*")
 	if err != nil {
+		h.logError("failed to create temp dir", media.ID, err)
 		return nil, fmt.Errorf("error create dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	sourcePath := filepath.Join(tempDir, "source")
 	if err := h.downloadSource(ctx, media.SourceKey, sourcePath); err != nil {
+		h.logError("failed to download source file", media.ID, err)
 		return nil, fmt.Errorf("download source: %w", err)
 	}
-	ext, mime := h.resolveThumbFormat(media.Kind)
-	outputPath := filepath.Join(tempDir, "thumb."+ext)
 
-	sec := h.cfg.ThumbSecond
-	if sec <= 0 {
-		sec = 0
+	ext, mime := h.resolveThumbFormat(media.Kind)
+	outputPath := filepath.Join(tempDir, fmt.Sprintf("thumb_%s.%s", media.ID, ext))
+
+	sec := 0
+	if h.cfg != nil && h.cfg.ThumbSecond > 0 {
+		sec = h.cfg.ThumbSecond
 	}
-	if err := GenerateThumbnail(ctx, sourcePath, outputPath, media.Kind, sec); err != nil {
+
+	actualOutputPath, err := GenerateThumbnail(ctx, sourcePath, outputPath, media.Kind, sec)
+	if err != nil {
+		h.logError("failed to generate thumbnail via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error call ffmpeg: %w", err)
 	}
-	actualOutputPath := filepath.Join(os.TempDir(), filepath.Base(outputPath))
 	defer func() { _ = os.Remove(actualOutputPath) }()
 
 	file, err := os.Open(actualOutputPath)
 	if err != nil {
+		h.logError("failed to open generated thumbnail", media.ID, err)
 		return nil, fmt.Errorf("error open file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 
 	info, err := file.Stat()
 	if err != nil {
+		h.logError("failed to stat thumbnail file", media.ID, err)
 		return nil, fmt.Errorf("error get file info: %w", err)
 	}
+
 	key, err := storage.BuildKey(media.OwnerID, media.ID, storage.VariantThumb, mime, "")
 	if err != nil {
+		h.logError("failed to build storage key", media.ID, err)
 		return nil, fmt.Errorf("error build key: %w", err)
 	}
 
 	if err = h.storage.PutObject(ctx, key, file, info.Size(), mime); err != nil {
+		h.logError("failed to upload thumbnail to storage", media.ID, err)
 		return nil, fmt.Errorf("error download file in db: %w", err)
 	}
 
@@ -146,10 +164,13 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	if infoProbe, err := Probe(ctx, actualOutputPath); err == nil && infoProbe != nil {
 		metadata["width"] = infoProbe.Width
 		metadata["height"] = infoProbe.Height
+	} else if err != nil {
+		if h.log != nil {
+			h.log.Warn("failed to probe thumbnail metadata", "media_id", media.ID, "error", err)
+		}
 	}
 
 	record := &DerivativeRecord{
-		ID:         uuid.New(),
 		MediaID:    media.ID,
 		Variant:    storage.VariantThumb,
 		MIME:       mime,
@@ -160,6 +181,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 
 	res, err := h.repo.UpsertDerivative(ctx, record)
 	if err != nil {
+		h.logError("failed to save derivative in db", media.ID, err)
 		return nil, fmt.Errorf("save derivative in db: %w", err)
 	}
 
