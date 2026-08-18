@@ -44,7 +44,7 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 	var bytesSent int64
 	defer slog.Info("download finished", slog.String("mediaID", req.MediaId), slog.Int64("bytesSent", bytesSent))
 
-	err = s.svc.DownloadStream(ctx, callerID, mediaID, req.Variant, func(chunk []byte) error {
+	err = s.svc.DownloadStream(ctx, callerID, mediaID, req.Variant, s.strictOwnerCheck, func(chunk []byte) error {
 		bytesSent += int64(len(chunk))
 		return stream.Send(&mediav1.DownloadChunk{Data: chunk})
 	})

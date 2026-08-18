@@ -17,12 +17,12 @@ import (
 
 // DownloadStream отдаёт содержимое объекта чанками.
 // Все проверки (media, variant, доступность) выполняются ДО первого вызова sender.
-func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant string, sender ChunkSender) (err error) {
+func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant string, strictOwnerCheck bool, sender ChunkSender) (err error) {
 	if mediaID == uuid.Nil {
 		return fmt.Errorf("media_id is required: %w", ErrInvalidArgument)
 	}
 	if variant == "" {
-		variant = "original"
+		variant = string(storage.VariantOriginal)
 	}
 
 	// 1. Проверяем метаданные медиа в БД (#10).
@@ -34,9 +34,11 @@ func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaI
 		return fmt.Errorf("get media: %w", err)
 	}
 
-	// 2. Проверяем владельца до открытия объекта.
-	if media.OwnerID != callerID {
-		return ErrAccessDenied
+	// 2. Проверяем strictOwnerCheck и владельца до открытия объекта.
+	if strictOwnerCheck {
+		if media.OwnerID != callerID {
+			return ErrAccessDenied
+		}
 	}
 
 	// 3. Определяем storage key.
