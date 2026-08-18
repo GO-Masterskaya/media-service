@@ -43,7 +43,6 @@ func initReconcilerMetrics() {
 			Name: "reconciler_orphans_found_total",
 			Help: "Total orphan objects found",
 		})
-
 		prometheus.MustRegister(recScanned, recDeleted, recFailed, recOrphans)
 	})
 }
@@ -52,6 +51,7 @@ type ReconcilerConfig struct {
 	Interval    time.Duration
 	GracePeriod time.Duration
 	BatchSize   int
+	DryRun      bool
 }
 
 type Reconciler struct {
@@ -64,6 +64,10 @@ type Reconciler struct {
 	deletedCounter *prometheus.CounterVec
 	failedCounter  *prometheus.CounterVec
 	orphanCounter  prometheus.Counter
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 func NewReconciler(mediaRepo repo.MediaRepo, storage storage.Interface, cfg ReconcilerConfig, log *slog.Logger) *Reconciler {
@@ -81,6 +85,7 @@ func NewReconciler(mediaRepo repo.MediaRepo, storage storage.Interface, cfg Reco
 		deletedCounter: recDeleted,
 		failedCounter:  recFailed,
 		orphanCounter:  recOrphans,
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -88,21 +93,54 @@ func (r *Reconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.cfg.Interval)
 	defer ticker.Stop()
 
-	r.reconcile(ctx)
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.reconcile(ctx)
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			r.log.Info("reconciler stopped")
+			r.log.Info("reconciler stopped (context done)")
+			return
+		case <-r.stopCh:
+			r.log.Info("reconciler stopped (shutdown requested)")
 			return
 		case <-ticker.C:
-			r.reconcile(ctx)
+			r.wg.Add(1)
+			go func() {
+				defer r.wg.Done()
+				r.reconcile(ctx)
+			}()
 		}
 	}
 }
 
+// Shutdown останавливает тикер и дожидается завершения текущего tick.
+// Идемпотентна: повторный вызов не паникует.
+func (r *Reconciler) Shutdown(ctx context.Context) error {
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		r.log.Info("reconciler shutdown gracefully")
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("reconciler shutdown timeout: %w", ctx.Err())
+	}
+}
+
 func (r *Reconciler) reconcile(ctx context.Context) {
-	r.log.Info("reconciler tick started")
+	r.log.Info("reconciler tick started", slog.Bool("dry_run", r.cfg.DryRun))
 	r.reconcileDeleting(ctx)
 	r.reconcileOrphans(ctx)
 	r.log.Info("reconciler tick finished")
@@ -122,6 +160,19 @@ func (r *Reconciler) reconcileDeleting(ctx context.Context) {
 	r.scannedCounter.WithLabelValues("db").Add(float64(len(mediaList)))
 
 	for _, m := range mediaList {
+		select {
+		case <-ctx.Done():
+			r.log.Info("reconcile deleting interrupted by shutdown")
+			return
+		default:
+		}
+		if r.cfg.DryRun {
+			r.log.Info("dry-run: would delete media",
+				slog.String("media_id", m.ID.String()),
+				slog.String("prefix", path.Join(m.OwnerID.String(), m.ID.String())+"/"),
+			)
+			continue
+		}
 		if err := r.processDeletingMedia(ctx, m); err != nil {
 			r.log.Error("process deleting media failed",
 				slog.Any("error", err),
@@ -135,6 +186,11 @@ func (r *Reconciler) reconcileDeleting(ctx context.Context) {
 }
 
 func (r *Reconciler) processDeletingMedia(ctx context.Context, m *repo.Media) error {
+	// Guard: storage_key должен принадлежать owner/media.
+	expectedPrefix := path.Join(m.OwnerID.String(), m.ID.String()) + "/"
+	if !strings.HasPrefix(m.StorageKey, expectedPrefix) {
+		return fmt.Errorf("ownership guard: storage key %q does not match owner %s / media %s", m.StorageKey, m.OwnerID, m.ID)
+	}
 	if !r.isServiceKey(m.StorageKey) {
 		return fmt.Errorf("ownership guard: key %q outside service prefix", m.StorageKey)
 	}
@@ -166,42 +222,60 @@ type orphanCandidate struct {
 	lastModified time.Time
 }
 
+// reconcileOrphans удаляет объекты в MinIO, для которых нет записей в БД.
+//
+// ВАЖНО: этот метод полагается на контракт ingest (#7):
+//
+//	«строка в media создаётся ДО или ВМЕСТЕ с объектом в MinIO».
+//
+// Если ingest нарушает порядок (объект до строки), grace period (default 1h)
+// защищает только от race, но не от систематической потери данных.
+// При изменении ingest-логики — пересмотреть grace period или добавить
+// статус 'storing', который reconciler игнорирует.
 func (r *Reconciler) reconcileOrphans(ctx context.Context) {
-	objects, err := r.storage.ListObjects(ctx, "")
-	if err != nil {
-		r.log.Error("list objects failed", slog.Any("error", err))
-		r.failedCounter.WithLabelValues("storage").Inc()
-		return
-	}
-
 	var batch []orphanCandidate
-	flush := func() {
-		if len(batch) > 0 {
-			r.processOrphanBatch(ctx, batch)
-			batch = batch[:0]
-		}
-	}
 
-	for _, obj := range objects {
+	err := r.storage.ForEachObject(ctx, "", func(obj storage.ObjectInfo) error {
+		// Проверка отмены контекста между объектами.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if !r.isServiceKey(obj.Key) {
-			continue
+			return nil
 		}
 		mediaID, ok := r.extractMediaID(obj.Key)
 		if !ok {
-			continue
+			return nil
 		}
-		if time.Since(obj.LastModified) < r.cfg.GracePeriod {
-			continue
+		//grace от старта загрузки, не от LastModified
+		if time.Since(obj.UploadStartedAt) < r.cfg.GracePeriod {
+			return nil // защита in-flight
 		}
+
 		batch = append(batch, orphanCandidate{key: obj.Key, mediaID: mediaID, lastModified: obj.LastModified})
 		if len(batch) >= r.cfg.BatchSize {
-			flush()
+			if err := r.processOrphanBatch(ctx, batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
 		}
+		return nil
+	})
+
+	if err != nil {
+		r.log.Error("orphan scan failed", slog.Any("error", err))
+		r.failedCounter.WithLabelValues("storage").Inc()
+		return
 	}
-	flush()
+	if len(batch) > 0 {
+		r.processOrphanBatch(ctx, batch)
+	}
 }
 
-func (r *Reconciler) processOrphanBatch(ctx context.Context, batch []orphanCandidate) {
+func (r *Reconciler) processOrphanBatch(ctx context.Context, batch []orphanCandidate) error {
 	ids := make([]uuid.UUID, 0, len(batch))
 	for _, c := range batch {
 		ids = append(ids, c.mediaID)
@@ -211,15 +285,30 @@ func (r *Reconciler) processOrphanBatch(ctx context.Context, batch []orphanCandi
 	if err != nil {
 		r.log.Error("exists batch failed", slog.Any("error", err))
 		r.failedCounter.WithLabelValues("storage").Add(float64(len(batch)))
-		return
+		return err
 	}
 
 	for _, c := range batch {
+		select {
+		case <-ctx.Done():
+			r.log.Info("orphan batch interrupted by shutdown")
+			return nil
+		default:
+		}
 		if _, ok := exists[c.mediaID]; ok {
 			continue
 		}
 
 		r.orphanCounter.Inc()
+
+		if r.cfg.DryRun {
+			r.log.Info("dry-run: would delete orphan",
+				slog.String("key", c.key),
+				slog.Time("last_modified", c.lastModified),
+			)
+			continue
+		}
+
 		if err := r.storage.DeleteObject(ctx, c.key); err != nil {
 			r.log.Error("delete orphan failed", slog.Any("error", err), slog.String("key", c.key))
 			r.failedCounter.WithLabelValues("storage").Inc()
@@ -231,6 +320,8 @@ func (r *Reconciler) processOrphanBatch(ctx context.Context, batch []orphanCandi
 			slog.Time("last_modified", c.lastModified),
 		)
 	}
+
+	return nil
 }
 
 // ---------- guards ----------

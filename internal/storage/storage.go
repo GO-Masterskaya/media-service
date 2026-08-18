@@ -14,8 +14,9 @@ type PresignedURL struct {
 
 // ObjectInfo — метаданные объекта из хранилища.
 type ObjectInfo struct {
-	Key          string
-	LastModified time.Time
+	Key             string
+	LastModified    time.Time
+	UploadStartedAt time.Time // +++ ADDED: время начала загрузки из user-metadata
 }
 
 // Interface — адаптер объектного хранилища.
@@ -39,10 +40,10 @@ type Interface interface {
 	// DeletePrefix удаляет все объекты по префиксу. Пустой префикс отклоняется.
 	DeletePrefix(ctx context.Context, prefix string) error
 
-	// ListObjects возвращает список объектов по префиксу с ключом и временем модификации.
-	// prefix="" означает листинг от корня бакета; вызывающий обязан фильтровать
-	// чужие ключи (ownership guard).
-	ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error)
+	// ForEachObject обходит объекты по префиксу, вызывая fn для каждого.
+	// Потоковая обработка: не загружает весь бакет в память.
+	// Если fn возвращает ошибку — обход прерывается.
+	ForEachObject(ctx context.Context, prefix string, fn func(ObjectInfo) error) error
 
 	Close() error
 }

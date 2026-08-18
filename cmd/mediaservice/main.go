@@ -114,10 +114,18 @@ func main() {
 		defer close(shutdownDone)
 
 		// 8.1 Перестаём принимать новые соединения.
-		grpcServer.GracefulStop() // +++ ADDED
+		grpcServer.GracefulStop()
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
 		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rec.Shutdown(shutdownCtx); err != nil {
+				slog.Error("reconciler shutdown", "error", err)
+			}
+		}()
 
 		wg.Add(1)
 		go func() {

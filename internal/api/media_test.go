@@ -67,8 +67,8 @@ func (s *stubStorage) PresignGetObject(ctx context.Context, key string, ttl time
 }
 func (s *stubStorage) DeleteObject(ctx context.Context, key string) error    { return nil }
 func (s *stubStorage) DeletePrefix(ctx context.Context, prefix string) error { return nil }
-func (s *stubStorage) ListObjects(ctx context.Context, prefix string) ([]storage.ObjectInfo, error) {
-	return nil, nil
+func (s *stubStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
+	return nil
 }
 func (s *stubStorage) Close() error { return nil }
 

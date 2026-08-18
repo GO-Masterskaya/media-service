@@ -56,9 +56,12 @@ func NewMinIO(cfg MinIOConfig, log *slog.Logger) (Interface, error) {
 
 func (s *minioStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 	start := time.Now()
-	opts := minio.PutObjectOptions{ContentType: contentType}
-	// minio-go при size=-1 использует multipart upload с временным файлом на диске,
-	// а не буферизацию в RAM.
+	opts := minio.PutObjectOptions{
+		ContentType: contentType,
+		UserMetadata: map[string]string{
+			"upload-started-at": time.Now().UTC().Format(time.RFC3339),
+		},
+	}
 	_, err := s.client.PutObject(ctx, s.bucket, key, reader, size, opts)
 	if err != nil {
 		return fmt.Errorf("put object %q: %w", key, err)
@@ -157,17 +160,27 @@ func (s *minioStorage) DeletePrefix(ctx context.Context, prefix string) error {
 
 func (s *minioStorage) Close() error { return nil }
 
-func (s *minioStorage) ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+func (s *minioStorage) ForEachObject(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
 	opts := minio.ListObjectsOptions{Prefix: prefix, Recursive: true}
-	var result []ObjectInfo
 	for obj := range s.client.ListObjects(ctx, s.bucket, opts) {
 		if obj.Err != nil {
-			return nil, fmt.Errorf("list objects: %w", obj.Err)
+			return fmt.Errorf("list objects: %w", obj.Err)
 		}
-		result = append(result, ObjectInfo{
-			Key:          obj.Key,
-			LastModified: obj.LastModified,
-		})
+
+		uploadStarted := obj.LastModified
+		if v, ok := obj.UserMetadata["upload-started-at"]; ok {
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				uploadStarted = t
+			}
+		}
+
+		if err := fn(ObjectInfo{
+			Key:             obj.Key,
+			LastModified:    obj.LastModified,
+			UploadStartedAt: uploadStarted,
+		}); err != nil {
+			return err
+		}
 	}
-	return result, nil
+	return nil
 }

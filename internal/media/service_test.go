@@ -26,6 +26,11 @@ type svcStubMediaRepo struct {
 	err   error
 }
 
+type srvObjectInfo struct {
+	Key          string
+	LastModified time.Time
+}
+
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
 }
@@ -64,8 +69,8 @@ func (s *svcStubStorage) PresignGetObject(ctx context.Context, key string, ttl t
 }
 func (s *svcStubStorage) DeleteObject(ctx context.Context, key string) error    { return nil }
 func (s *svcStubStorage) DeletePrefix(ctx context.Context, prefix string) error { return nil }
-func (s *svcStubStorage) ListObjects(ctx context.Context, prefix string) ([]storage.ObjectInfo, error) {
-	return nil, nil
+func (s *svcStubStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
+	return nil
 }
 func (s *svcStubStorage) Close() error { return nil }
 

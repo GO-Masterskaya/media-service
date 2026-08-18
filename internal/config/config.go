@@ -65,9 +65,10 @@ type Config struct {
 	// Пока используется как feature-flag для deploy-модели за gateway.
 	StrictOwnerCheck bool `env:"STRICT_OWNER_CHECK" env-default:"false"`
 
-	ReconcilerInterval    time.Duration `env:"RECONCILER_INTERVAL"    env-default:"5m"`
-	ReconcilerGracePeriod time.Duration `env:"RECONCILER_GRACE_PERIOD" env-default:"5m"`
+	ReconcilerInterval    time.Duration `env:"RECONCILER_INTERVAL"     env-default:"5m"`
+	ReconcilerGracePeriod time.Duration `env:"RECONCILER_GRACE_PERIOD" env-default:"1h"` // 1h для orphan safety
 	ReconcilerBatchSize   int           `env:"RECONCILER_BATCH_SIZE"   env-default:"100"`
+	ReconcilerDryRun      bool          `env:"RECONCILER_DRY_RUN"      env-default:"false"`
 }
 
 // Load читает .env (если есть), накладывает переменные окружения на дефолтные значения и валидирует.
