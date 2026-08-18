@@ -94,6 +94,19 @@ func (h *ThumbnailHandler) logError(msg string, mediaID uuid.UUID, err error) {
 	}
 }
 
+/*
+ProcessThumbnail выполняет полный цикл генерации и сохранения превью (thumbnail) для медиафайла:
+ 1. Проверяет валидность ID медиа и владельца.
+ 2. Создает изолированную временную папку и скачивает исходник из хранилища.
+ 3. Определяет целевой формат и вырезает кадр через FFmpeg (с учетом таймкода из конфига).
+ 4. Формирует ключ и загружает готовое превью в S3-хранилище.
+ 5. Извлекает метаданные превью (ширину и высоту) с помощью Probe.
+ 6. Идемпотентно сохраняет запись о производном файле (DerivativeRecord) в БД.
+
+Функция гарантирует очистку временных файлов на диске (через defer)
+и транзакционный откат: если сохранение в БД завершится ошибкой,
+уже загруженный объект превью будет удален из S3.
+*/
 func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaRecord) (*DerivativeRecord, error) {
 	if media.ID == uuid.Nil || media.OwnerID == uuid.Nil {
 		err := errors.New("invalid media_id or owner_id")
