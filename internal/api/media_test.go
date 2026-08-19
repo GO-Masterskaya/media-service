@@ -162,7 +162,7 @@ func TestGetDownloadURL_InvalidVariant(t *testing.T) {
 
 func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false)
+	server := NewMediaServer(svc, true) // <-- strict=true
 
 	// Нет metadata вообще
 	_, err := server.GetDownloadURL(context.Background(), &mediav1.GetDownloadURLRequest{
