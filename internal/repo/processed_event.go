@@ -1,0 +1,192 @@
+package repo
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type EventStatus string
+
+const (
+	EventStatusProcessing EventStatus = "processing"
+	EventStatusDone       EventStatus = "done"
+	EventStatusDLQ        EventStatus = "dlq"
+)
+
+// ProcessedEvent - запись о владении и идемпотентности для одного event_id из Kafka:
+// какой consumer сейчас владеет им (или завершил его последним) и каков был
+// сохраненный результат, если он есть.
+type ProcessedEvent struct {
+	EventID        uuid.UUID
+	Fingerprint    string
+	Status         EventStatus
+	Result         []byte // сырой jsonb, nil пока status=processing
+	Owner          string
+	LeaseExpiresAt time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// ProcessedEventRepo защищает побочный эффект (side-effect) обработчика Kafka-событий с помощью
+// атомарного захвата (claim), чтобы конкурентные или передоставленные события
+// обрабатывались ровно один раз (или безопасно воспроизводились).
+type ProcessedEventRepo interface {
+
+	// Claim атомарно захватывает право владения eventID для обработки.
+	//
+	// claimed=true: вызывающий теперь владеет lease (это либо совершенно новое
+	// событие, либо просроченный lease, который он только что перехватил) и должен
+	// выполнить side-effect, а затем вызвать MarkDone/MarkDLQ *до* подтверждения
+	// (ack) смещения (offset) в Kafka.
+	//
+	// claimed=false, err=nil: событие уже достигло терминального состояния
+	// (done/dlq) с совпадающим fingerprint. event.Result содержит сохраненный
+	// результат; вызывающий не должен повторять side-effect и должен просто
+	// подтвердить (ack) offset.
+	//
+	// Ошибки:
+	//   - ErrFingerprintConflict: event_id уже встречался ранее с другим
+	//     fingerprint полезной нагрузки. Событие не должно выполняться.
+	//   - ErrClaimHeld: другой владелец в настоящее время удерживает активный
+	//     (неистекший) processing lease для этого event_id. Вызывающему следует
+	//     отступить и дать ему завершиться (или истечь по таймауту).
+	Claim(ctx context.Context, eventID uuid.UUID, fingerprint, owner string, lease time.Duration) (event *ProcessedEvent, claimed bool, err error)
+
+	// MarkDone завершает обработку claim со статусом done и надежно сохраняет результат.
+	// Должен быть зафиксирован до подтверждения (ack) offset в Kafka, чтобы сбой
+	// между этими действиями просто привел к повторной доставке, которую Claim()
+	// разрешит через сохраненный результат, вместо повторного выполнения side-effect.
+	//
+	// Возвращает ErrClaimLost, если владелец больше не удерживает claim
+	// (его lease истек и был перехвачен до завершения).
+	MarkDone(ctx context.Context, eventID uuid.UUID, owner string, result []byte) error
+
+	// MarkDLQ завершает обработку claim со статусом отправки в топик DLQ,
+	// сохраняя причину в качестве результата. Гарантии владения и порядка
+	// те же, что и у MarkDone.
+	MarkDLQ(ctx context.Context, eventID uuid.UUID, owner, reason string) error
+}
+
+type PgProcessedEventRepo struct {
+	pool *pgxpool.Pool
+}
+
+func NewPgProcessedEventRepo(pool *pgxpool.Pool) *PgProcessedEventRepo {
+	return &PgProcessedEventRepo{pool: pool}
+}
+
+func (r *PgProcessedEventRepo) Claim(ctx context.Context, eventID uuid.UUID, fingerprint, owner string, lease time.Duration) (*ProcessedEvent, bool, error) {
+	if lease <= 0 {
+		return nil, false, fmt.Errorf("repo: lease must be positive")
+	}
+
+	// Единый атомарный upsert: захватывает блокировку строки при конфликте и
+	// перехватывает claim только если существующий lease находится в статусе
+	// processing И истек. Если условие WHERE исключает обновление (активный claim
+	// или уже done/dlq), здесь не возвращается ни одной строки, и мы классифицируем
+	// существующую строку ниже — это позволяет избежать гонки read-then-write
+	// между конкурентными consumer'ами.
+	const upsert = `
+		INSERT INTO processed_events (event_id, fingerprint, status, owner, lease_expires_at, created_at, updated_at)
+		VALUES ($1, $2, 'processing', $3, now() + ($4 * interval '1 second'), now(), now())
+		ON CONFLICT (event_id) DO UPDATE
+		SET owner = EXCLUDED.owner,
+		    lease_expires_at = EXCLUDED.lease_expires_at,
+		    updated_at = now()
+		WHERE processed_events.status = 'processing'
+		  AND processed_events.lease_expires_at < now()
+		RETURNING event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at`
+
+	row := r.pool.QueryRow(ctx, upsert, eventID, fingerprint, owner, lease.Seconds())
+	event, err := scanProcessedEvent(row)
+	if err == nil {
+		return event, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, fmt.Errorf("repo: claim processed event: %w", err)
+	}
+
+	existing, getErr := r.getByID(ctx, eventID)
+	if getErr != nil {
+		return nil, false, fmt.Errorf("repo: claim processed event: inspect existing: %w", getErr)
+	}
+
+	if existing.Fingerprint != fingerprint {
+		return nil, false, ErrFingerprintConflict
+	}
+
+	switch existing.Status {
+	case EventStatusDone, EventStatusDLQ:
+		return existing, false, nil
+	default:
+		return nil, false, ErrClaimHeld
+	}
+}
+
+func (r *PgProcessedEventRepo) MarkDone(ctx context.Context, eventID uuid.UUID, owner string, result []byte) error {
+	return r.finalize(ctx, eventID, owner, EventStatusDone, result)
+}
+
+func (r *PgProcessedEventRepo) MarkDLQ(ctx context.Context, eventID uuid.UUID, owner, reason string) error {
+	result, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		return fmt.Errorf("repo: marshal dlq reason: %w", err)
+	}
+	return r.finalize(ctx, eventID, owner, EventStatusDLQ, result)
+}
+
+func (r *PgProcessedEventRepo) finalize(ctx context.Context, eventID uuid.UUID, owner string, status EventStatus, result []byte) error {
+	const q = `
+		UPDATE processed_events
+		SET status = $4::event_status, result = $3, updated_at = now()
+		WHERE event_id = $1 AND owner = $2 AND status = 'processing'`
+
+	tag, err := r.pool.Exec(ctx, q, eventID, owner, result, string(status))
+	if err != nil {
+		return fmt.Errorf("repo: finalize processed event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrClaimLost
+	}
+	return nil
+}
+
+func (r *PgProcessedEventRepo) getByID(ctx context.Context, eventID uuid.UUID) (*ProcessedEvent, error) {
+	const q = `
+		SELECT event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at
+		FROM processed_events
+		WHERE event_id = $1`
+
+	ev, err := scanProcessedEvent(r.pool.QueryRow(ctx, q, eventID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("repo: get processed event: %w", err)
+	}
+	return ev, nil
+}
+
+func scanProcessedEvent(row pgx.Row) (*ProcessedEvent, error) {
+	var event ProcessedEvent
+	if err := row.Scan(
+		&event.EventID,
+		&event.Fingerprint,
+		&event.Status,
+		&event.Result,
+		&event.Owner,
+		&event.LeaseExpiresAt,
+		&event.CreatedAt,
+		&event.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}

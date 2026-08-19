@@ -1,0 +1,201 @@
+package repo
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
+)
+
+type ProcessedEventSuite struct {
+	suite.Suite
+	ctx       context.Context
+	container testcontainers.Container
+	pool      *pgxpool.Pool
+	repo      ProcessedEventRepo
+}
+
+func TestProcessedEventIntegration(t *testing.T) {
+	suite.Run(t, new(ProcessedEventSuite))
+}
+
+func (s *ProcessedEventSuite) SetupSuite() {
+	s.ctx = context.Background()
+
+	req := testcontainers.ContainerRequest{
+		Image:        "postgres:16-alpine",
+		ExposedPorts: []string{"5432/tcp"},
+		Env: map[string]string{
+			"POSTGRES_USER":     "media",
+			"POSTGRES_PASSWORD": "media",
+			"POSTGRES_DB":       "media",
+		},
+		WaitingFor: wait.ForLog("database system is ready to accept connections").
+			WithOccurrence(2).WithStartupTimeout(60 * time.Second),
+	}
+
+	var err error
+	s.container, err = testcontainers.GenericContainer(s.ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	require.NoError(s.T(), err)
+
+	host, err := s.container.Host(s.ctx)
+	require.NoError(s.T(), err)
+	port, err := s.container.MappedPort(s.ctx, "5432")
+	require.NoError(s.T(), err)
+
+	dsn := fmt.Sprintf("postgres://media:media@%s:%s/media?sslmode=disable", host, port.Port())
+
+	require.NoError(s.T(), RunMigrations(dsn))
+
+	s.pool, err = pgxpool.New(s.ctx, dsn)
+	require.NoError(s.T(), err)
+
+	s.repo = NewPgProcessedEventRepo(s.pool)
+}
+
+func (s *ProcessedEventSuite) TearDownSuite() {
+	if s.pool != nil {
+		s.pool.Close()
+	}
+	if s.container != nil {
+		require.NoError(s.T(), s.container.Terminate(s.ctx))
+	}
+}
+
+func (s *ProcessedEventSuite) SetupTest() {
+	_, err := s.pool.Exec(s.ctx, `TRUNCATE processed_events`)
+	require.NoError(s.T(), err)
+}
+
+// TestFreshClaim — новый event_id: claim успешен, статус processing.
+func (s *ProcessedEventSuite) TestFreshClaim() {
+	t := s.T()
+	eventID := uuid.New()
+
+	ev, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.Equal(t, EventStatusProcessing, ev.Status)
+	require.Equal(t, "worker-a", ev.Owner)
+}
+
+// TestConcurrentClaim — второй consumer того же event_id с живым lease не
+// выполняет side effect параллельно.
+func (s *ProcessedEventSuite) TestConcurrentClaim() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	_, claimed, err = s.repo.Claim(s.ctx, eventID, "fp-1", "worker-b", time.Minute)
+	require.ErrorIs(t, err, ErrClaimHeld)
+	require.False(t, claimed)
+}
+
+// TestReplayAfterDone — повтор done event возвращает сохранённый result и
+// не запускает side effect повторно.
+func (s *ProcessedEventSuite) TestReplayAfterDone() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	require.NoError(t, s.repo.MarkDone(s.ctx, eventID, "worker-a", []byte(`{"media_id":"abc"}`)))
+
+	ev, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-b", time.Minute)
+	require.NoError(t, err)
+	require.False(t, claimed)
+	require.Equal(t, EventStatusDone, ev.Status)
+	require.JSONEq(t, `{"media_id":"abc"}`, string(ev.Result))
+}
+
+// TestFingerprintConflict — тот же event_id, другой payload fingerprint —
+// конфликт, событие не исполняется.
+func (s *ProcessedEventSuite) TestFingerprintConflict() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, s.repo.MarkDone(s.ctx, eventID, "worker-a", []byte(`{}`)))
+
+	_, claimed, err = s.repo.Claim(s.ctx, eventID, "fp-DIFFERENT", "worker-b", time.Minute)
+	require.ErrorIs(t, err, ErrFingerprintConflict)
+	require.False(t, claimed)
+}
+
+// TestStaleClaimReclaimed — просроченный processing claim можно забрать;
+// живой — нельзя (перепроверяем оба конца).
+func (s *ProcessedEventSuite) TestStaleClaimReclaimed() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", 50*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	// Живой lease — вторая попытка отбивается.
+	_, claimed, err = s.repo.Claim(s.ctx, eventID, "fp-1", "worker-b", time.Minute)
+	require.ErrorIs(t, err, ErrClaimHeld)
+	require.False(t, claimed)
+
+	time.Sleep(100 * time.Millisecond)
+
+	ev, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-b", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.Equal(t, "worker-b", ev.Owner)
+}
+
+// TestMarkDoneClaimLost — если lease был перехвачен, финализация от старого
+// владельца не проходит молча.
+func (s *ProcessedEventSuite) TestMarkDoneClaimLost() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", 50*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, claimed, err = s.repo.Claim(s.ctx, eventID, "fp-1", "worker-b", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	err = s.repo.MarkDone(s.ctx, eventID, "worker-a", []byte(`{}`))
+	require.ErrorIs(t, err, ErrClaimLost)
+}
+
+// TestMarkDLQ — DLQ-финализация сохраняет причину и тоже видна при реплее.
+func (s *ProcessedEventSuite) TestMarkDLQ() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	require.NoError(t, s.repo.MarkDLQ(s.ctx, eventID, "worker-a", "invalid schema"))
+
+	ev, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-b", time.Minute)
+	require.NoError(t, err)
+	require.False(t, claimed)
+	require.Equal(t, EventStatusDLQ, ev.Status)
+	require.JSONEq(t, `{"reason":"invalid schema"}`, string(ev.Result))
+}
