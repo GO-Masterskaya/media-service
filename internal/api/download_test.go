@@ -46,6 +46,18 @@ func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, er
 	return m.media, m.mediaErr
 }
 
+func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, nil
+}
+
+func (s *mockMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
+	return nil, nil
+}
+
+func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
+
 type mockDerivRepo struct {
 	deriv    *repo.Derivative
 	derivErr error
@@ -76,19 +88,22 @@ func (m *mockStorage) PresignGetObject(_ context.Context, _ string, _ time.Durat
 func (m *mockStorage) DeleteObject(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) DeletePrefix(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error                                   { return nil }
+func (s *mockStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
+	return nil
+}
 
 type mockStream struct {
 	ctx  context.Context
 	send func(*v1.DownloadChunk) error
 }
 
-func (m *mockStream) Context() context.Context                  { return m.ctx }
-func (m *mockStream) Send(c *v1.DownloadChunk) error            { return m.send(c) }
-func (m *mockStream) SendMsg(_ any) error                       { return nil }
-func (m *mockStream) RecvMsg(_ any) error                       { return nil }
-func (m *mockStream) SetHeader(_ metadata.MD) error             { return nil }
-func (m *mockStream) SendHeader(_ metadata.MD) error            { return nil }
-func (m *mockStream) SetTrailer(_ metadata.MD)                  {}
+func (m *mockStream) Context() context.Context       { return m.ctx }
+func (m *mockStream) Send(c *v1.DownloadChunk) error { return m.send(c) }
+func (m *mockStream) SendMsg(_ any) error            { return nil }
+func (m *mockStream) RecvMsg(_ any) error            { return nil }
+func (m *mockStream) SetHeader(_ metadata.MD) error  { return nil }
+func (m *mockStream) SendHeader(_ metadata.MD) error { return nil }
+func (m *mockStream) SetTrailer(_ metadata.MD)       {}
 
 func TestMapDownloadError(t *testing.T) {
 	tests := []struct {
@@ -222,7 +237,7 @@ func TestDownloadStream_Handler_NotFound(t *testing.T) {
 	mediaRepo := &mockMediaRepo{mediaErr: repo.ErrNotFound}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), ownerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -239,7 +254,7 @@ func TestDownloadStream_Handler_Unauthenticated_StrictMissingMetadata(t *testing
 	}
 	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, true)
 	stream := &mockStream{
-		ctx: context.Background(),
+		ctx:  context.Background(),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -258,7 +273,7 @@ func TestDownloadStream_Handler_PermissionDenied_Strict(t *testing.T) {
 	}
 	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, true)
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), callerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), callerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -277,7 +292,7 @@ func TestDownloadStream_Handler_PermissionDenied_NonStrict_WrongOwner(t *testing
 	}
 	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, false)
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), callerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), callerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -294,7 +309,7 @@ func TestDownloadStream_Handler_InvalidVariant(t *testing.T) {
 	}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), ownerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 

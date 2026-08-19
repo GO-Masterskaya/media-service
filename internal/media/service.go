@@ -83,7 +83,7 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 		}
 		storageKey = media.StorageKey
 
-	case storage.VariantThumb, storage.VariantR720, storage.VariantR360, storage.VariantPreview:
+	case storage.VariantThumb, storage.VariantR720:
 		if media.Status != repo.MediaStatusReady {
 			return nil, status.Errorf(codes.FailedPrecondition, "media not ready, status: %s", media.Status)
 		}

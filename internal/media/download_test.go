@@ -31,6 +31,18 @@ func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, er
 	return m.media, m.mediaErr
 }
 
+func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, nil
+}
+
+func (s *mockMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
+	return nil, nil
+}
+
+func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
+
 type mockDerivRepo struct {
 	deriv    *repo.Derivative
 	derivErr error
@@ -61,6 +73,9 @@ func (m *mockStorage) PresignGetObject(_ context.Context, _ string, _ time.Durat
 func (m *mockStorage) DeleteObject(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) DeletePrefix(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error                                   { return nil }
+func (s *mockStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
+	return nil
+}
 
 func TestDownloadStream_Success_Original_Strict(t *testing.T) {
 	data := []byte("hello world from media service")
