@@ -78,13 +78,13 @@ type mockStream struct {
 	send func(*v1.DownloadChunk) error
 }
 
-func (m *mockStream) Context() context.Context                  { return m.ctx }
-func (m *mockStream) Send(c *v1.DownloadChunk) error            { return m.send(c) }
-func (m *mockStream) SendMsg(_ any) error                       { return nil }
-func (m *mockStream) RecvMsg(_ any) error                       { return nil }
-func (m *mockStream) SetHeader(_ metadata.MD) error             { return nil }
-func (m *mockStream) SendHeader(_ metadata.MD) error            { return nil }
-func (m *mockStream) SetTrailer(_ metadata.MD)                  {}
+func (m *mockStream) Context() context.Context       { return m.ctx }
+func (m *mockStream) Send(c *v1.DownloadChunk) error { return m.send(c) }
+func (m *mockStream) SendMsg(_ any) error            { return nil }
+func (m *mockStream) RecvMsg(_ any) error            { return nil }
+func (m *mockStream) SetHeader(_ metadata.MD) error  { return nil }
+func (m *mockStream) SendHeader(_ metadata.MD) error { return nil }
+func (m *mockStream) SetTrailer(_ metadata.MD)       {}
 
 func TestMapDownloadError(t *testing.T) {
 	tests := []struct {
@@ -193,7 +193,7 @@ func TestDownloadStream_Handler_NotFound(t *testing.T) {
 	mediaRepo := &mockMediaRepo{mediaErr: repo.ErrNotFound}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), ownerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -212,7 +212,7 @@ func TestDownloadStream_Handler_PermissionDenied(t *testing.T) {
 	}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), callerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), callerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -229,7 +229,7 @@ func TestDownloadStream_Handler_InvalidVariant(t *testing.T) {
 	}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		ctx:  incomingCtxWithOwnerID(context.Background(), ownerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 

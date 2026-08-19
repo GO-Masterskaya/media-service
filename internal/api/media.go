@@ -42,7 +42,7 @@ func callerIDFromMetadata(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, nil
 	}
 	vals := md.Get("x-owner-id")
-	if len(vals) == 0 {	
+	if len(vals) == 0 {
 		return uuid.Nil, nil
 	}
 	id, err := uuid.Parse(vals[0])
@@ -74,12 +74,9 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		return nil, status.Errorf(codes.InvalidArgument, "invalid variant: %s", req.Variant)
 	}
 
-	callerID, err := callerIDFromMetadata(ctx)
+	callerID, err := s.resolveCaller(ctx)
 	if err != nil {
-		return nil, err // только InvalidArgument
-	}
-	if callerID == uuid.Nil && s.strictOwnerCheck {
-		return nil, status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
+		return nil, err
 	}
 
 	url, err := s.svc.GetDownloadURL(ctx, callerID, mediaID, variant)
@@ -94,4 +91,16 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		Url:       url.URL,
 		ExpiresAt: timestamppb.New(url.ExpiresAt),
 	}, nil
+}
+
+// resolveCaller — единая точка решения strict/non-strict.
+func (s *MediaServer) resolveCaller(ctx context.Context) (uuid.UUID, error) {
+	callerID, err := callerIDFromMetadata(ctx)
+	if err != nil {
+		return uuid.Nil, err // только InvalidArgument
+	}
+	if callerID == uuid.Nil && s.strictOwnerCheck {
+		return uuid.Nil, status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
+	}
+	return callerID, nil
 }

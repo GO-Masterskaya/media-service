@@ -31,12 +31,10 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 		return status.Error(codes.Canceled, "request canceled")
 	}
 
-	callerID, err := callerIDFromMetadata(ctx)
+	// Проверяем strictOwnerCheck на strict/non-strict
+	callerID, err := s.resolveCaller(ctx)
 	if err != nil {
-		return err // только InvalidArgument
-	}
-	if callerID == uuid.Nil && s.strictOwnerCheck {
-		return status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
+		return err
 	}
 
 	slog.Info("download started", slog.String("mediaID", req.MediaId), slog.String("variant", req.Variant))

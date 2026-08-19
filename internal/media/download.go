@@ -36,7 +36,7 @@ func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaI
 
 	// 2. Проверяем владельца до открытия объекта.
 	if callerID != uuid.Nil && media.OwnerID != callerID {
-    	return ErrAccessDenied
+		return ErrAccessDenied
 	}
 
 	// 3. Определяем storage key.
