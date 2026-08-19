@@ -40,6 +40,10 @@ func (m *mockDerivRepo) GetByMediaAndVariant(_ context.Context, _ uuid.UUID, _ s
 	return m.deriv, m.derivErr
 }
 
+func (m *mockDerivRepo) Insert(_ context.Context, _ *repo.Derivative) error {
+	return nil
+}
+
 type mockStorage struct {
 	reader io.ReadCloser
 	err    error
@@ -171,7 +175,6 @@ func TestDownloadStream_AccessDenied_NonStrict_WithCallerID(t *testing.T) {
 		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 
-	// callerID != uuid.Nil, но != ownerID — проверка срабатывает даже в non-strict
 	err := newTestService(mediaRepo, &mockDerivRepo{}, &mockStorage{}).
 		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrAccessDenied)
