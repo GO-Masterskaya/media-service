@@ -74,6 +74,7 @@ func main() {
 		Interval:    cfg.ReconcilerInterval,
 		GracePeriod: cfg.ReconcilerGracePeriod,
 		BatchSize:   cfg.ReconcilerBatchSize,
+		DryRun:      cfg.ReconcilerDryRun,
 	}
 	rec := media.NewReconciler(mediaRepo, sto, reconcilerCfg, slog.Default())
 

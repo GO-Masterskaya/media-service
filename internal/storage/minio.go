@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -161,16 +162,24 @@ func (s *minioStorage) DeletePrefix(ctx context.Context, prefix string) error {
 func (s *minioStorage) Close() error { return nil }
 
 func (s *minioStorage) ForEachObject(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
-	opts := minio.ListObjectsOptions{Prefix: prefix, Recursive: true}
+	opts := minio.ListObjectsOptions{
+		Prefix:       prefix,
+		Recursive:    true,
+		WithMetadata: true, // +++ FIX: без этого UserMetadata пустой
+	}
 	for obj := range s.client.ListObjects(ctx, s.bucket, opts) {
 		if obj.Err != nil {
 			return fmt.Errorf("list objects: %w", obj.Err)
 		}
 
 		uploadStarted := obj.LastModified
-		if v, ok := obj.UserMetadata["upload-started-at"]; ok {
-			if t, err := time.Parse(time.RFC3339, v); err == nil {
-				uploadStarted = t
+		for k, v := range obj.UserMetadata {
+			// MinIO возвращает meta-заголовки с префиксом X-Amz-Meta- или lower-case
+			if strings.EqualFold(k, "X-Amz-Meta-Upload-Started-At") || strings.EqualFold(k, "upload-started-at") {
+				if t, err := time.Parse(time.RFC3339, v); err == nil {
+					uploadStarted = t
+				}
+				break
 			}
 		}
 
