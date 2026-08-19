@@ -48,6 +48,14 @@ func (s *svcStubDerivRepo) GetByMediaAndVariant(ctx context.Context, mediaID uui
 	return s.deriv, s.err
 }
 
+func (s *svcStubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
+	return &d, s.err
+}
+
+func (s *svcStubStorage) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
+	return &d, s.err
+}
+
 type svcStubStorage struct {
 	url *storage.PresignedURL
 	err error

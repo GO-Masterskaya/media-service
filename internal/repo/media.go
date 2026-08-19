@@ -26,6 +26,7 @@ type Media struct {
 	OwnerID    uuid.UUID
 	Status     MediaStatus
 	StorageKey string
+	Error      string
 }
 
 type MediaRepo interface {
@@ -44,11 +45,11 @@ func NewPgMediaRepo(pool *pgxpool.Pool) *PgMediaRepo {
 }
 
 func (r *PgMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*Media, error) {
-	const q = `SELECT id, owner_id, status, storage_key FROM media WHERE id = $1`
+	const q = `SELECT id, owner_id, status, storage_key, COALESCE(error, '') FROM media WHERE id = $1`
 	row := r.pool.QueryRow(ctx, q, id)
 
 	var m Media
-	if err := row.Scan(&m.ID, &m.OwnerID, &m.Status, &m.StorageKey); err != nil {
+	if err := row.Scan(&m.ID, &m.OwnerID, &m.Status, &m.StorageKey, &m.Error); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}

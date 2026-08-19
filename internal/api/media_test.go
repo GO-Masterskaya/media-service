@@ -50,6 +50,10 @@ func (s *stubDerivRepo) GetByMediaAndVariant(ctx context.Context, mediaID uuid.U
 	return s.deriv, s.err
 }
 
+func (s *stubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
+	return &d, s.err
+}
+
 type stubStorage struct {
 	url *storage.PresignedURL
 	err error

@@ -16,6 +16,7 @@ import (
 	"mediaservice/internal/media"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
+	"mediaservice/internal/upload"
 	mediav1 "mediaservice/proto/media/v1"
 )
 
@@ -99,6 +100,20 @@ func main() {
 	}()
 
 	// 5. Запуск компонентов
+
+	uploadMetrics := upload.NewMetrics(nil)
+	uploadStore, err := upload.New(upload.Config{
+		Dir:             cfg.UploadTempDir,
+		MaxFileSize:     cfg.MaxUploadBytes,
+		ReserveBytes:    cfg.UploadReserveBytes,
+		StaleGrace:      cfg.UploadStaleGrace,
+		CleanupInterval: cfg.UploadCleanupInterval,
+	}, uploadMetrics, slog.Default())
+	if err != nil {
+		slog.Error("create upload temp store", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("all components started successfully")
 
 	// 6. Ждём сигнала завершения.
@@ -126,6 +141,13 @@ func main() {
 			if err := rec.Shutdown(shutdownCtx); err != nil {
 				slog.Error("reconciler shutdown", "error", err)
 			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			uploadStore.Stop()
+			slog.Info("upload temp store stopped")
 		}()
 
 		wg.Add(1)
