@@ -23,15 +23,16 @@ import (
 	v1 "mediaservice/proto/media/v1"
 )
 
-// newTestServer создаёт MediaServer с тестовым сервисом.
-func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
+func newTestServerWithStrict(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface, strict bool) *MediaServer {
 	discardLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 	svc := media.NewService(mediaRepo, derivRepo, st, 15*time.Minute, discardLog)
-	// strictOwnerCheck = false для тестов download stream (#12)
-	return NewMediaServer(svc, false)
+	return NewMediaServer(svc, strict)
 }
 
-// incomingCtxWithOwnerID оборачивает контекст в incoming metadata с x-owner-id.
+func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
+	return newTestServerWithStrict(mediaRepo, derivRepo, st, false)
+}
+
 func incomingCtxWithOwnerID(ctx context.Context, ownerID string) context.Context {
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("x-owner-id", ownerID))
 }
@@ -54,6 +55,10 @@ func (m *mockDerivRepo) GetByMediaAndVariant(_ context.Context, _ uuid.UUID, _ s
 	return m.deriv, m.derivErr
 }
 
+func (m *mockDerivRepo) Insert(_ context.Context, _ *repo.Derivative) error {
+	return nil
+}
+
 type mockStorage struct {
 	reader io.ReadCloser
 	err    error
@@ -72,19 +77,18 @@ func (m *mockStorage) DeleteObject(_ context.Context, _ string) error { return n
 func (m *mockStorage) DeletePrefix(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error                                   { return nil }
 
-// mockStream реализует v1.MediaService_DownloadStreamServer.
 type mockStream struct {
 	ctx  context.Context
 	send func(*v1.DownloadChunk) error
 }
 
-func (m *mockStream) Context() context.Context       { return m.ctx }
-func (m *mockStream) Send(c *v1.DownloadChunk) error { return m.send(c) }
-func (m *mockStream) SendMsg(_ any) error            { return nil }
-func (m *mockStream) RecvMsg(_ any) error            { return nil }
-func (m *mockStream) SetHeader(_ metadata.MD) error  { return nil }
-func (m *mockStream) SendHeader(_ metadata.MD) error { return nil }
-func (m *mockStream) SetTrailer(_ metadata.MD)       {}
+func (m *mockStream) Context() context.Context                  { return m.ctx }
+func (m *mockStream) Send(c *v1.DownloadChunk) error            { return m.send(c) }
+func (m *mockStream) SendMsg(_ any) error                       { return nil }
+func (m *mockStream) RecvMsg(_ any) error                       { return nil }
+func (m *mockStream) SetHeader(_ metadata.MD) error             { return nil }
+func (m *mockStream) SendHeader(_ metadata.MD) error            { return nil }
+func (m *mockStream) SetTrailer(_ metadata.MD)                  {}
 
 func TestMapDownloadError(t *testing.T) {
 	tests := []struct {
@@ -108,7 +112,7 @@ func TestMapDownloadError(t *testing.T) {
 	}
 }
 
-func TestDownloadStream_Handler_Success(t *testing.T) {
+func TestDownloadStream_Handler_Success_Strict(t *testing.T) {
 	data := []byte("handler test data")
 	id := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -117,11 +121,36 @@ func TestDownloadStream_Handler_Success(t *testing.T) {
 		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
 	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
-	srv := newTestServer(mediaRepo, &mockDerivRepo{}, storageMock)
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, storageMock, true)
 
 	var received []byte
 	stream := &mockStream{
 		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		send: func(c *v1.DownloadChunk) error {
+			received = append(received, c.Data...)
+			return nil
+		},
+	}
+
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
+	require.NoError(t, err)
+	assert.Equal(t, data, received)
+}
+
+func TestDownloadStream_Handler_Success_NonStrict_NoMetadata(t *testing.T) {
+	data := []byte("open link download")
+	id := uuid.MustParse("33333334-3333-3333-3333-333333333334")
+	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, storageMock, false)
+
+	var received []byte
+	stream := &mockStream{
+		ctx: context.Background(),
 		send: func(c *v1.DownloadChunk) error {
 			received = append(received, c.Data...)
 			return nil
@@ -193,7 +222,7 @@ func TestDownloadStream_Handler_NotFound(t *testing.T) {
 	mediaRepo := &mockMediaRepo{mediaErr: repo.ErrNotFound}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx:  incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -202,17 +231,53 @@ func TestDownloadStream_Handler_NotFound(t *testing.T) {
 	assert.Equal(t, codes.NotFound, status.Code(err))
 }
 
-func TestDownloadStream_Handler_PermissionDenied(t *testing.T) {
+func TestDownloadStream_Handler_Unauthenticated_StrictMissingMetadata(t *testing.T) {
 	id := uuid.New()
 	ownerID := uuid.New()
-	callerID := uuid.New()
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, true)
+	stream := &mockStream{
+		ctx: context.Background(),
+		send: func(*v1.DownloadChunk) error { return nil },
+	}
+
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
+	require.Error(t, err)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+}
+
+func TestDownloadStream_Handler_PermissionDenied_Strict(t *testing.T) {
+	id := uuid.New()
+	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	callerID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 	mediaRepo := &mockMediaRepo{
 		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
 	}
-	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, true)
 	stream := &mockStream{
-		ctx:  incomingCtxWithOwnerID(context.Background(), callerID.String()),
+		ctx: incomingCtxWithOwnerID(context.Background(), callerID.String()),
+		send: func(*v1.DownloadChunk) error { return nil },
+	}
+
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
+	require.Error(t, err)
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+}
+
+func TestDownloadStream_Handler_PermissionDenied_NonStrict_WrongOwner(t *testing.T) {
+	id := uuid.New()
+	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	callerID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, false)
+	stream := &mockStream{
+		ctx: incomingCtxWithOwnerID(context.Background(), callerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
@@ -229,7 +294,7 @@ func TestDownloadStream_Handler_InvalidVariant(t *testing.T) {
 	}
 	srv := newTestServer(mediaRepo, &mockDerivRepo{}, &mockStorage{})
 	stream := &mockStream{
-		ctx:  incomingCtxWithOwnerID(context.Background(), ownerID.String()),
+		ctx: incomingCtxWithOwnerID(context.Background(), ownerID.String()),
 		send: func(*v1.DownloadChunk) error { return nil },
 	}
 
