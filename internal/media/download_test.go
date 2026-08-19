@@ -40,8 +40,8 @@ func (m *mockDerivRepo) GetByMediaAndVariant(_ context.Context, _ uuid.UUID, _ s
 	return m.deriv, m.derivErr
 }
 
-func (m *mockDerivRepo) Insert(_ context.Context, _ *repo.Derivative) error {
-	return nil
+func (m *mockDerivRepo) Insert(_ context.Context, d repo.Derivative) (*repo.Derivative, error) {
+	return &d, nil
 }
 
 type mockStorage struct {
