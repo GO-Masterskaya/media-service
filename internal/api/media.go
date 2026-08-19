@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -28,6 +29,8 @@ func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
 }
 
 // callerIDFromMetadata извлекает owner_id из gRPC metadata.
+// При отсутствии metadata или x-owner-id возвращает uuid.Nil, nil —
+// проверка обязательности лежит на вызывающем (strictOwnerCheck).
 //
 // По ТЗ v1 сервис не валидирует токен — он доверяет вызывающему (gateway/mesh).
 // x-owner-id должен инжектиться доверенным посредником; прямой доступ клиента
@@ -36,11 +39,11 @@ func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
 func callerIDFromMetadata(ctx context.Context) (uuid.UUID, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return uuid.Nil, status.Error(codes.Unauthenticated, "missing metadata")
+		return uuid.Nil, nil
 	}
 	vals := md.Get("x-owner-id")
 	if len(vals) == 0 {
-		return uuid.Nil, status.Error(codes.Unauthenticated, "missing owner_id")
+		return uuid.Nil, nil
 	}
 	id, err := uuid.Parse(vals[0])
 	if err != nil {
@@ -71,19 +74,16 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		return nil, status.Errorf(codes.InvalidArgument, "invalid variant: %s", req.Variant)
 	}
 
-	callerID, err := callerIDFromMetadata(ctx)
+	callerID, err := s.resolveCaller(ctx)
 	if err != nil {
-		if s.strictOwnerCheck {
-			// В strict mode gateway ОБЯЗАН прокидывать x-owner-id.
-			// Если нет — значит deploy-модель нарушена.
-			return nil, status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
-		}
-		// ТЗ v1: без strict mode пропускаем (но owner-проверка в сервисе всё равно отрежет IDOR).
 		return nil, err
 	}
 
 	url, err := s.svc.GetDownloadURL(ctx, callerID, mediaID, variant)
 	if err != nil {
+		if errors.Is(err, media.ErrAccessDenied) {
+			return nil, status.Error(codes.PermissionDenied, err.Error())
+		}
 		return nil, err
 	}
 
@@ -91,4 +91,16 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		Url:       url.URL,
 		ExpiresAt: timestamppb.New(url.ExpiresAt),
 	}, nil
+}
+
+// resolveCaller — единая точка решения strict/non-strict.
+func (s *MediaServer) resolveCaller(ctx context.Context) (uuid.UUID, error) {
+	callerID, err := callerIDFromMetadata(ctx)
+	if err != nil {
+		return uuid.Nil, err // только InvalidArgument
+	}
+	if callerID == uuid.Nil && s.strictOwnerCheck {
+		return uuid.Nil, status.Error(codes.Unauthenticated, "strict owner check enabled: missing trusted caller identity")
+	}
+	return callerID, nil
 }

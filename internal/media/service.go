@@ -14,6 +14,17 @@ import (
 	"mediaservice/internal/storage"
 )
 
+// ChunkSender отправляет один чанк данных в транспорт.
+// Реализация предоставляется gRPC handler'ом (internal/api).
+type ChunkSender func([]byte) error
+
+var (
+	ErrNotFound           = errors.New("media not found")
+	ErrInvalidArgument    = errors.New("invalid argument")
+	ErrFailedPrecondition = errors.New("media not ready")
+	ErrAccessDenied       = errors.New("access denied")
+)
+
 type Service struct {
 	mediaRepo  repo.MediaRepo
 	derivRepo  repo.DerivativeRepo
@@ -51,15 +62,15 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "media not found")
+			return nil, status.Error(codes.NotFound, ErrNotFound.Error())
 		}
 		s.log.Error("get media failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
 	// IDOR fix: проверяем владельца до любой другой логики.
-	if media.OwnerID != callerID {
-		return nil, status.Error(codes.PermissionDenied, "access denied")
+	if callerID != uuid.Nil && media.OwnerID != callerID {
+		return nil, ErrAccessDenied
 	}
 
 	var storageKey string
@@ -72,7 +83,7 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 		}
 		storageKey = media.StorageKey
 
-	case storage.VariantThumb, storage.VariantR720:
+	case storage.VariantThumb, storage.VariantR720, storage.VariantR360, storage.VariantPreview:
 		if media.Status != repo.MediaStatusReady {
 			return nil, status.Errorf(codes.FailedPrecondition, "media not ready, status: %s", media.Status)
 		}
