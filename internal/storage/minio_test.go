@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"testing"
@@ -37,6 +38,16 @@ func TestMinIOIntegration(t *testing.T) {
 }
 
 func (s *MinIOSuite) SetupSuite() {
+	if _, err := exec.LookPath("docker"); err != nil {
+		s.T().Skip("docker not found in PATH, skipping integration tests")
+	}
+	cmd := exec.Command("docker", "info")
+	if err := cmd.Run(); err != nil {
+		s.T().Skip("docker daemon not available, skipping integration tests")
+	}
+
+	s.ctx = context.Background()
+	s.bucket = "media"
 	s.ctx = context.Background()
 	s.bucket = "media"
 
