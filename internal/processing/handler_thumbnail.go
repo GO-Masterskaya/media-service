@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const MaxSourceSizeBytes = 500 * 1024 *1024 //Защита от переполнения: лимит 500мб на скачивание исходника
+const maxSourceSizeBytes = 500 * 1024 * 1024 // Защита от переполнения: лимит 500 МБ на скачивание исходника
 
 type MediaRecord struct {
 	ID        uuid.UUID
@@ -74,8 +74,9 @@ func (h *ThumbnailHandler) downloadSource(ctx context.Context, key, targetPath s
 	}
 	defer func() { _ = out.Close() }()
 
-	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
-	
+	// Ограничиваем считывание потока константой maxSourceSizeBytes
+ 	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
+
 	if _, err := io.Copy(out, limitedReader); err != nil {
 		return fmt.Errorf("error copy file: %w", err)
 	}
@@ -101,7 +102,7 @@ func (h *ThumbnailHandler) logError(msg string, mediaID uuid.UUID, err error) {
 /*
 ProcessThumbnail выполняет полный цикл генерации и сохранения превью (thumbnail) для медиафайла:
  1. Проверяет валидность ID медиа и владельца.
- 2. Создает изолированную временную папку и скачивает исходник из хранилища (с ограничением по размеру).
+ 2. Создает изолированную временную папку и скачивает исходник из хранилища.
  3. Определяет целевой формат и вырезает кадр через FFmpeg (с учетом таймкода из конфига).
  4. Формирует ключ и загружает готовое превью в S3-хранилище.
  5. Извлекает метаданные превью (ширину и высоту) с помощью Probe.
