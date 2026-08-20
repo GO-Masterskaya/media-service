@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const MaxSourceSizeBytes = 500 * 1024 *1024 //Защита от переполнения: лимит 500мб на скачивание исходника
+
 type MediaRecord struct {
 	ID        uuid.UUID
 	OwnerID   uuid.UUID
@@ -72,7 +74,9 @@ func (h *ThumbnailHandler) downloadSource(ctx context.Context, key, targetPath s
 	}
 	defer func() { _ = out.Close() }()
 
-	if _, err := io.Copy(out, res); err != nil {
+	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
+	
+	if _, err := io.Copy(out, limitedReader); err != nil {
 		return fmt.Errorf("error copy file: %w", err)
 	}
 
@@ -94,6 +98,19 @@ func (h *ThumbnailHandler) logError(msg string, mediaID uuid.UUID, err error) {
 	}
 }
 
+/*
+ProcessThumbnail выполняет полный цикл генерации и сохранения превью (thumbnail) для медиафайла:
+ 1. Проверяет валидность ID медиа и владельца.
+ 2. Создает изолированную временную папку и скачивает исходник из хранилища (с ограничением по размеру).
+ 3. Определяет целевой формат и вырезает кадр через FFmpeg (с учетом таймкода из конфига).
+ 4. Формирует ключ и загружает готовое превью в S3-хранилище.
+ 5. Извлекает метаданные превью (ширину и высоту) с помощью Probe.
+ 6. Идемпотентно сохраняет запись о производном файле (DerivativeRecord) в БД.
+
+Функция гарантирует очистку временных файлов на диске (через defer)
+и транзакционный откат: если сохранение в БД завершится ошибкой,
+уже загруженный объект превью будет удален из S3.
+*/
 func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaRecord) (*DerivativeRecord, error) {
 	if media.ID == uuid.Nil || media.OwnerID == uuid.Nil {
 		err := errors.New("invalid media_id or owner_id")
@@ -101,6 +118,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		return nil, err
 	}
 
+	// Изолированная директория под конкретный таск исключает гонки при ретраях
 	tempDir, err := os.MkdirTemp("", "thumb_*")
 	if err != nil {
 		h.logError("failed to create temp dir", media.ID, err)
@@ -179,6 +197,9 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		Metadata:   metadata,
 	}
 
+	// UpsertDerivative обновляет или создает запись о производной.
+	// На стороне репозитория UPSERT должен выполняться по уникальному индексу (media_id, variant):
+	// ON CONFLICT (media_id, variant) DO UPDATE SET ...
 	res, err := h.repo.UpsertDerivative(ctx, record)
 	if err != nil {
 		h.logError("failed to save derivative in db", media.ID, err)
