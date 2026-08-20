@@ -56,6 +56,10 @@ func (m *memoryStorage) DeletePrefix(ctx context.Context, prefix string) error {
 	return nil
 }
 
+func (m *memoryStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
+	return nil
+}
+
 func (m *memoryStorage) Close() error {
 	return nil
 }

@@ -75,7 +75,7 @@ func (h *ThumbnailHandler) downloadSource(ctx context.Context, key, targetPath s
 	defer func() { _ = out.Close() }()
 
 	// Ограничиваем считывание потока константой maxSourceSizeBytes
- 	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
+	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
 
 	if _, err := io.Copy(out, limitedReader); err != nil {
 		return fmt.Errorf("error copy file: %w", err)
