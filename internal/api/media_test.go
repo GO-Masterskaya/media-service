@@ -31,6 +31,16 @@ func (s *stubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media,
 	return s.media, s.err
 }
 
+func (s *stubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
+	return nil, nil
+}
+func (s *stubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
+func (s *stubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, nil
+}
+
 type stubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error
@@ -52,6 +62,7 @@ type stubStorage struct {
 func (s *stubStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 	return nil
 }
+
 func (s *stubStorage) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
 	return nil, nil
 }
@@ -60,7 +71,10 @@ func (s *stubStorage) PresignGetObject(ctx context.Context, key string, ttl time
 }
 func (s *stubStorage) DeleteObject(ctx context.Context, key string) error    { return nil }
 func (s *stubStorage) DeletePrefix(ctx context.Context, prefix string) error { return nil }
-func (s *stubStorage) Close() error                                          { return nil }
+func (s *stubStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
+	return nil
+}
+func (s *stubStorage) Close() error { return nil }
 
 // ---------- helpers ----------
 
@@ -98,7 +112,7 @@ func TestGetDownloadURL_Success(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
 	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/presign", ExpiresAt: time.Now().Add(15 * time.Minute)}}
 
-	svc := media.NewService(mr, &stubDerivRepo{}, sr, 15*time.Minute, slog.Default())
+	svc := media.NewService(mr, &stubDerivRepo{}, sr, 15*time.Minute, testLogger())
 	server := NewMediaServer(svc, false)
 
 	resp, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
@@ -147,8 +161,8 @@ func TestGetDownloadURL_InvalidVariant(t *testing.T) {
 }
 
 func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
-	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, slog.Default())
-	server := NewMediaServer(svc, false)
+	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, true) // <-- strict=true
 
 	// Нет metadata вообще
 	_, err := server.GetDownloadURL(context.Background(), &mediav1.GetDownloadURLRequest{

@@ -20,7 +20,7 @@ const (
 
 // GenerateThumbnail создаёт превью через ffmpeg.
 // Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 2m.
-func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind Kind, sec int) error {
+func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind Kind, sec int) (string, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultThumbnailTimeout)
@@ -57,17 +57,18 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 			safePath,
 		}
 	default:
-		return fmt.Errorf("unsupported kind: %s", kind)
+		return "", fmt.Errorf("unsupported kind: %s", kind)
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg thumbnail failed: %w, stderr: %s", err, stderr.String())
+		_ = os.Remove(safePath)
+		return "", fmt.Errorf("ffmpeg thumbnail failed: %w, stderr: %s", err, stderr.String())
 	}
 
-	return nil
+	return safePath, nil
 }
 
 // Transcode создаёт рендицию через ffmpeg.

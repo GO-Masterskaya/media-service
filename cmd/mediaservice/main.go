@@ -15,8 +15,8 @@ import (
 	"mediaservice/internal/config"
 	"mediaservice/internal/media"
 	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
 	"mediaservice/internal/storage"
+	"mediaservice/internal/upload"
 	mediav1 "mediaservice/proto/media/v1"
 )
 
@@ -71,6 +71,17 @@ func main() {
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
+	reconcilerCfg := media.ReconcilerConfig{
+		Interval:    cfg.ReconcilerInterval,
+		GracePeriod: cfg.ReconcilerGracePeriod,
+		BatchSize:   cfg.ReconcilerBatchSize,
+		DryRun:      cfg.ReconcilerDryRun,
+	}
+	rec := media.NewReconciler(mediaRepo, sto, reconcilerCfg, slog.Default())
+
+	// В горутине:
+	go rec.Run(ctx)
+
 	// +++ ADDED: 4.7 gRPC server + registration
 	grpcServer := grpc.NewServer()
 	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
@@ -89,7 +100,7 @@ func main() {
 	}()
 
 	// 5. Запуск компонентов
-  
+
 	uploadMetrics := upload.NewMetrics(nil)
 	uploadStore, err := upload.New(upload.Config{
 		Dir:             cfg.UploadTempDir,
@@ -119,10 +130,18 @@ func main() {
 		defer close(shutdownDone)
 
 		// 8.1 Перестаём принимать новые соединения.
-		grpcServer.GracefulStop() // +++ ADDED
+		grpcServer.GracefulStop()
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
 		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rec.Shutdown(shutdownCtx); err != nil {
+				slog.Error("reconciler shutdown", "error", err)
+			}
+		}()
 
 		wg.Add(1)
 		go func() {
