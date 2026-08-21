@@ -172,6 +172,9 @@ func (e *Engine) processJob(ctx context.Context, job Job, workerID int) {
 			"job_type", job.Type,
 			"error", err,
 		)
+		if failErr := e.repo.FailJob(ctx, job.ID.String(), "unknown job type: "+job.Type); failErr != nil {
+			slog.Error("failed to mark job as failed", "job_id", job.ID.String(), "error", failErr)
+		}
 		return
 	}
 
@@ -182,6 +185,10 @@ func (e *Engine) processJob(ctx context.Context, job Job, workerID int) {
 			"job_type", job.Type,
 			"error", err,
 		)
+		if failErr := e.repo.FailJob(ctx, job.ID.String(), err.Error()); failErr != nil {
+			slog.Error("failed to mark job as failed", "job_id", job.ID.String(), "error", failErr)
+		}
 		return
 	}
 }
+

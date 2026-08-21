@@ -9,11 +9,14 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 
 	"mediaservice/internal/api"
 	"mediaservice/internal/config"
 	"mediaservice/internal/media"
+	"mediaservice/internal/processing"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"mediaservice/internal/upload"
@@ -114,7 +117,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("all components started successfully")
+	// 5.1 Processing Engine
+	jobRepo := repo.NewPgJobRepo(pool)
+	ownerID := uuid.NewString() // уникальный ID этого экземпляра сервиса
+	repoAdapter := processing.NewRepoAdapter(jobRepo, ownerID)
+
+	procRegistry := processing.NewRegistry()
+	// Обработчики регистрируются по мере реализации задач #15 (thumbnail) и #16 (transcode).
+	// procRegistry.Register("thumbnail", ...)
+
+	procMetrics := processing.NewMetrics(prometheus.DefaultRegisterer)
+
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: cfg.WorkerConcurrency,
+		QueueBuffer:       cfg.QueueBuffer,
+	}, repoAdapter, procRegistry, procMetrics)
+
+	if err := engine.Start(ctx); err != nil {
+		slog.Error("start processing engine", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("all components started successfully",
+		"engine_owner", ownerID,
+	)
 
 	// 6. Ждём сигнала завершения.
 	<-ctx.Done()
@@ -153,7 +179,8 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// engine.Shutdown(shutdownCtx)
+			engine.Stop()
+			slog.Info("processing engine stopped")
 		}()
 
 		wg.Add(1)

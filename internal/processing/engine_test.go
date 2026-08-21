@@ -2,6 +2,7 @@ package processing_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,11 +22,13 @@ type MockJobRepository struct {
 	mu           sync.Mutex
 	queuedJobs   []processing.Job
 	maxClaimedAt int
+	failedJobs   map[string]string // jobID -> reason
 }
 
 func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
 	return &MockJobRepository{
 		queuedJobs: jobs,
+		failedJobs: make(map[string]string),
 	}
 }
 
@@ -63,6 +66,23 @@ func (m *MockJobRepository) GetMaxClaimedLimit() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.maxClaimedAt
+}
+
+func (m *MockJobRepository) FailJob(_ context.Context, jobID string, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failedJobs[jobID] = reason
+	return nil
+}
+
+func (m *MockJobRepository) GetFailedJobs() map[string]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	copy := make(map[string]string, len(m.failedJobs))
+	for k, v := range m.failedJobs {
+		copy[k] = v
+	}
+	return copy
 }
 
 // 1. Тест: Одновременно работает не больше WORKER_CONCURRENCY jobs
@@ -251,4 +271,89 @@ func getGaugeValue(t *testing.T, g prometheus.Gauge) float64 {
 	var m dto.Metric
 	require.NoError(t, g.Write(&m))
 	return m.GetGauge().GetValue()
+}
+
+// 5. Тест: неизвестный тип задачи помечается как failed
+func TestUnknownJobTypeMarkedFailed(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "completely_unknown_type"},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+	// Не регистрируем handler для "completely_unknown_type"
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		QueueBuffer:       4,
+		PollInterval:      10 * time.Millisecond,
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	// Ждём, пока job будет обработан
+	assert.Eventually(t, func() bool {
+		failed := repo.GetFailedJobs()
+		_, ok := failed[jobID.String()]
+		return ok
+	}, 1*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	failed := repo.GetFailedJobs()
+	reason, ok := failed[jobID.String()]
+	assert.True(t, ok, "Задача с неизвестным типом должна быть помечена как failed")
+	assert.Contains(t, reason, "unknown job type")
+}
+
+// 6. Тест: ошибка handler помечает задачу как failed
+func TestHandlerErrorMarkedFailed(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "failing_handler"},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	handlerErr := errors.New("ffmpeg exit code 1")
+	registry.Register("failing_handler", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return handlerErr
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		QueueBuffer:       4,
+		PollInterval:      10 * time.Millisecond,
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	assert.Eventually(t, func() bool {
+		failed := repo.GetFailedJobs()
+		_, ok := failed[jobID.String()]
+		return ok
+	}, 1*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	failed := repo.GetFailedJobs()
+	reason, ok := failed[jobID.String()]
+	assert.True(t, ok, "Задача с ошибкой handler должна быть помечена как failed")
+	assert.Contains(t, reason, "ffmpeg exit code 1")
 }

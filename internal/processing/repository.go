@@ -9,4 +9,9 @@ type JobRepository interface {
 
 	// GetQueueDepth возвращает текущее количество задач со статусом queued в БД.
 	GetQueueDepth(ctx context.Context) (int64, error)
+
+	// FailJob помечает задачу как failed с указанием причины.
+	// Используется при неизвестном типе задачи или ошибке handler.
+	FailJob(ctx context.Context, jobID string, reason string) error
 }
+

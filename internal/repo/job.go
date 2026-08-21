@@ -252,6 +252,83 @@ func scanJob(row pgx.Row) (*Job, error) {
 	return &job, nil
 }
 
+// ClaimBatch атомарно забирает до limit задач со статусом queued, переводя их в running.
+// Используется движком обработки (Engine) для пакетной загрузки задач.
+func (r *PgJobRepo) ClaimBatch(ctx context.Context, owner string, limit int) ([]Job, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const q = `
+		WITH next AS (
+			SELECT id
+			FROM processing_jobs
+			WHERE status = 'queued'
+				AND run_after <= now()
+			ORDER BY run_after
+			FOR UPDATE SKIP LOCKED
+			LIMIT $3
+		)
+		UPDATE processing_jobs j
+		SET status = 'running',
+		    locked_at = now(),
+		    locked_by = $1,
+		    lease_until = now() + ($2 * interval '1 millisecond')
+		FROM next
+		WHERE j.id = next.id
+		RETURNING j.id, j.media_id, j.type, j.status, j.locked_by, j.lease_until
+	`
+
+	rows, err := tx.Query(ctx, q, owner, DefaultJobLease.Milliseconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim batch: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var job Job
+		var lockedBy *string
+		var leaseUntil *time.Time
+		if err := rows.Scan(&job.ID, &job.MediaID, &job.Type, &job.Status, &lockedBy, &leaseUntil); err != nil {
+			return nil, fmt.Errorf("scan claimed job: %w", err)
+		}
+		if lockedBy != nil {
+			job.LockedBy = *lockedBy
+		}
+		if leaseUntil != nil {
+			job.LeaseUntil = *leaseUntil
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("claim batch rows: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// GetQueueDepth возвращает количество задач со статусом queued, готовых к выполнению.
+func (r *PgJobRepo) GetQueueDepth(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM processing_jobs WHERE status = 'queued' AND run_after <= now()`,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("get queue depth: %w", err)
+	}
+	return count, nil
+}
+
 var availableTransitions = []struct {
 	from, to string
 }{
