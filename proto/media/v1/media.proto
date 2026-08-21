@@ -1,0 +1,129 @@
+syntax = "proto3";
+package media.v1;
+option go_package = "mediaservice/proto/media/v1;mediav1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service MediaService {
+  rpc Upload(stream UploadRequest) returns (UploadResponse);
+  rpc GetMedia(GetMediaRequest) returns (Media);
+  rpc ListMediaByOwner(ListMediaByOwnerRequest) returns (ListMediaByOwnerResponse);
+  rpc GetDownloadURL(GetDownloadURLRequest) returns (GetDownloadURLResponse);
+  rpc DownloadStream(DownloadStreamRequest) returns (stream DownloadChunk);
+  rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
+  rpc DeleteByOwner(DeleteByOwnerRequest) returns (DeleteByOwnerResponse);
+}
+
+message UploadRequest {
+  oneof payload {
+    UploadInit init = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadInit {
+  string owner_id = 1;
+  string filename = 2;
+  string mime = 3;
+  uint64 expected_size = 4;
+  string idempotency_key = 5;
+  ProcessingOptions processing = 6;
+  google.protobuf.Duration ttl = 7;
+}
+
+message ProcessingOptions {
+  bool make_thumbnail = 1;
+  bool transcode = 2;
+}
+
+message UploadResponse {
+  string media_id = 1;
+  MediaStatus status = 2;
+}
+
+enum MediaKind {
+  KIND_UNSPECIFIED = 0;
+  IMAGE = 1;
+  VIDEO = 2;
+  AUDIO = 3;
+}
+
+enum MediaStatus {
+  STATUS_UNSPECIFIED = 0;
+  STORED = 1;
+  PROCESSING = 2;
+  READY = 3;
+  FAILED = 4;
+  DELETING = 5;
+}
+
+message Media {
+  string id = 1;
+  string owner_id = 2;
+  MediaKind kind = 3;
+  string mime = 4;
+  uint64 size_bytes = 5;
+  MediaStatus status = 6;
+  google.protobuf.Struct metadata = 7;
+  repeated Derivative derivatives = 8;
+  string error = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message Derivative {
+  string variant = 1;
+  string mime = 2;
+  uint64 size_bytes = 3;
+}
+
+message GetMediaRequest {
+  string media_id = 1;
+}
+
+message ListMediaByOwnerRequest {
+  string owner_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListMediaByOwnerResponse {
+  repeated Media items = 1;
+  string next_page_token = 2;
+}
+
+message GetDownloadURLRequest {
+  string media_id = 1;
+  string variant = 2;
+}
+
+message GetDownloadURLResponse {
+  string url = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message DownloadStreamRequest {
+  string media_id = 1;
+  string variant = 2;
+}
+
+message DownloadChunk {
+  bytes data = 1;
+}
+
+message DeleteMediaRequest {
+  string media_id = 1;
+}
+
+message DeleteMediaResponse {
+  bool deleted = 1;
+}
+
+message DeleteByOwnerRequest {
+  string owner_id = 1;
+}
+
+message DeleteByOwnerResponse {
+  uint32 deleted_count = 1;
+}

@@ -46,8 +46,26 @@ func (c *Config) validate() error {
 	if c.MaxConcurrentStreams <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT_STREAMS must be > 0, got %d", c.MaxConcurrentStreams)
 	}
+	if c.UploadTempDir == "" {
+		return fmt.Errorf("UPLOAD_TEMP_DIR is required")
+	}
+	if c.UploadReserveBytes < 0 {
+		return fmt.Errorf("UPLOAD_RESERVE_BYTES must be >= 0, got %d", c.UploadReserveBytes)
+	}
+	if c.UploadStaleGrace <= 0 {
+		return fmt.Errorf("UPLOAD_STALE_GRACE must be > 0, got %s", c.UploadStaleGrace)
+	}
+	if c.UploadCleanupInterval <= 0 {
+		return fmt.Errorf("UPLOAD_CLEANUP_INTERVAL must be > 0, got %s", c.UploadCleanupInterval)
+	}
 	if c.PostgresDSN == "" {
 		return fmt.Errorf("POSTGRES_DSN is required")
+	}
+	if c.PostgresConnectTimeout <= 0 {
+		return fmt.Errorf("POSTGRES_CONNECT_TIMEOUT must be > 0, got %s", c.PostgresConnectTimeout)
+	}
+	if c.PostgresQueryTimeout <= 0 {
+		return fmt.Errorf("POSTGRES_QUERY_TIMEOUT must be > 0, got %s", c.PostgresQueryTimeout)
 	}
 	if c.MinIOEndpoint == "" {
 		return fmt.Errorf("MINIO_ENDPOINT is required")
