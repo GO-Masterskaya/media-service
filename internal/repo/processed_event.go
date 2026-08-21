@@ -38,7 +38,6 @@ type ProcessedEvent struct {
 // атомарного захвата (claim), чтобы конкурентные или передоставленные события
 // обрабатывались ровно один раз (или безопасно воспроизводились).
 type ProcessedEventRepo interface {
-
 	// Claim атомарно захватывает право владения eventID для обработки.
 	//
 	// claimed=true: вызывающий теперь владеет lease (это либо совершенно новое
@@ -72,6 +71,19 @@ type ProcessedEventRepo interface {
 	// сохраняя причину в качестве результата. Гарантии владения и порядка
 	// те же, что и у MarkDone.
 	MarkDLQ(ctx context.Context, eventID uuid.UUID, owner, reason string) error
+
+	// DeleteTerminalOlderThan удаляет записи в терминальных статусах
+	// (done/dlq), созданные раньше olderThan, и возвращает число удалённых.
+	// Записи в статусе processing не трогаются никогда — они ещё могут
+	// понадобиться для recovery.
+	//
+	// Нужен для retention: без периодической чистки таблица растёт вечно.
+	// Окно olderThan должно с запасом превышать retention Kafka-топика,
+	// иначе можно удалить запись о событии, которое ещё может быть
+	// передоставлено, и потерять защиту от повторного side-effect.
+	// limit ограничивает размер одной пачки, чтобы не держать долгую
+	// блокировку. Вызов из периодической задачи — вайринг в #18/#39.
+	DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error)
 }
 
 type PgProcessedEventRepo struct {
@@ -89,10 +101,15 @@ func (r *PgProcessedEventRepo) Claim(ctx context.Context, eventID uuid.UUID, fin
 
 	// Единый атомарный upsert: захватывает блокировку строки при конфликте и
 	// перехватывает claim только если существующий lease находится в статусе
-	// processing И истек. Если условие WHERE исключает обновление (активный claim
-	// или уже done/dlq), здесь не возвращается ни одной строки, и мы классифицируем
-	// существующую строку ниже — это позволяет избежать гонки read-then-write
+	// processing, истёк И payload тот же. Если условие WHERE исключает
+	// обновление, здесь не возвращается ни одной строки, и мы классифицируем
+	// существующую строку ниже - это позволяет избежать гонки read-then-write
 	// между конкурентными consumer'ами.
+	//
+	// Проверка fingerprint в WHERE обязательна: без неё событие с тем же
+	// event_id, но другим телом молча перехватило бы протухший claim и
+	// выполнило side effect. fingerprint в SET не меняется, поэтому RETURNING
+	// вернул бы старый и ErrFingerprintConflict не сработал бы вообще.
 	const upsert = `
 		INSERT INTO processed_events (event_id, fingerprint, status, owner, lease_expires_at, created_at, updated_at)
 		VALUES ($1, $2, 'processing', $3, now() + ($4 * interval '1 second'), now(), now())
@@ -102,6 +119,7 @@ func (r *PgProcessedEventRepo) Claim(ctx context.Context, eventID uuid.UUID, fin
 		    updated_at = now()
 		WHERE processed_events.status = 'processing'
 		  AND processed_events.lease_expires_at < now()
+		  AND processed_events.fingerprint = EXCLUDED.fingerprint
 		RETURNING event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at`
 
 	row := r.pool.QueryRow(ctx, upsert, eventID, fingerprint, owner, lease.Seconds())
@@ -156,6 +174,45 @@ func (r *PgProcessedEventRepo) finalize(ctx context.Context, eventID uuid.UUID, 
 		return ErrClaimLost
 	}
 	return nil
+}
+
+// DeleteTerminalOlderThan удаляет пачку терминальных записей старше olderThan.
+func (r *PgProcessedEventRepo) DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("repo: limit must be positive")
+	}
+
+	// Паттерн как в ClaimNext (job.go): CTE отбирает пачку под блокировкой,
+	// SKIP LOCKED позволяет нескольким воркерам чистки разбирать
+	// непересекающиеся пачки и реально работать параллельно, а не ждать
+	// друг друга и возвращать ноль.
+	//
+	// LIMIT обязателен: без него при долгом простое чистки один DELETE
+	// попытался бы снести миллионы строк в одной транзакции - длинная
+	// блокировка, распухший WAL и почти гарантированный statement_timeout.
+	//
+	// Отбор идёт по частичному индексу idx_processed_events_retention
+	// (created_at) WHERE status IN ('done','dlq'): предикат совпадает,
+	// ORDER BY идёт в порядке индекса, LIMIT даёт ранний выход.
+	const q = `
+		WITH doomed AS (
+			SELECT event_id
+			FROM processed_events
+			WHERE status IN ('done', 'dlq')
+				AND created_at < $1
+			ORDER BY created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT $2
+		)
+		DELETE FROM processed_events p
+		USING doomed
+		WHERE p.event_id = doomed.event_id`
+
+	tag, err := r.pool.Exec(ctx, q, olderThan, limit)
+	if err != nil {
+		return 0, fmt.Errorf("repo: delete terminal processed events: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (r *PgProcessedEventRepo) getByID(ctx context.Context, eventID uuid.UUID) (*ProcessedEvent, error) {

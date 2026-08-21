@@ -17,6 +17,12 @@ CREATE TABLE processed_events (
 CREATE INDEX idx_processed_events_status_lease
     ON processed_events (status, lease_expires_at);
 
+-- Частичный индекс под retention: чистка ходит только по терминальным
+-- статусам, поэтому индексировать processing-строки смысла нет.
+CREATE INDEX idx_processed_events_retention
+    ON processed_events (created_at)
+    WHERE status IN ('done', 'dlq');
+
 -- используется существующая  функция set_updated_up() из 000001_init_schema
 CREATE TRIGGER trg_processed_events_set_updated_at
 BEFORE UPDATE ON processed_events
