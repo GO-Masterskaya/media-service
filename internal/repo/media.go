@@ -34,6 +34,7 @@ type MediaRepo interface {
 	ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*Media, error)
 	HardDelete(ctx context.Context, id uuid.UUID) error
 	ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error)
+	UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error
 }
 
 type PgMediaRepo struct {
@@ -114,4 +115,13 @@ func (r *PgMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uui
 		exists[id] = struct{}{}
 	}
 	return exists, rows.Err()
+}
+
+func (r *PgMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
+	const q = `UPDATE media SET owner_id = $1, updated_at = NOW() WHERE id = $2`
+	_, err := r.pool.Exec(ctx, q, ownerID, mediaID)
+	if err != nil {
+		return fmt.Errorf("update owner: %w", err)
+	}
+	return nil
 }

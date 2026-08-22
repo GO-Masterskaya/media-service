@@ -45,6 +45,10 @@ func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return s.exists, nil
 }
 
+func (s *recStubMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
+	return nil
+}
+
 type recStubStorage struct {
 	objects []storage.ObjectInfo
 	deleted []string

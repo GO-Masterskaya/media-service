@@ -58,6 +58,10 @@ func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (s *mockMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
+	return nil
+}
+
 type mockDerivRepo struct {
 	deriv    *repo.Derivative
 	derivErr error
