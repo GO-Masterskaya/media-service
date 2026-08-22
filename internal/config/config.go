@@ -38,6 +38,12 @@ type Config struct {
 	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
 	TTLReapInterval time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
 
+	// Upload temp storage
+	UploadTempDir         string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
+	UploadReserveBytes    int64         `env:"UPLOAD_RESERVE_BYTES"  env-default:"104857600"` // 100MB
+	UploadStaleGrace      time.Duration `env:"UPLOAD_STALE_GRACE"       env-default:"1h"`
+	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
+
 	// Limits
 	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
 	MaxConcurrentStreams int `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
@@ -60,6 +66,16 @@ type Config struct {
 	KafkaTopic    string   `env:"KAFKA_TOPIC"           env-default:"media.events"`
 	KafkaDLQTopic string   `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
 	KafkaGroup    string   `env:"KAFKA_GROUP"           env-default:"media-service"`
+
+	// StrictOwnerCheck включает строгую проверку владельца.
+	// При true требуется валидный auth interceptor (TODO #5).
+	// Пока используется как feature-flag для deploy-модели за gateway.
+	StrictOwnerCheck bool `env:"STRICT_OWNER_CHECK" env-default:"false"`
+
+	ReconcilerInterval    time.Duration `env:"RECONCILER_INTERVAL"     env-default:"5m"`
+	ReconcilerGracePeriod time.Duration `env:"RECONCILER_GRACE_PERIOD" env-default:"1h"` // 1h для orphan safety
+	ReconcilerBatchSize   int           `env:"RECONCILER_BATCH_SIZE"   env-default:"100"`
+	ReconcilerDryRun      bool          `env:"RECONCILER_DRY_RUN"      env-default:"false"`
 }
 
 // Load читает .env (если есть), накладывает переменные окружения на дефолтные значения и валидирует.
@@ -96,6 +112,10 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "ThumbSecond:%d, ", c.ThumbSecond)
 	fmt.Fprintf(&b, "PresignTTL:%s, ", c.PresignTTL)
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
+	fmt.Fprintf(&b, "UploadTempDir:%q, ", c.UploadTempDir)
+	fmt.Fprintf(&b, "UploadReserveBytes:%d, ", c.UploadReserveBytes)
+	fmt.Fprintf(&b, "UploadStaleGrace:%s, ", c.UploadStaleGrace)
+	fmt.Fprintf(&b, "UploadCleanupInterval:%s, ", c.UploadCleanupInterval)
 	fmt.Fprintf(&b, "PostgresDSN:%q, ", maskDSN(c.PostgresDSN))
 	fmt.Fprintf(&b, "PostgresConnectTimeout:%s, ", c.PostgresConnectTimeout)
 	fmt.Fprintf(&b, "PostgresQueryTimeout:%s, ", c.PostgresQueryTimeout)

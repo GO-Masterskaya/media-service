@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"testing"
@@ -37,6 +38,16 @@ func TestMinIOIntegration(t *testing.T) {
 }
 
 func (s *MinIOSuite) SetupSuite() {
+	if _, err := exec.LookPath("docker"); err != nil {
+		s.T().Skip("docker not found in PATH, skipping integration tests")
+	}
+	cmd := exec.Command("docker", "info")
+	if err := cmd.Run(); err != nil {
+		s.T().Skip("docker daemon not available, skipping integration tests")
+	}
+
+	s.ctx = context.Background()
+	s.bucket = "media"
 	s.ctx = context.Background()
 	s.bucket = "media"
 
@@ -97,6 +108,9 @@ func (s *MinIOSuite) TearDownSuite() {
 func (s *MinIOSuite) SetupTest() {
 	// Очистка перед каждым тестом — удаляем всё в бакете.
 	for obj := range s.client.ListObjects(s.ctx, s.bucket, minio.ListObjectsOptions{Recursive: true}) {
+		if obj.Err != nil {
+			continue
+		}
 		require.NoError(s.T(), s.client.RemoveObject(s.ctx, s.bucket, obj.Key, minio.RemoveObjectOptions{}))
 	}
 }
@@ -313,4 +327,28 @@ func (g *byteGenerator) Read(p []byte) (int, error) {
 		g.sent++
 	}
 	return n, nil
+}
+
+func (s *MinIOSuite) TestForEachObject_UploadStartedAt() {
+	t := s.T()
+	owner := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+	media := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+
+	key, err := BuildKey(owner, media, VariantOriginal, "image/png", "test.png")
+	require.NoError(t, err)
+
+	data := []byte("test-body")
+	require.NoError(t, s.storage.PutObject(s.ctx, key, bytes.NewReader(data), int64(len(data)), "image/png"))
+
+	var found bool
+	err = s.storage.ForEachObject(s.ctx, "", func(obj ObjectInfo) error {
+		if obj.Key == key {
+			found = true
+			assert.False(t, obj.UploadStartedAt.IsZero(), "UploadStartedAt should be set from user-metadata")
+			assert.WithinDuration(t, time.Now(), obj.UploadStartedAt, 10*time.Second)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	assert.True(t, found, "object not found in ForEachObject")
 }

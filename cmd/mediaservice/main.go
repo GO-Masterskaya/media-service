@@ -10,6 +10,12 @@ import (
 
 	"mediaservice/internal/config"
 	"mediaservice/internal/repo"
+<<<<<<< HEAD
+=======
+	"mediaservice/internal/storage"
+	"mediaservice/internal/upload"
+	mediav1 "mediaservice/proto/media/v1"
+>>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
 )
 
 func main() {
@@ -44,9 +50,74 @@ func main() {
 		os.Exit(1)
 	}
 
+<<<<<<< HEAD
 	// 5. Запуск компонентов
 	//
 	// Думаю пока можем реализовать запуск-остановку просто списком,  но в идеале хотелось бы в отдельный менеджер вынести.
+=======
+	// +++ ADDED: 4.5 Storage (MinIO)
+	sto, err := storage.NewMinIO(storage.MinIOConfig{
+		Endpoint:  cfg.MinIOEndpoint,
+		AccessKey: cfg.MinIOAccessKey,
+		SecretKey: cfg.MinIOSecretKey,
+		Bucket:    cfg.MinIOBucket,
+		UseSSL:    cfg.MinIOUseSSL,
+	}, slog.Default())
+	if err != nil {
+		slog.Error("storage init failed", "error", err)
+		os.Exit(1)
+	}
+
+	// +++ ADDED: 4.6 Repos + Service
+	mediaRepo := repo.NewPgMediaRepo(pool)
+	derivRepo := repo.NewPgDerivativeRepo(pool)
+
+	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
+
+	reconcilerCfg := media.ReconcilerConfig{
+		Interval:    cfg.ReconcilerInterval,
+		GracePeriod: cfg.ReconcilerGracePeriod,
+		BatchSize:   cfg.ReconcilerBatchSize,
+		DryRun:      cfg.ReconcilerDryRun,
+	}
+	rec := media.NewReconciler(mediaRepo, sto, reconcilerCfg, slog.Default())
+
+	// В горутине:
+	go rec.Run(ctx)
+
+	// +++ ADDED: 4.7 gRPC server + registration
+	grpcServer := grpc.NewServer()
+	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
+
+	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		slog.Error("grpc listen", "error", err)
+		os.Exit(1)
+	}
+
+	go func() {
+		slog.Info("grpc server listening", "addr", cfg.GRPCAddr)
+		if err := grpcServer.Serve(grpcLis); err != nil && err != grpc.ErrServerStopped {
+			slog.Error("grpc serve", "error", err)
+		}
+	}()
+
+	// 5. Запуск компонентов
+
+	uploadMetrics := upload.NewMetrics(nil)
+	uploadStore, err := upload.New(upload.Config{
+		Dir:             cfg.UploadTempDir,
+		MaxFileSize:     cfg.MaxUploadBytes,
+		ReserveBytes:    cfg.UploadReserveBytes,
+		StaleGrace:      cfg.UploadStaleGrace,
+		CleanupInterval: cfg.UploadCleanupInterval,
+	}, uploadMetrics, slog.Default())
+	if err != nil {
+		slog.Error("create upload temp store", "error", err)
+		os.Exit(1)
+	}
+
+>>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
 	slog.Info("all components started successfully")
 
 	// 6. Ждём сигнала завершения.
@@ -62,11 +133,30 @@ func main() {
 	go func() {
 		defer close(shutdownDone)
 		// 8.1 Перестаём принимать новые соединения.
+<<<<<<< HEAD
 		// закрываем gRPC сервер
+=======
+		grpcServer.GracefulStop()
+>>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
 		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.
 		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rec.Shutdown(shutdownCtx); err != nil {
+				slog.Error("reconciler shutdown", "error", err)
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			uploadStore.Stop()
+			slog.Info("upload temp store stopped")
+		}()
 
 		wg.Add(1)
 		go func() {
