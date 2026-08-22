@@ -41,6 +41,10 @@ func (s *stubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[u
 	return nil, nil
 }
 
+func (s *stubMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
+	return nil
+}
+
 type stubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error

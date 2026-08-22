@@ -120,3 +120,34 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 	}
 	return presigned, nil
 }
+
+// AttachMedia проверяет/проставляет owner для media.
+// Idempotent: повторный вызов с тем же owner = nil; другой owner = ошибка.
+func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
+	if ownerID == uuid.Nil {
+		return status.Error(codes.InvalidArgument, "owner_id required")
+	}
+
+	media, err := s.mediaRepo.GetByID(ctx, mediaID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return status.Error(codes.NotFound, "media not found")
+		}
+		s.log.Error("attach: get media failed", slog.Any("error", err))
+		return status.Error(codes.Internal, "internal error")
+	}
+
+	if media.OwnerID == uuid.Nil {
+		if err := s.mediaRepo.UpdateOwner(ctx, mediaID, ownerID); err != nil {
+			s.log.Error("attach: update owner failed", slog.Any("error", err))
+			return status.Error(codes.Internal, "internal error")
+		}
+		return nil
+	}
+
+	if media.OwnerID != ownerID {
+		return status.Errorf(codes.PermissionDenied, "owner mismatch: media belongs to %s", media.OwnerID)
+	}
+
+	return nil
+}

@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -23,12 +24,48 @@ type ProcessedEventSuite struct {
 }
 
 func TestProcessedEventIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	suite.Run(t, new(ProcessedEventSuite))
 }
 
 func (s *ProcessedEventSuite) SetupSuite() {
 	s.ctx = context.Background()
 
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		if !dockerAvailable() {
+			s.T().Skip("Docker not available; set TEST_POSTGRES_DSN to run integration tests with external Postgres")
+		}
+		dsn = s.startPostgres()
+	}
+
+	require.NoError(s.T(), RunMigrations(dsn))
+
+	var err error
+	s.pool, err = pgxpool.New(s.ctx, dsn)
+	require.NoError(s.T(), err)
+
+	s.repo = NewPgProcessedEventRepo(s.pool)
+}
+
+func (s *ProcessedEventSuite) TearDownSuite() {
+	if s.pool != nil {
+		s.pool.Close()
+	}
+	if s.container != nil {
+		require.NoError(s.T(), s.container.Terminate(s.ctx))
+	}
+}
+
+func (s *ProcessedEventSuite) SetupTest() {
+	_, err := s.pool.Exec(s.ctx, `TRUNCATE processed_events`)
+	require.NoError(s.T(), err)
+}
+
+// startPostgres — вынесено в метод suite, чтобы использовать s.ctx и s.T().
+func (s *ProcessedEventSuite) startPostgres() string {
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},
@@ -53,28 +90,7 @@ func (s *ProcessedEventSuite) SetupSuite() {
 	port, err := s.container.MappedPort(s.ctx, "5432")
 	require.NoError(s.T(), err)
 
-	dsn := fmt.Sprintf("postgres://media:media@%s:%s/media?sslmode=disable", host, port.Port())
-
-	require.NoError(s.T(), RunMigrations(dsn))
-
-	s.pool, err = pgxpool.New(s.ctx, dsn)
-	require.NoError(s.T(), err)
-
-	s.repo = NewPgProcessedEventRepo(s.pool)
-}
-
-func (s *ProcessedEventSuite) TearDownSuite() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	if s.container != nil {
-		require.NoError(s.T(), s.container.Terminate(s.ctx))
-	}
-}
-
-func (s *ProcessedEventSuite) SetupTest() {
-	_, err := s.pool.Exec(s.ctx, `TRUNCATE processed_events`)
-	require.NoError(s.T(), err)
+	return fmt.Sprintf("postgres://media:media@%s:%s/media?sslmode=disable", host, port.Port())
 }
 
 // TestFreshClaim - новый event_id: claim успешен, статус processing.
