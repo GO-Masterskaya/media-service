@@ -2,25 +2,32 @@ package processing
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
 
+const finalizationTimeout = 5 * time.Second
+
 // Config задаёт параметры работы ядра движка обработки.
 type Config struct {
 	WorkerConcurrency int
-	QueueBuffer       int
 	PollInterval      time.Duration
+	JobTimeout        time.Duration // таймаут на выполнение одной задачи
 }
 
 // Engine представляет собой ядро движка обработки задач.
+//
+// Каждый воркер самостоятельно забирает задачу из БД (pull-on-demand),
+// выполняет хендлер с отдельным контекстом и таймаутом, и финализирует
+// результат (MarkDone/FailJob) на неотменяемом контексте.
 type Engine struct {
 	cfg      Config
 	repo     JobRepository
 	registry *Registry
 	metrics  *Metrics
-	jobCh    chan Job
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -32,11 +39,11 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 	if cfg.WorkerConcurrency <= 0 {
 		cfg.WorkerConcurrency = 2
 	}
-	if cfg.QueueBuffer <= 0 {
-		cfg.QueueBuffer = 64
-	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 50 * time.Millisecond
+	}
+	if cfg.JobTimeout <= 0 {
+		cfg.JobTimeout = 10 * time.Minute
 	}
 	if metrics == nil {
 		metrics = NewMetrics(nil)
@@ -47,34 +54,30 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 		repo:     repo,
 		registry: registry,
 		metrics:  metrics,
-		jobCh:    make(chan Job, cfg.QueueBuffer),
 	}
 }
 
-// Start запускает воркеры и податчик задач (Feeder) под переданным контекстом.
+// Start запускает воркеры под переданным контекстом.
 func (e *Engine) Start(parentCtx context.Context) error {
 	ctx, cancel := context.WithCancel(parentCtx)
 	e.cancel = cancel
 
-	// 1. Запуск пула воркеров (не больше WORKER_CONCURRENCY)
 	for i := 0; i < e.cfg.WorkerConcurrency; i++ {
 		e.wg.Add(1)
 		go e.workerLoop(ctx, i)
 	}
 
-	// 2. Запуск фонового Feeder
-	e.wg.Add(1)
-	go e.feederLoop(ctx)
-
 	slog.Info("processing engine started",
 		"concurrency", e.cfg.WorkerConcurrency,
-		"buffer", e.cfg.QueueBuffer,
+		"job_timeout", e.cfg.JobTimeout,
 	)
 
 	return nil
 }
 
-// Stop останавливает работу Feeder и воркеров.
+// Stop останавливает работу воркеров.
+// Воркеры перестают клеймить новые задачи, дорабатывают текущие
+// (в пределах JobTimeout) и финализируют результаты.
 func (e *Engine) Stop() {
 	e.once.Do(func() {
 		if e.cancel != nil {
@@ -85,63 +88,8 @@ func (e *Engine) Stop() {
 	})
 }
 
-// feederLoop периодически опрашивает БД и дозагружает задачи в jobCh в пределах свободной ёмкости.
-func (e *Engine) feederLoop(ctx context.Context) {
-	defer e.wg.Done()
-
-	ticker := time.NewTicker(e.cfg.PollInterval)
-	defer ticker.Stop()
-
-	for {
-		e.fetchAndDistribute(ctx)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-// fetchAndDistribute запрашивает свободные слоты и подтягивает задачи из БД.
-func (e *Engine) fetchAndDistribute(ctx context.Context) {
-	// Метрика глубины локального канала
-	e.metrics.ChannelDepth.Set(float64(len(e.jobCh)))
-
-	// Метрика глубины очереди в БД
-	if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
-		e.metrics.DBQueueDepth.Set(float64(depth))
-	}
-
-	// Backpressure: вычисляем только СВОБОДНУЮ ёмкость канала
-	free := cap(e.jobCh) - len(e.jobCh)
-	if free <= 0 {
-		return
-	}
-
-	jobs, err := e.repo.ClaimQueued(ctx, free)
-	if err != nil {
-		if ctx.Err() == nil {
-			slog.Error("feeder failed to claim queued jobs", "error", err)
-		}
-		return
-	}
-
-	for _, job := range jobs {
-		select {
-		case e.jobCh <- job:
-			e.metrics.ChannelDepth.Set(float64(len(e.jobCh)))
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// workerLoop выполняет цикл работы отдельного воркера из пула.
-//
-// Примечание: при отмене ctx select может выбрать ветку jobCh, если оба канала
-// готовы одновременно. Это допустимо — graceful drain с доработкой задач
-// реализуется в задаче #26.
+// workerLoop выполняет цикл работы отдельного воркера.
+// Воркер сам клеймит задачу, когда свободен (pull-on-demand).
 func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 	defer e.wg.Done()
 
@@ -149,20 +97,46 @@ func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 		select {
 		case <-ctx.Done():
 			return
-		case job, ok := <-e.jobCh:
-			if !ok {
+		default:
+		}
+
+		job, err := e.repo.ClaimOne(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
 				return
 			}
-			e.processJob(ctx, job, workerID)
+			slog.Error("worker failed to claim job",
+				"worker_id", workerID,
+				"error", err,
+			)
+			e.sleep(ctx, e.cfg.PollInterval)
+			continue
 		}
+
+		if job == nil {
+			// Очередь пуста — обновляем метрику и ждём.
+			if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
+				e.metrics.DBQueueDepth.Set(float64(depth))
+			}
+			e.sleep(ctx, e.cfg.PollInterval)
+			continue
+		}
+
+		// Обновляем метрику глубины очереди в БД.
+		if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
+			e.metrics.DBQueueDepth.Set(float64(depth))
+		}
+
+		e.processJob(job, workerID)
 	}
 }
 
-// processJob выполняет вызов зарегистрированного хэндлера и обновляет метрики in-flight.
-func (e *Engine) processJob(ctx context.Context, job Job, workerID int) {
+// processJob выполняет хендлер с recover() и обновляет статус задачи.
+// Хендлер получает отдельный контекст с таймаутом (не привязан к ctx движка).
+// Финализация (MarkDone/FailJob) выполняется на неотменяемом контексте.
+func (e *Engine) processJob(job *Job, workerID int) {
 	e.metrics.InFlightWorkers.Inc()
 	defer e.metrics.InFlightWorkers.Dec()
-	defer e.metrics.ChannelDepth.Set(float64(len(e.jobCh)))
 
 	handler, err := e.registry.Get(job.Type)
 	if err != nil {
@@ -172,23 +146,76 @@ func (e *Engine) processJob(ctx context.Context, job Job, workerID int) {
 			"job_type", job.Type,
 			"error", err,
 		)
-		if failErr := e.repo.FailJob(ctx, job.ID.String(), "unknown job type: "+job.Type); failErr != nil {
+		finCtx, finCancel := context.WithTimeout(context.Background(), finalizationTimeout)
+		defer finCancel()
+		if failErr := e.repo.FailJob(finCtx, job.ID.String(), "unknown job type: "+job.Type); failErr != nil {
 			slog.Error("failed to mark job as failed", "job_id", job.ID.String(), "error", failErr)
 		}
+		e.metrics.JobsFailedTotal.Inc()
 		return
 	}
 
-	if err := handler.Handle(ctx, job); err != nil {
+	// Отдельный контекст для задачи — не привязан к ctx движка.
+	jobCtx, jobCancel := context.WithTimeout(context.Background(), e.cfg.JobTimeout)
+
+	// Запускаем хендлер с recover().
+	handlerErr := e.safeHandle(jobCtx, handler, *job, workerID)
+	jobCancel()
+
+	// Финализация на неотменяемом контексте — гарантирует запись в БД.
+	finCtx, finCancel := context.WithTimeout(context.Background(), finalizationTimeout)
+	defer finCancel()
+
+	if handlerErr != nil {
 		slog.Error("job handling error",
 			"worker_id", workerID,
 			"job_id", job.ID.String(),
 			"job_type", job.Type,
-			"error", err,
+			"error", handlerErr,
 		)
-		if failErr := e.repo.FailJob(ctx, job.ID.String(), err.Error()); failErr != nil {
+		if failErr := e.repo.FailJob(finCtx, job.ID.String(), handlerErr.Error()); failErr != nil {
 			slog.Error("failed to mark job as failed", "job_id", job.ID.String(), "error", failErr)
 		}
+		e.metrics.JobsFailedTotal.Inc()
 		return
 	}
+
+	if err := e.repo.MarkDone(finCtx, job.ID.String()); err != nil {
+		slog.Error("failed to mark job as done",
+			"worker_id", workerID,
+			"job_id", job.ID.String(),
+			"error", err,
+		)
+	}
+	e.metrics.JobsProcessedTotal.Inc()
 }
 
+// safeHandle оборачивает вызов handler.Handle в recover().
+// При панике возвращает ошибку, воркер продолжает работу.
+func (e *Engine) safeHandle(ctx context.Context, handler Handler, job Job, workerID int) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			slog.Error("panic in job handler",
+				"worker_id", workerID,
+				"job_id", job.ID.String(),
+				"job_type", job.Type,
+				"panic", r,
+				"stack", string(stack),
+			)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+
+	return handler.Handle(ctx, job)
+}
+
+// sleep ждёт указанную длительность или завершения контекста.
+func (e *Engine) sleep(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}

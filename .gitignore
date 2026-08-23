@@ -3,3 +3,5 @@ coverage.out
 .env
 *.test
 tmp/
+.DS_Store
+mediaservice

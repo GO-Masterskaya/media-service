@@ -130,7 +130,7 @@ func main() {
 
 	engine := processing.NewEngine(processing.Config{
 		WorkerConcurrency: cfg.WorkerConcurrency,
-		QueueBuffer:       cfg.QueueBuffer,
+		JobTimeout:        cfg.JobTimeout,
 	}, repoAdapter, procRegistry, procMetrics)
 
 	if err := engine.Start(ctx); err != nil {

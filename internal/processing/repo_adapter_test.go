@@ -21,3 +21,19 @@ func TestRepoAdapterFailJobInvalidUUID(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "parse job id")
 }
+
+// Тест проверяет валидацию UUID в MarkDone адаптера
+func TestRepoAdapterMarkDoneInvalidUUID(t *testing.T) {
+	adapter := processing.NewRepoAdapter(nil, "worker-test")
+	err := adapter.MarkDone(context.Background(), "invalid-uuid")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parse job id")
+}
+
+// Тест проверяет валидацию UUID в ReleaseJob адаптера
+func TestRepoAdapterReleaseJobInvalidUUID(t *testing.T) {
+	adapter := processing.NewRepoAdapter(nil, "worker-test")
+	err := adapter.ReleaseJob(context.Background(), "invalid-uuid")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parse job id")
+}

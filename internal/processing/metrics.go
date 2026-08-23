@@ -7,9 +7,10 @@ import (
 
 // Metrics содержит метрики Prometheus для движка обработки.
 type Metrics struct {
-	ChannelDepth    prometheus.Gauge
-	InFlightWorkers prometheus.Gauge
-	DBQueueDepth    prometheus.Gauge
+	InFlightWorkers    prometheus.Gauge
+	DBQueueDepth       prometheus.Gauge
+	JobsProcessedTotal prometheus.Counter
+	JobsFailedTotal    prometheus.Counter
 }
 
 // NewMetrics создаёт и регистрирует метрики.
@@ -21,12 +22,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	factory := promauto.With(reg)
 
 	return &Metrics{
-		ChannelDepth: factory.NewGauge(prometheus.GaugeOpts{
-			Namespace: "media",
-			Subsystem: "processing",
-			Name:      "channel_depth",
-			Help:      "Current number of jobs buffered in internal channel.",
-		}),
 		InFlightWorkers: factory.NewGauge(prometheus.GaugeOpts{
 			Namespace: "media",
 			Subsystem: "processing",
@@ -38,6 +33,18 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Subsystem: "processing",
 			Name:      "db_queue_depth",
 			Help:      "Current number of queued jobs in database.",
+		}),
+		JobsProcessedTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "jobs_processed_total",
+			Help:      "Total number of successfully processed jobs.",
+		}),
+		JobsFailedTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "jobs_failed_total",
+			Help:      "Total number of failed jobs.",
 		}),
 	}
 }

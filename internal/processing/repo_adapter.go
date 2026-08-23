@@ -26,27 +26,43 @@ func NewRepoAdapter(jobRepo *repo.PgJobRepo, ownerID string) *RepoAdapter {
 	}
 }
 
-// ClaimQueued забирает до limit задач из БД и маппит repo.Job → processing.Job.
-func (a *RepoAdapter) ClaimQueued(ctx context.Context, limit int) ([]Job, error) {
-	repoJobs, err := a.jobRepo.ClaimBatch(ctx, a.ownerID, limit)
+// ClaimOne забирает одну задачу из БД и маппит repo.Job → processing.Job.
+// Если очередь пуста, возвращает (nil, nil).
+func (a *RepoAdapter) ClaimOne(ctx context.Context) (*Job, error) {
+	repoJob, err := a.jobRepo.ClaimNext(ctx, a.ownerID)
 	if err != nil {
-		return nil, fmt.Errorf("claim queued: %w", err)
+		if errors.Is(err, repo.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("claim one: %w", err)
 	}
 
-	jobs := make([]Job, 0, len(repoJobs))
-	for _, rj := range repoJobs {
-		jobs = append(jobs, Job{
-			ID:      rj.ID,
-			MediaID: rj.MediaID,
-			Type:    rj.Type,
-		})
-	}
-	return jobs, nil
+	return &Job{
+		ID:      repoJob.ID,
+		MediaID: repoJob.MediaID,
+		Type:    repoJob.Type,
+	}, nil
 }
 
 // GetQueueDepth возвращает количество задач в очереди БД.
 func (a *RepoAdapter) GetQueueDepth(ctx context.Context) (int64, error) {
 	return a.jobRepo.GetQueueDepth(ctx)
+}
+
+// MarkDone помечает задачу как done через repo.MarkDone.
+func (a *RepoAdapter) MarkDone(ctx context.Context, jobID string) error {
+	id, err := uuid.Parse(jobID)
+	if err != nil {
+		return fmt.Errorf("parse job id: %w", err)
+	}
+	err = a.jobRepo.MarkDone(ctx, id, a.ownerID)
+	if err != nil {
+		if errors.Is(err, repo.ErrLeaseMismatch) || errors.Is(err, repo.ErrNotFound) {
+			return fmt.Errorf("mark done %s (non-critical): %w", jobID, err)
+		}
+		return fmt.Errorf("mark done: %w", err)
+	}
+	return nil
 }
 
 // FailJob помечает задачу как failed через repo.MarkFailed.
@@ -62,6 +78,22 @@ func (a *RepoAdapter) FailJob(ctx context.Context, jobID string, reason string) 
 			return fmt.Errorf("fail job %s (non-critical): %w", jobID, err)
 		}
 		return fmt.Errorf("fail job: %w", err)
+	}
+	return nil
+}
+
+// ReleaseJob возвращает задачу из running обратно в queued через repo.Release.
+func (a *RepoAdapter) ReleaseJob(ctx context.Context, jobID string) error {
+	id, err := uuid.Parse(jobID)
+	if err != nil {
+		return fmt.Errorf("parse job id: %w", err)
+	}
+	err = a.jobRepo.Release(ctx, id, a.ownerID)
+	if err != nil {
+		if errors.Is(err, repo.ErrLeaseMismatch) || errors.Is(err, repo.ErrNotFound) {
+			return fmt.Errorf("release job %s (non-critical): %w", jobID, err)
+		}
+		return fmt.Errorf("release job: %w", err)
 	}
 	return nil
 }

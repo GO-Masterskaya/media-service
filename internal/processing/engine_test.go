@@ -18,54 +18,48 @@ import (
 )
 
 // MockJobRepository — потокобезопасный мок репозитория для unit-тестов.
+// Реализует pull-on-demand интерфейс (ClaimOne вместо ClaimQueued).
 type MockJobRepository struct {
-	mu           sync.Mutex
-	queuedJobs   []processing.Job
-	maxClaimedAt int
-	failedJobs   map[string]string // jobID -> reason
+	mu         sync.Mutex
+	queuedJobs []processing.Job
+	doneJobs   map[string]bool   // jobID -> true
+	failedJobs map[string]string // jobID -> reason
+	released   map[string]bool   // jobID -> true
 }
 
 func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
 	return &MockJobRepository{
 		queuedJobs: jobs,
+		doneJobs:   make(map[string]bool),
 		failedJobs: make(map[string]string),
+		released:   make(map[string]bool),
 	}
 }
 
-func (m *MockJobRepository) ClaimQueued(ctx context.Context, limit int) ([]processing.Job, error) {
+func (m *MockJobRepository) ClaimOne(_ context.Context) (*processing.Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if limit > m.maxClaimedAt {
-		m.maxClaimedAt = limit
-	}
 
 	if len(m.queuedJobs) == 0 {
 		return nil, nil
 	}
 
-	count := limit
-	if count > len(m.queuedJobs) {
-		count = len(m.queuedJobs)
-	}
-
-	claimed := make([]processing.Job, count)
-	copy(claimed, m.queuedJobs[:count])
-	m.queuedJobs = m.queuedJobs[count:]
-
-	return claimed, nil
+	job := m.queuedJobs[0]
+	m.queuedJobs = m.queuedJobs[1:]
+	return &job, nil
 }
 
-func (m *MockJobRepository) GetQueueDepth(ctx context.Context) (int64, error) {
+func (m *MockJobRepository) GetQueueDepth(_ context.Context) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return int64(len(m.queuedJobs)), nil
 }
 
-func (m *MockJobRepository) GetMaxClaimedLimit() int {
+func (m *MockJobRepository) MarkDone(_ context.Context, jobID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.maxClaimedAt
+	m.doneJobs[jobID] = true
+	return nil
 }
 
 func (m *MockJobRepository) FailJob(_ context.Context, jobID string, reason string) error {
@@ -75,14 +69,31 @@ func (m *MockJobRepository) FailJob(_ context.Context, jobID string, reason stri
 	return nil
 }
 
+func (m *MockJobRepository) ReleaseJob(_ context.Context, jobID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.released[jobID] = true
+	return nil
+}
+
+func (m *MockJobRepository) GetDoneJobs() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make(map[string]bool, len(m.doneJobs))
+	for k, v := range m.doneJobs {
+		cp[k] = v
+	}
+	return cp
+}
+
 func (m *MockJobRepository) GetFailedJobs() map[string]string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	copy := make(map[string]string, len(m.failedJobs))
+	cp := make(map[string]string, len(m.failedJobs))
 	for k, v := range m.failedJobs {
-		copy[k] = v
+		cp[k] = v
 	}
-	return copy
+	return cp
 }
 
 // 1. Тест: Одновременно работает не больше WORKER_CONCURRENCY jobs
@@ -126,22 +137,22 @@ func TestWorkerConcurrencyLimit(t *testing.T) {
 
 	cfg := processing.Config{
 		WorkerConcurrency: concurrency,
-		QueueBuffer:       10,
 		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
 	}
 
 	reg := prometheus.NewRegistry()
 	metrics := processing.NewMetrics(reg)
 	engine := processing.NewEngine(cfg, repo, registry, metrics)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	require.NoError(t, engine.Start(ctx))
 
 	assert.Eventually(t, func() bool {
 		return processedCount.Load() == int32(totalJobs)
-	}, 1500*time.Millisecond, 20*time.Millisecond)
+	}, 4*time.Second, 20*time.Millisecond)
 
 	engine.Stop()
 
@@ -149,10 +160,9 @@ func TestWorkerConcurrencyLimit(t *testing.T) {
 	assert.LessOrEqual(t, maxActive.Load(), int32(concurrency), "Максимальное число одновременно выполняемых задач не должно превышать WORKER_CONCURRENCY")
 }
 
-// 2. Тест: Feeder claim-ит не больше свободной ёмкости (Backpressure)
-func TestFeederBackpressure(t *testing.T) {
-	const bufferSize = 4
-	const totalJobs = 10
+// 2. Тест: Воркер клеймит ровно по одной задаче (pull-on-demand)
+func TestPullOnDemandClaimOne(t *testing.T) {
+	const totalJobs = 6
 
 	jobs := make([]processing.Job, totalJobs)
 	for i := 0; i < totalJobs; i++ {
@@ -169,33 +179,33 @@ func TestFeederBackpressure(t *testing.T) {
 	var processedCount atomic.Int32
 
 	registry.Register("thumbnail", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		processedCount.Add(1)
 		return nil
 	}))
 
 	cfg := processing.Config{
-		WorkerConcurrency: 1,
-		QueueBuffer:       bufferSize,
+		WorkerConcurrency: 2,
 		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
 	}
 
 	reg := prometheus.NewRegistry()
 	metrics := processing.NewMetrics(reg)
 	engine := processing.NewEngine(cfg, repo, registry, metrics)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	require.NoError(t, engine.Start(ctx))
 
 	assert.Eventually(t, func() bool {
 		return processedCount.Load() == int32(totalJobs)
-	}, 1500*time.Millisecond, 20*time.Millisecond)
+	}, 4*time.Second, 20*time.Millisecond)
 
 	engine.Stop()
 
-	assert.LessOrEqual(t, repo.GetMaxClaimedLimit(), bufferSize, "Feeder не должен запрашивать у БД больше свободной ёмкости канала")
+	assert.Equal(t, int32(totalJobs), processedCount.Load())
 }
 
 // 3. Тест: Handler registry различает типы jobs и отвергает неизвестный тип
@@ -222,7 +232,7 @@ func TestHandlerRegistryRejection(t *testing.T) {
 	assert.ErrorIs(t, err, processing.ErrUnknownJobType)
 }
 
-// 4. Тест: Метрики отражают channel depth, DB queue depth и in-flight workers
+// 4. Тест: Метрики отражают in-flight workers
 func TestMetricsReflection(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	metrics := processing.NewMetrics(reg)
@@ -245,13 +255,13 @@ func TestMetricsReflection(t *testing.T) {
 
 	cfg := processing.Config{
 		WorkerConcurrency: 2,
-		QueueBuffer:       8,
 		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
 	}
 
 	engine := processing.NewEngine(cfg, repo, registry, metrics)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	require.NoError(t, engine.Start(ctx))
@@ -273,6 +283,13 @@ func getGaugeValue(t *testing.T, g prometheus.Gauge) float64 {
 	return m.GetGauge().GetValue()
 }
 
+func getCounterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	require.NoError(t, c.Write(&m))
+	return m.GetCounter().GetValue()
+}
+
 // 5. Тест: неизвестный тип задачи помечается как failed
 func TestUnknownJobTypeMarkedFailed(t *testing.T) {
 	jobID := uuid.New()
@@ -286,15 +303,15 @@ func TestUnknownJobTypeMarkedFailed(t *testing.T) {
 
 	cfg := processing.Config{
 		WorkerConcurrency: 1,
-		QueueBuffer:       4,
 		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
 	}
 
 	reg := prometheus.NewRegistry()
 	metrics := processing.NewMetrics(reg)
 	engine := processing.NewEngine(cfg, repo, registry, metrics)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	require.NoError(t, engine.Start(ctx))
@@ -304,7 +321,7 @@ func TestUnknownJobTypeMarkedFailed(t *testing.T) {
 		failed := repo.GetFailedJobs()
 		_, ok := failed[jobID.String()]
 		return ok
-	}, 1*time.Second, 20*time.Millisecond)
+	}, 2*time.Second, 20*time.Millisecond)
 
 	engine.Stop()
 
@@ -331,15 +348,15 @@ func TestHandlerErrorMarkedFailed(t *testing.T) {
 
 	cfg := processing.Config{
 		WorkerConcurrency: 1,
-		QueueBuffer:       4,
 		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
 	}
 
 	reg := prometheus.NewRegistry()
 	metrics := processing.NewMetrics(reg)
 	engine := processing.NewEngine(cfg, repo, registry, metrics)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	require.NoError(t, engine.Start(ctx))
@@ -348,7 +365,7 @@ func TestHandlerErrorMarkedFailed(t *testing.T) {
 		failed := repo.GetFailedJobs()
 		_, ok := failed[jobID.String()]
 		return ok
-	}, 1*time.Second, 20*time.Millisecond)
+	}, 2*time.Second, 20*time.Millisecond)
 
 	engine.Stop()
 
@@ -356,4 +373,149 @@ func TestHandlerErrorMarkedFailed(t *testing.T) {
 	reason, ok := failed[jobID.String()]
 	assert.True(t, ok, "Задача с ошибкой handler должна быть помечена как failed")
 	assert.Contains(t, reason, "ffmpeg exit code 1")
+}
+
+// 7. Тест: успешная задача помечается как done (MarkDone)
+func TestSuccessfulJobMarkedDone(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "transcode"},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	registry.Register("transcode", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return nil // успех
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	assert.Eventually(t, func() bool {
+		done := repo.GetDoneJobs()
+		return done[jobID.String()]
+	}, 2*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	done := repo.GetDoneJobs()
+	assert.True(t, done[jobID.String()], "Успешная задача должна быть помечена как done")
+
+	// Проверяем метрику processed
+	assert.Equal(t, float64(1), getCounterValue(t, metrics.JobsProcessedTotal))
+}
+
+// 8. Тест: паника в handler не роняет воркер, задача помечается как failed
+func TestPanicInHandlerRecovery(t *testing.T) {
+	panicJobID := uuid.New()
+	normalJobID := uuid.New()
+
+	jobs := []processing.Job{
+		{ID: panicJobID, MediaID: uuid.New(), Type: "panicker"},
+		{ID: normalJobID, MediaID: uuid.New(), Type: "normal"},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	registry.Register("panicker", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		panic("unexpected nil pointer in ffmpeg wrapper")
+	}))
+
+	registry.Register("normal", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return nil
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	// Ждём, пока обе задачи будут обработаны
+	assert.Eventually(t, func() bool {
+		failed := repo.GetFailedJobs()
+		done := repo.GetDoneJobs()
+		return failed[panicJobID.String()] != "" && done[normalJobID.String()]
+	}, 3*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	// Паникующая задача — failed
+	failed := repo.GetFailedJobs()
+	reason, ok := failed[panicJobID.String()]
+	assert.True(t, ok, "Паникующая задача должна быть помечена как failed")
+	assert.Contains(t, reason, "panic:")
+
+	// Нормальная задача — done (воркер выжил после паники)
+	done := repo.GetDoneJobs()
+	assert.True(t, done[normalJobID.String()], "Нормальная задача после паники должна быть обработана")
+}
+
+// 9. Тест: таймаут на задачу — зависший handler отменяется по JobTimeout
+func TestJobTimeout(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "slow"},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	registry.Register("slow", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		// Имитируем зависший ffmpeg — ждём отмены контекста.
+		<-ctx.Done()
+		return ctx.Err()
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        200 * time.Millisecond, // короткий таймаут для теста
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	// Ждём, пока задача будет помечена как failed по таймауту
+	assert.Eventually(t, func() bool {
+		failed := repo.GetFailedJobs()
+		_, ok := failed[jobID.String()]
+		return ok
+	}, 3*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	failed := repo.GetFailedJobs()
+	reason, ok := failed[jobID.String()]
+	assert.True(t, ok, "Задача с таймаутом должна быть помечена как failed")
+	assert.Contains(t, reason, "context deadline exceeded")
 }

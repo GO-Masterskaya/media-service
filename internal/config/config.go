@@ -29,6 +29,7 @@ type Config struct {
 	// Processing
 	WorkerConcurrency int           `env:"WORKER_CONCURRENCY"    env-default:"2"`
 	QueueBuffer       int           `env:"QUEUE_BUFFER"          env-default:"64"`
+	JobTimeout        time.Duration `env:"JOB_TIMEOUT"           env-default:"10m"`
 	FFMPEGTimeout     time.Duration `env:"FFMPEG_TIMEOUT"        env-default:"10m"`
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
 	Rendition         int           `env:"RENDITION"             env-default:"720"`
@@ -105,6 +106,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "MIMEAllowlist:%v, ", c.MIMEAllowlist)
 	fmt.Fprintf(&b, "WorkerConcurrency:%d, ", c.WorkerConcurrency)
 	fmt.Fprintf(&b, "QueueBuffer:%d, ", c.QueueBuffer)
+	fmt.Fprintf(&b, "JobTimeout:%s, ", c.JobTimeout)
 	fmt.Fprintf(&b, "FFMPEGTimeout:%s, ", c.FFMPEGTimeout)
 	fmt.Fprintf(&b, "ShutdownTimeout:%s, ", c.ShutdownTimeout)
 	fmt.Fprintf(&b, "Rendition:%d, ", c.Rendition)
