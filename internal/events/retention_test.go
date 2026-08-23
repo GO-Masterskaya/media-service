@@ -15,7 +15,6 @@ import (
 type batchingCleanerRepo struct {
 	totalRecords int
 	deletedCalls []int
-	callIdx      int
 	err          error
 }
 
