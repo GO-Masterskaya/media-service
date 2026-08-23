@@ -19,12 +19,14 @@ type MediaServer struct {
 	mediav1.UnimplementedMediaServiceServer
 	svc              *media.Service
 	strictOwnerCheck bool
+	deleteBatchSize  int
 }
 
-func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
+func NewMediaServer(svc *media.Service, strictOwnerCheck bool, deleteBatchSize int) *MediaServer {
 	return &MediaServer{
 		svc:              svc,
 		strictOwnerCheck: strictOwnerCheck,
+		deleteBatchSize:  deleteBatchSize,
 	}
 }
 
@@ -91,6 +93,54 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		Url:       url.URL,
 		ExpiresAt: timestamppb.New(url.ExpiresAt),
 	}, nil
+}
+
+// DeleteMedia — issue #13. Владелец берётся из доверенной metadata (см.
+// resolveCaller) и сверяется с owner_id media внутри media.Service.
+func (s *MediaServer) DeleteMedia(ctx context.Context, req *mediav1.DeleteMediaRequest) (*mediav1.DeleteMediaResponse, error) {
+	if req.MediaId == "" {
+		return nil, status.Error(codes.InvalidArgument, "media_id is required")
+	}
+	mediaID, err := uuid.Parse(req.MediaId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid media_id")
+	}
+
+	callerID, err := s.resolveCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.svc.DeleteMedia(ctx, callerID, mediaID); err != nil {
+		return nil, err
+	}
+	return &mediav1.DeleteMediaResponse{Deleted: true}, nil
+}
+
+// DeleteByOwner — issue #13. Каскадно удаляет всё media вызывающего owner'а.
+// v1 разрешает удалять только СВОИ данные (callerID == owner_id из запроса).
+func (s *MediaServer) DeleteByOwner(ctx context.Context, req *mediav1.DeleteByOwnerRequest) (*mediav1.DeleteByOwnerResponse, error) {
+	if req.OwnerId == "" {
+		return nil, status.Error(codes.InvalidArgument, "owner_id is required")
+	}
+	ownerID, err := uuid.Parse(req.OwnerId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid owner_id")
+	}
+
+	callerID, err := s.resolveCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if callerID != ownerID {
+		return nil, status.Error(codes.PermissionDenied, "access denied")
+	}
+
+	count, err := s.svc.DeleteByOwner(ctx, ownerID, s.deleteBatchSize)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	return &mediav1.DeleteByOwnerResponse{DeletedCount: uint32(count)}, nil
 }
 
 // resolveCaller — единая точка решения strict/non-strict.

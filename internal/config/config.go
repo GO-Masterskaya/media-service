@@ -35,8 +35,12 @@ type Config struct {
 	ThumbSecond       int           `env:"THUMB_SECOND"          env-default:"1"`
 
 	// Storage / TTL
-	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
-	TTLReapInterval time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	PresignTTL       time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
+	TTLReapInterval  time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	TTLReapBatchSize int           `env:"TTL_REAP_BATCH_SIZE"   env-default:"100"`
+
+	// Delete
+	DeleteBatchSize int `env:"DELETE_BATCH_SIZE" env-default:"100"`
 
 	// Upload temp storage
 	UploadTempDir         string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
@@ -111,6 +115,8 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "ThumbSecond:%d, ", c.ThumbSecond)
 	fmt.Fprintf(&b, "PresignTTL:%s, ", c.PresignTTL)
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
+	fmt.Fprintf(&b, "TTLReapBatchSize:%d, ", c.TTLReapBatchSize)
+	fmt.Fprintf(&b, "DeleteBatchSize:%d, ", c.DeleteBatchSize)
 	fmt.Fprintf(&b, "UploadTempDir:%q, ", c.UploadTempDir)
 	fmt.Fprintf(&b, "UploadReserveBytes:%d, ", c.UploadReserveBytes)
 	fmt.Fprintf(&b, "UploadStaleGrace:%s, ", c.UploadStaleGrace)

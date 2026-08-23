@@ -26,7 +26,7 @@ import (
 func newTestServerWithStrict(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface, strict bool) *MediaServer {
 	discardLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 	svc := media.NewService(mediaRepo, derivRepo, st, 15*time.Minute, discardLog)
-	return NewMediaServer(svc, strict)
+	return NewMediaServer(svc, strict, 100)
 }
 
 func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
@@ -56,6 +56,18 @@ func (s *mockMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, l
 
 func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
+}
+
+func (m *mockMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+	return nil, false, nil
+}
+
+func (m *mockMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (m *mockMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	return nil, nil
 }
 
 type mockDerivRepo struct {

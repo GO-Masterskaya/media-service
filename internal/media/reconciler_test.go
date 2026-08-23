@@ -38,6 +38,19 @@ func (s *recStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time
 	return s.mediaList, nil
 }
 func (s *recStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error { return nil }
+
+func (s *recStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+	return nil, false, nil
+}
+
+func (s *recStubMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (s *recStubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	if s.err != nil {
 		return nil, s.err

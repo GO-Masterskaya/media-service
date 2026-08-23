@@ -24,6 +24,14 @@ import (
 type svcStubMediaRepo struct {
 	media *repo.Media
 	err   error
+
+	// --- delete/TTL (issues #13, #17) ---
+	markDeletingFound bool
+	markDeletingErr   error
+	hardDeleteErr     error
+
+	listDeletableByOwner func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error)
+	listExpiredIDs       func(ctx context.Context, limit int) ([]uuid.UUID, error)
 }
 
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
@@ -32,10 +40,35 @@ func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Med
 func (s *svcStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
-func (s *svcStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
-	return nil
-}
 func (s *svcStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, nil
+}
+
+func (s *svcStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+	if s.markDeletingErr != nil {
+		return nil, false, s.markDeletingErr
+	}
+	if !s.markDeletingFound {
+		return nil, false, nil
+	}
+	return s.media, true, nil
+}
+
+func (s *svcStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return s.hardDeleteErr
+}
+
+func (s *svcStubMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if s.listDeletableByOwner != nil {
+		return s.listDeletableByOwner(ctx, ownerID, limit)
+	}
+	return nil, nil
+}
+
+func (s *svcStubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if s.listExpiredIDs != nil {
+		return s.listExpiredIDs(ctx, limit)
+	}
 	return nil, nil
 }
 
