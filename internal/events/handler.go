@@ -61,16 +61,13 @@ type Result struct {
 }
 
 // Handle — точка входа из Kafka consumer (#27).
-// Offset подтверждается только при Committable=true.
 func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
-	// 1. Декодирование envelope.
 	env, err := DecodeEnvelope(raw)
 	if err != nil {
 		h.sendDLQ(ctx, raw, uuid.Nil, "invalid envelope: "+err.Error())
 		return Result{Committable: true, Error: err}
 	}
 
-	// 2. Idempotency: атомарный claim (#28).
 	fingerprint := h.fingerprint(raw)
 	_, claimed, err := h.eventRepo.Claim(ctx, env.EventID, fingerprint, h.consumerID, h.leaseDuration)
 	if err != nil {
@@ -79,7 +76,6 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 			h.sendDLQ(ctx, raw, env.EventID, "fingerprint conflict")
 			return Result{Committable: true, EventID: env.EventID, Error: err}
 		case errors.Is(err, repo.ErrClaimHeld):
-			// Другой consumer обрабатывает — не коммитим offset, Kafka передаст другому.
 			return Result{Committable: false, EventID: env.EventID, Error: err}
 		default:
 			h.log.Error("claim failed", slog.Any("error", err), slog.String("event_id", env.EventID.String()))
@@ -88,15 +84,12 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 	}
 
 	if !claimed {
-		// Уже обработано (done или dlq) — просто commit offset.
 		h.log.Info("event already processed, skipping", slog.String("event_id", env.EventID.String()))
 		return Result{Committable: true, EventID: env.EventID}
 	}
 
-	// 3. Side effect.
 	cmdErr := h.handleOnce(ctx, env)
 
-	// 4. Финализация.
 	if cmdErr == nil {
 		if err := h.eventRepo.MarkDone(ctx, env.EventID, h.consumerID, []byte(`{"status":"ok"}`)); err != nil {
 			if errors.Is(err, repo.ErrClaimLost) {
@@ -124,8 +117,6 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 		return Result{Committable: true, EventID: env.EventID, Error: cmdErr}
 	}
 
-	// Retryable: не коммитим offset, Kafka redelivers.
-	// Lease остаётся за нами; при redelivery — либо ErrClaimHeld, либо перехват после протухания.
 	return Result{Committable: false, EventID: env.EventID, Error: cmdErr}
 }
 
@@ -143,14 +134,11 @@ func (h *Handler) handleOnce(ctx context.Context, env *Envelope) error {
 func (h *Handler) handleAttach(ctx context.Context, env *Envelope) error {
 	payload, err := DecodeAttach(env.Payload)
 	if err != nil {
-		return err // permanent
+		return err
 	}
-
-	// Attach: проверяем/проставляем owner.
 	if err := h.mediaSvc.AttachMedia(ctx, payload.MediaID, payload.OwnerID); err != nil {
 		st, ok := status.FromError(err)
 		if ok && st.Code() == codes.NotFound {
-			// Media ещё не создана (race с upload) — retryable.
 			return RetryableError{err}
 		}
 		return ClassifyError(err)
@@ -163,12 +151,9 @@ func (h *Handler) handleDetach(ctx context.Context, env *Envelope) error {
 	if err != nil {
 		return err
 	}
-
-	// Detach: удаляем media. callerID=payload.OwnerID для проверки прав.
 	if err := h.mediaSvc.DeleteMedia(ctx, payload.OwnerID, payload.MediaID); err != nil {
 		st, ok := status.FromError(err)
 		if ok && st.Code() == codes.NotFound {
-			// Уже удалено — идемпотентно.
 			return nil
 		}
 		return ClassifyError(err)

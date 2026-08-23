@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// MediaService — подмножество media.Service, нужное event handler'у.
+// MediaService — подмножество media.Service для event handler'а.
 type MediaService interface {
 	GetMedia(ctx context.Context, mediaID uuid.UUID) (*repo.Media, error)
 	AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error

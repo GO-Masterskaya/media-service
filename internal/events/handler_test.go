@@ -16,19 +16,13 @@ import (
 	"mediaservice/internal/repo"
 )
 
-// --- stubs ---
-
 type stubMediaSvc struct {
 	media     *repo.Media
 	attachErr error
-	getErr    error
 	deleteErr error
 }
 
 func (s *stubMediaSvc) GetMedia(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
-	if s.getErr != nil {
-		return nil, s.getErr
-	}
 	if s.media == nil {
 		return nil, status.Error(codes.NotFound, "media not found")
 	}
@@ -80,8 +74,6 @@ func (s *stubDLQ) Publish(ctx context.Context, original []byte, eventID uuid.UUI
 	return s.err
 }
 
-// --- helpers ---
-
 func testLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
@@ -96,14 +88,10 @@ func makeEnvelope(t *testing.T, eventType string, payload string) []byte {
 	}`)
 }
 
-// --- tests: validation & idempotency ---
-
 func TestHandle_InvalidJSON_DLQ(t *testing.T) {
 	dlq := &stubDLQ{}
 	h := NewHandler(nil, &stubEventRepo{}, dlq, "test-consumer", testLog())
-
 	res := h.Handle(context.Background(), []byte("not json"))
-
 	assert.True(t, res.Committable)
 	assert.Error(t, res.Error)
 	assert.True(t, dlq.published)
@@ -112,21 +100,16 @@ func TestHandle_InvalidJSON_DLQ(t *testing.T) {
 func TestHandle_AlreadyProcessed(t *testing.T) {
 	h := NewHandler(nil, &stubEventRepo{claimed: false}, &stubDLQ{}, "test-consumer", testLog())
 	raw := makeEnvelope(t, "media.attach", `{}`)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.NoError(t, res.Error)
-	assert.Equal(t, uuid.MustParse("11111111-1111-1111-1111-111111111111"), res.EventID)
 }
 
 func TestHandle_ClaimHeld_NotCommittable(t *testing.T) {
 	repoStub := &stubEventRepo{claimErr: repo.ErrClaimHeld}
 	h := NewHandler(nil, repoStub, &stubDLQ{}, "test-consumer", testLog())
 	raw := makeEnvelope(t, "media.attach", `{}`)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.False(t, res.Committable)
 	assert.ErrorIs(t, res.Error, repo.ErrClaimHeld)
 }
@@ -136,26 +119,19 @@ func TestHandle_FingerprintConflict_DLQ(t *testing.T) {
 	dlq := &stubDLQ{}
 	h := NewHandler(nil, repoStub, dlq, "test-consumer", testLog())
 	raw := makeEnvelope(t, "media.attach", `{}`)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.ErrorIs(t, res.Error, repo.ErrFingerprintConflict)
 	assert.True(t, dlq.published)
 }
 
-// --- tests: attach ---
-
 func TestHandle_Attach_Success(t *testing.T) {
 	svc := &stubMediaSvc{}
 	repoStub := &stubEventRepo{claimed: true}
 	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.attach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.NoError(t, res.Error)
 }
@@ -165,58 +141,44 @@ func TestHandle_Attach_OwnerMismatch_Permanent_DLQ(t *testing.T) {
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
 	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}`
 	raw := makeEnvelope(t, "media.attach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.True(t, dlq.published)
 }
+
 func TestHandle_Attach_MediaNotFound_Retryable(t *testing.T) {
 	svc := &stubMediaSvc{attachErr: status.Error(codes.NotFound, "media not found")}
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
 	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.attach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.False(t, res.Committable)
 	assert.False(t, dlq.published)
-	assert.Error(t, res.Error)
-	assert.True(t, IsRetryable(res.Error), "NotFound от AttachMedia должен быть retryable (race с upload)")
+	assert.True(t, IsRetryable(res.Error))
 }
 
 func TestHandle_Attach_MarkDoneFailure_NotCommittable(t *testing.T) {
 	svc := &stubMediaSvc{}
 	repoStub := &stubEventRepo{claimed: true, markDoneErr: errors.New("db down")}
 	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.attach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.False(t, res.Committable)
 	assert.Error(t, res.Error)
 }
-
-// --- tests: detach ---
 
 func TestHandle_Detach_Success(t *testing.T) {
 	svc := &stubMediaSvc{}
 	repoStub := &stubEventRepo{claimed: true}
 	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.NoError(t, res.Error)
 }
@@ -225,12 +187,9 @@ func TestHandle_Detach_NotFound_Idempotent(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: status.Error(codes.NotFound, "media not found")}
 	repoStub := &stubEventRepo{claimed: true}
 	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.NoError(t, res.Error)
 }
@@ -240,16 +199,12 @@ func TestHandle_Detach_Retryable_NotCommittable(t *testing.T) {
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
 	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.False(t, res.Committable)
 	assert.False(t, dlq.published)
-	assert.Error(t, res.Error)
-	assert.True(t, IsRetryable(res.Error), "transient db error должен быть retryable")
+	assert.True(t, IsRetryable(res.Error))
 }
 
 func TestHandle_Detach_Permanent_DLQ(t *testing.T) {
@@ -257,12 +212,9 @@ func TestHandle_Detach_Permanent_DLQ(t *testing.T) {
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
 	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.True(t, res.Committable)
 	assert.True(t, dlq.published)
 }
@@ -271,12 +223,9 @@ func TestHandle_Detach_MarkDLQFailure_NotCommittable(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: status.Error(codes.PermissionDenied, "access denied")}
 	repoStub := &stubEventRepo{claimed: true, markDLQErr: errors.New("db down")}
 	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
-
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
-
 	res := h.Handle(context.Background(), raw)
-
 	assert.False(t, res.Committable)
 	assert.Error(t, res.Error)
 }

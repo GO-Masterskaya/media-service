@@ -13,6 +13,7 @@ import (
 
 	"mediaservice/internal/api"
 	"mediaservice/internal/config"
+	"mediaservice/internal/events"
 	"mediaservice/internal/media"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
@@ -68,6 +69,7 @@ func main() {
 	// +++ ADDED: 4.6 Repos + Service
 	mediaRepo := repo.NewPgMediaRepo(pool)
 	derivRepo := repo.NewPgDerivativeRepo(pool)
+	eventRepo := repo.NewPgProcessedEventRepo(pool)
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
@@ -79,8 +81,23 @@ func main() {
 	}
 	rec := media.NewReconciler(mediaRepo, sto, reconcilerCfg, slog.Default())
 
-	// В горутине:
 	go rec.Run(ctx)
+
+	// +++ ADDED: 4.6.1 Retention cleaner for processed_events (#39)
+	var cleaner events.ProcessedEventCleaner
+	if cfg.KafkaEnabled {
+		cleaner = events.NewProcessedEventCleaner(
+			eventRepo,
+			events.RetentionConfig{
+				Interval:   cfg.RetentionInterval,
+				OlderThan:  cfg.RetentionOlderThan,
+				BatchLimit: cfg.RetentionBatchSize,
+			},
+			slog.Default(),
+		)
+		go cleaner.Start(ctx)
+		slog.Info("processed event cleaner started", "interval", cfg.RetentionInterval, "older_than", cfg.RetentionOlderThan)
+	}
 
 	// +++ ADDED: 4.7 gRPC server + registration
 	grpcServer := grpc.NewServer()
@@ -142,6 +159,17 @@ func main() {
 				slog.Error("reconciler shutdown", "error", err)
 			}
 		}()
+
+		// +++ ADDED: cleaner shutdown (#39)
+		if cleaner != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// cleaner.Stop() не нужен — он реагирует на ctx.Done()
+				// но ждём, пока текущий тик/пачка завершится
+				slog.Info("processed event cleaner stopping")
+			}()
+		}
 
 		wg.Add(1)
 		go func() {

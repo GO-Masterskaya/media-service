@@ -8,8 +8,6 @@ import (
 	"mediaservice/internal/repo"
 )
 
-// ProcessedEventCleaner периодически чистит терминальные записи (done/dlq)
-// из processed_events, чтобы таблица не росла бесконечно.
 type ProcessedEventCleaner interface {
 	Start(ctx context.Context)
 }
@@ -38,7 +36,7 @@ func NewProcessedEventCleaner(
 		cfg.Interval = 1 * time.Hour
 	}
 	if cfg.OlderThan <= 0 {
-		cfg.OlderThan = 7 * 24 * time.Hour
+		cfg.OlderThan = 30 * 24 * time.Hour // 30 days; must exceed Kafka topic retention
 	}
 	if cfg.BatchLimit <= 0 {
 		cfg.BatchLimit = 1000
@@ -69,16 +67,37 @@ func (c *processedEventCleaner) Start(ctx context.Context) {
 
 func (c *processedEventCleaner) runOnce(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-c.cfg.OlderThan)
+	var totalDeleted int64
 
-	deleted, err := c.repo.DeleteTerminalOlderThan(ctx, cutoff, c.cfg.BatchLimit)
-	if err != nil {
-		c.log.Error("retention cleanup failed", slog.Any("error", err))
-		return
+	for {
+		select {
+		case <-ctx.Done():
+			c.log.Info("retention cleanup interrupted by shutdown", slog.Int64("deleted_this_run", totalDeleted))
+			return
+		default:
+		}
+
+		deleted, err := c.repo.DeleteTerminalOlderThan(ctx, cutoff, c.cfg.BatchLimit)
+		if err != nil {
+			c.log.Error("retention cleanup failed", slog.Any("error", err))
+			return
+		}
+
+		if deleted == 0 {
+			break
+		}
+
+		totalDeleted += deleted
+		c.log.Debug("retention cleanup batch", slog.Int64("deleted", deleted))
+
+		if deleted < int64(c.cfg.BatchLimit) {
+			break
+		}
 	}
 
-	if deleted > 0 {
+	if totalDeleted > 0 {
 		c.log.Info("retention cleanup completed",
-			slog.Int64("deleted", deleted),
+			slog.Int64("deleted", totalDeleted),
 			slog.Time("cutoff", cutoff),
 		)
 	} else {

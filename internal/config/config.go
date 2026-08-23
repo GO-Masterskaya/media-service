@@ -75,6 +75,10 @@ type Config struct {
 	ReconcilerGracePeriod time.Duration `env:"RECONCILER_GRACE_PERIOD" env-default:"1h"` // 1h для orphan safety
 	ReconcilerBatchSize   int           `env:"RECONCILER_BATCH_SIZE"   env-default:"100"`
 	ReconcilerDryRun      bool          `env:"RECONCILER_DRY_RUN"      env-default:"false"`
+
+	RetentionInterval  time.Duration `env:"RETENTION_INTERVAL" envDefault:"1h"`
+	RetentionOlderThan time.Duration `env:"RETENTION_OLDER_THAN" envDefault:"720h"` // 30 days
+	RetentionBatchSize int           `env:"RETENTION_BATCH_SIZE" envDefault:"1000"`
 }
 
 // Load читает .env (если есть), накладывает переменные окружения на дефолтные значения и валидирует.
