@@ -9,15 +9,16 @@ import (
 	"sync"
 	"syscall"
 
-	"google.golang.org/grpc"
-
 	"mediaservice/internal/api"
 	"mediaservice/internal/config"
 	"mediaservice/internal/media"
+	"mediaservice/internal/processing"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"mediaservice/internal/upload"
 	mediav1 "mediaservice/proto/media/v1"
+
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -52,6 +53,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 5. Запуск компонентов
+	//
+	// Думаю пока можем реализовать запуск-остановку просто списком,  но в идеале хотелось бы в отдельный менеджер вынести.
+
 	// +++ ADDED: 4.5 Storage (MinIO)
 	sto, err := storage.NewMinIO(storage.MinIOConfig{
 		Endpoint:  cfg.MinIOEndpoint,
@@ -68,6 +73,11 @@ func main() {
 	// +++ ADDED: 4.6 Repos + Service
 	mediaRepo := repo.NewPgMediaRepo(pool)
 	derivRepo := repo.NewPgDerivativeRepo(pool)
+	transcodeHandler := processing.NewTranscodeHandler(sto, derivRepo, cfg, slog.Default())
+	thumbnailHandler := processing.NewThumbnailHandler(sto, derivRepo, cfg, slog.Default())
+
+	_ = transcodeHandler
+	_ = thumbnailHandler
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
@@ -124,15 +134,17 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
-	// 8. Останавливаем компоненты
+	// 8. Останавливаем компоненты, передаем им shutdownCtx
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-
 		// 8.1 Перестаём принимать новые соединения.
+
+		// закрываем gRPC сервер
 		grpcServer.GracefulStop()
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
+		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.
 		var wg sync.WaitGroup
 
 		wg.Add(1)
@@ -166,16 +178,15 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// код Wait()'a стримов
+			//код Wait()'a стримов
 		}()
 
 		wg.Wait()
 
 		// 8.3 Инфраструктура — быстрые закрытия соединений.
 		pool.Close()
-		if err := sto.Close(); err != nil {
-			slog.Error("storage close", "error", err)
-		}
+		// minioClient.Close()
+		_ = shutdownCtx
 	}()
 
 	// 9. Дожидаемся остановки компонентов или истечения контекста.

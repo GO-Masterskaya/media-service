@@ -71,6 +71,16 @@ func (m *mockDerivRepo) Insert(_ context.Context, d repo.Derivative) (*repo.Deri
 	return &d, nil
 }
 
+func (m *mockDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if m.derivErr != nil {
+		return nil, m.derivErr
+	}
+	if m.deriv != nil {
+		return m.deriv, nil
+	}
+	return d, nil
+}
+
 type mockStorage struct {
 	reader io.ReadCloser
 	err    error
