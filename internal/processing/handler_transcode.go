@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"mediaservice/internal/config"
+	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"os"
 	"path/filepath"
@@ -93,12 +94,19 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		h.logError("failed to create input file", media.ID, err)
 		return nil, fmt.Errorf("error create input file: %w", err)
 	}
-	if _, err = io.Copy(inFile, res); err != nil {
-		_ = inFile.Close()
+
+	limitedReader := io.LimitReader(res, maxSourceSizeBytes+1)
+	write, err := io.Copy(inFile, limitedReader)
+	_ = inFile.Close()
+	if err != nil {
 		h.logError("failed to copy source data to input file", media.ID, err)
 		return nil, fmt.Errorf("error copy file: %w", err)
 	}
-	_ = inFile.Close()
+	if write > maxSourceSizeBytes {
+		err := errors.New("file size exceeds maximum allowed limit")
+		h.logError("source file too large", media.ID, err)
+		return nil, err
+	}
 
 	ext, mime, variant := h.resolveTranscodeFormat(media.Kind)
 	outputPath := filepath.Join(workDir, fmt.Sprintf("transcode_%s.%s", media.ID, ext))
@@ -154,13 +162,13 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		h.log.Warn("failed to probe transcoded file metadata", "media_id", media.ID, "error", err)
 	}
 
-	record := &DerivativeRecord{
+	record := &repo.Derivative{
+		ID:         uuid.New(),
 		MediaID:    media.ID,
-		Variant:    variant,
-		MIME:       mime,
+		Variant:    string(variant),
+		Mime:       mime,
 		SizeBytes:  info.Size(),
 		StorageKey: key,
-		Metadata:   metadata,
 	}
 
 	resRecord, err := h.repo.UpsertDerivative(ctx, record)
@@ -171,5 +179,13 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 
 	dbCommitted = true
 
-	return resRecord, nil
+	return &DerivativeRecord{
+		ID:         resRecord.ID,
+		MediaID:    resRecord.MediaID,
+		Variant:    storage.Variant(resRecord.Variant),
+		MIME:       record.Mime,
+		SizeBytes:  record.SizeBytes,
+		StorageKey: record.StorageKey,
+		Metadata:   metadata,
+	}, nil
 }

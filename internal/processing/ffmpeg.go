@@ -27,7 +27,10 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 		defer cancel()
 	}
 
-	safePath := filepath.Join(outputRoot, filepath.Base(outputPath))
+	safePath := outputPath
+	if !filepath.IsAbs(outputPath) {
+		safePath = filepath.Join(outputRoot, outputPath)
+	}
 
 	var args []string
 
@@ -80,7 +83,10 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (st
 		defer cancel()
 	}
 
-	safePath := filepath.Join(outputRoot, filepath.Base(outputPath))
+	safePath := outputPath
+	if !filepath.IsAbs(outputPath) {
+		safePath = filepath.Join(outputRoot, outputPath)
+	}
 
 	var args []string
 	switch kind {

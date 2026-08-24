@@ -3,19 +3,22 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
+	"mediaservice/internal/api"
 	"mediaservice/internal/config"
+	"mediaservice/internal/media"
+	"mediaservice/internal/processing"
 	"mediaservice/internal/repo"
-<<<<<<< HEAD
-=======
 	"mediaservice/internal/storage"
 	"mediaservice/internal/upload"
 	mediav1 "mediaservice/proto/media/v1"
->>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
+
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -50,11 +53,10 @@ func main() {
 		os.Exit(1)
 	}
 
-<<<<<<< HEAD
 	// 5. Запуск компонентов
 	//
 	// Думаю пока можем реализовать запуск-остановку просто списком,  но в идеале хотелось бы в отдельный менеджер вынести.
-=======
+
 	// +++ ADDED: 4.5 Storage (MinIO)
 	sto, err := storage.NewMinIO(storage.MinIOConfig{
 		Endpoint:  cfg.MinIOEndpoint,
@@ -71,6 +73,11 @@ func main() {
 	// +++ ADDED: 4.6 Repos + Service
 	mediaRepo := repo.NewPgMediaRepo(pool)
 	derivRepo := repo.NewPgDerivativeRepo(pool)
+	transcodeHandler := processing.NewTranscodeHandler(sto, derivRepo, cfg, slog.Default())
+	thumbnailHandler := processing.NewThumbnailHandler(sto, derivRepo, cfg, slog.Default())
+
+	_ = transcodeHandler
+	_ = thumbnailHandler
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
@@ -117,7 +124,6 @@ func main() {
 		os.Exit(1)
 	}
 
->>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
 	slog.Info("all components started successfully")
 
 	// 6. Ждём сигнала завершения.
@@ -133,11 +139,9 @@ func main() {
 	go func() {
 		defer close(shutdownDone)
 		// 8.1 Перестаём принимать новые соединения.
-<<<<<<< HEAD
+
 		// закрываем gRPC сервер
-=======
 		grpcServer.GracefulStop()
->>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
 		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.

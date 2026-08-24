@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"mediaservice/internal/config"
+	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ type DerivativeRecord struct {
 }
 
 type DerivativeRepository interface {
-	UpsertDerivative(ctx context.Context, record *DerivativeRecord) (*DerivativeRecord, error)
+	UpsertDerivative(ctx context.Context, record *repo.Derivative) (*repo.Derivative, error)
 }
 
 type ThumbnailHandler struct {
@@ -74,14 +75,14 @@ func (h *ThumbnailHandler) downloadSource(ctx context.Context, key, targetPath s
 	}
 	defer func() { _ = out.Close() }()
 
-
-	if _, err := io.Copy(out, res); err != nil {
-
-	// Ограничиваем считывание потока константой maxSourceSizeBytes
-	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
-
-	if _, err := io.Copy(out, limitedReader); err != nil {
+	limitedReader := io.LimitReader(res, maxSourceSizeBytes+1)
+	data, err := io.Copy(out, limitedReader)
+	if err != nil {
 		return fmt.Errorf("error copy file: %w", err)
+	}
+
+	if data > maxSourceSizeBytes {
+		return errors.New("file size exceeds maximum allowed limit")
 	}
 
 	return nil
@@ -192,21 +193,17 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		}
 	}
 
-	record := &DerivativeRecord{
+	record := &repo.Derivative{
 		MediaID:    media.ID,
-		Variant:    storage.VariantThumb,
-		MIME:       mime,
+		Variant:    string(storage.VariantThumb),
+		Mime:       mime,
 		SizeBytes:  info.Size(),
 		StorageKey: key,
-		Metadata:   metadata,
 	}
 
-<<<<<<< HEAD
-=======
 	// UpsertDerivative обновляет или создает запись о производной.
 	// На стороне репозитория UPSERT должен выполняться по уникальному индексу (media_id, variant):
 	// ON CONFLICT (media_id, variant) DO UPDATE SET ...
->>>>>>> 7cbeb4e73db2cc9f5332045262ead044a1cb2a56
 	res, err := h.repo.UpsertDerivative(ctx, record)
 	if err != nil {
 		h.logError("failed to save derivative in db", media.ID, err)
@@ -215,5 +212,13 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 
 	dbCommited = true
 
-	return res, nil
+	return &DerivativeRecord{
+		ID:         res.ID,
+		MediaID:    res.MediaID,
+		Variant:    storage.Variant(res.Variant),
+		MIME:       res.Mime,
+		SizeBytes:  res.SizeBytes,
+		StorageKey: res.StorageKey,
+		Metadata:   metadata,
+	}, nil
 }

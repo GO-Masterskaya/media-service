@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"mediaservice/internal/config"
+	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 )
 
@@ -178,7 +179,7 @@ func TestTranscodeHandler_RollbackOnDBError(t *testing.T) {
 	}
 
 	m := &mockRepo{
-		upsertFunc: func(ctx context.Context, record *DerivativeRecord) (*DerivativeRecord, error) {
+		upsertFunc: func(ctx context.Context, record *repo.Derivative) (*repo.Derivative, error) {
 			return nil, errors.New("db connection failed")
 		},
 	}
