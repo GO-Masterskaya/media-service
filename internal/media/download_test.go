@@ -31,6 +31,14 @@ func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, er
 	return m.media, m.mediaErr
 }
 
+func (m *mockMediaRepo) GetByOwnerIdempotency(_ context.Context, _ uuid.UUID, _ string) (*repo.Media, error) {
+	return nil, repo.ErrNotFound
+}
+
+func (m *mockMediaRepo) InsertWithJobs(_ context.Context, media repo.Media, _ []string) (*repo.Media, error) {
+	return &media, nil
+}
+
 func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
 }

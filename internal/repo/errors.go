@@ -7,6 +7,8 @@ var (
 	ErrLeaseMismatch      = errors.New("job lease mismatch")
 	ErrInvalidTransition  = errors.New("invalid job status transition")
 	ErrConcurrentConflict = errors.New("concurrent modification")
+	// ErrAlreadyExists — тот же (owner_id, idempotency_key) с другим fingerprint.
+	ErrAlreadyExists = errors.New("already exists")
 )
 
 // Processed events (Kafka идемпотентность, задача #28)
