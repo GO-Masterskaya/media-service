@@ -151,9 +151,8 @@ func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uui
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Идемпотентная вставка.
 	var inserted bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO media_attachments (media_id, owner_id)
@@ -166,17 +165,18 @@ func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uui
 		return fmt.Errorf("insert attachment: %w", err)
 	}
 	if !inserted {
-		// Уже привязано — ничего не делаем.
 		return nil
 	}
 
-	// Увеличиваем счётчик.
 	if _, err := tx.Exec(ctx, `
 		UPDATE media SET usages_count = usages_count + 1 WHERE id = $1
 	`, mediaID); err != nil {
 		return fmt.Errorf("increment usages: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit attachment: %w", err)
+	}
+	return nil
 }
 
 func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (int, error) {
@@ -184,9 +184,8 @@ func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uui
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Удаляем конкретную привязку.
 	var deleted bool
 	err = tx.QueryRow(ctx, `
 		DELETE FROM media_attachments
@@ -200,7 +199,6 @@ func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uui
 		return 0, fmt.Errorf("delete attachment: %w", err)
 	}
 
-	// Декремент + возврат нового значения.
 	var usages int
 	err = tx.QueryRow(ctx, `
 		UPDATE media SET usages_count = usages_count - 1 WHERE id = $1
@@ -209,5 +207,8 @@ func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uui
 	if err != nil {
 		return 0, fmt.Errorf("decrement usages: %w", err)
 	}
-	return usages, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit detach: %w", err)
+	}
+	return usages, nil
 }
