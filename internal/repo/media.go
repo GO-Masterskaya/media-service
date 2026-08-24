@@ -34,14 +34,10 @@ type MediaRepo interface {
 	ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*Media, error)
 	HardDelete(ctx context.Context, id uuid.UUID) error
 	ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error)
-	UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error
 	// CreateAttachment создаёт привязку media→owner и инкрементирует usages_count.
 	// Идемпотентна: если привязка уже есть — возвращает nil.
 	CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error
 
-	// DeleteAttachment удаляет привязку media→owner и декрементирует usages_count.
-	// Возвращает оставшееся количество usages.
-	// Если привязки не было — repo.ErrNotFound.
 	DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error)
 }
 
@@ -125,27 +121,6 @@ func (r *PgMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uui
 	return exists, rows.Err()
 }
 
-func (r *PgMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
-	const q = `UPDATE media SET owner_id = $1, updated_at = NOW() WHERE id = $2 AND (owner_id IS NULL OR owner_id = $1) RETURNING id`
-	var id uuid.UUID
-	err := r.pool.QueryRow(ctx, q, ownerID, mediaID).Scan(&id)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Различаем "записи нет" и "owner mismatch"
-		var dummy uuid.UUID
-		err2 := r.pool.QueryRow(ctx, `SELECT id FROM media WHERE id = $1`, mediaID).Scan(&dummy)
-		if err2 == nil {
-			return ErrOwnerMismatch
-		}
-		if errors.Is(err2, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		return fmt.Errorf("update owner check exists: %w", err2)
-	}
-	return fmt.Errorf("update owner: %w", err)
-}
 func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

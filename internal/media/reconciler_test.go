@@ -45,10 +45,6 @@ func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return s.exists, nil
 }
 
-func (s *recStubMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
-	return nil
-}
-
 func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
