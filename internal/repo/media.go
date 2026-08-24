@@ -35,6 +35,14 @@ type MediaRepo interface {
 	HardDelete(ctx context.Context, id uuid.UUID) error
 	ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error)
 	UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error
+	// CreateAttachment создаёт привязку media→owner и инкрементирует usages_count.
+	// Идемпотентна: если привязка уже есть — возвращает nil.
+	CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error
+
+	// DeleteAttachment удаляет привязку media→owner и декрементирует usages_count.
+	// Возвращает оставшееся количество usages.
+	// Если привязки не было — repo.ErrNotFound.
+	DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error)
 }
 
 type PgMediaRepo struct {
@@ -137,4 +145,69 @@ func (r *PgMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerI
 		return fmt.Errorf("update owner check exists: %w", err2)
 	}
 	return fmt.Errorf("update owner: %w", err)
+}
+func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Идемпотентная вставка.
+	var inserted bool
+	err = tx.QueryRow(ctx, `
+		INSERT INTO media_attachments (media_id, owner_id)
+		VALUES ($1, $2)
+		ON CONFLICT (media_id, owner_id) DO NOTHING
+		RETURNING true
+	`, mediaID, ownerID).Scan(&inserted)
+
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("insert attachment: %w", err)
+	}
+	if !inserted {
+		// Уже привязано — ничего не делаем.
+		return nil
+	}
+
+	// Увеличиваем счётчик.
+	if _, err := tx.Exec(ctx, `
+		UPDATE media SET usages_count = usages_count + 1 WHERE id = $1
+	`, mediaID); err != nil {
+		return fmt.Errorf("increment usages: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Удаляем конкретную привязку.
+	var deleted bool
+	err = tx.QueryRow(ctx, `
+		DELETE FROM media_attachments
+		WHERE media_id = $1 AND owner_id = $2
+		RETURNING true
+	`, mediaID, ownerID).Scan(&deleted)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("delete attachment: %w", err)
+	}
+
+	// Декремент + возврат нового значения.
+	var usages int
+	err = tx.QueryRow(ctx, `
+		UPDATE media SET usages_count = usages_count - 1 WHERE id = $1
+		RETURNING usages_count
+	`, mediaID).Scan(&usages)
+	if err != nil {
+		return 0, fmt.Errorf("decrement usages: %w", err)
+	}
+	return usages, tx.Commit(ctx)
 }

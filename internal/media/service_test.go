@@ -43,6 +43,13 @@ func (s *svcStubMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, o
 	return nil
 }
 
+func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type svcStubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error

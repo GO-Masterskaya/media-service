@@ -125,6 +125,8 @@ func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*repo.Media,
 	return m, nil
 }
 
+// AttachMedia создаёт привязку media к owner через таблицу media_attachments.
+// Идемпотентна: повторный attach того же owner возвращает nil.
 func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
 	if ownerID == uuid.Nil {
 		return status.Error(codes.InvalidArgument, "owner_id required")
@@ -139,44 +141,23 @@ func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uu
 		return status.Error(codes.Internal, "internal error")
 	}
 
-	// Идемпотентность: уже привязано к этому owner'у — не ошибка.
-	if media.OwnerID == ownerID {
-		return nil
-	}
-
-	// Перепривязка чужого запрещена.
-	if media.OwnerID != uuid.Nil {
-		return status.Errorf(codes.PermissionDenied, "owner mismatch: media belongs to %s", media.OwnerID)
-	}
-
-	// Нельзя привязать media в неподходящем статусе.
+	// Guard: нельзя привязать media в неподходящем статусе.
 	switch media.Status {
 	case repo.MediaStatusFailed, repo.MediaStatusDeleting:
 		return status.Errorf(codes.FailedPrecondition, "media not available for attach, status: %s", media.Status)
 	}
 
-	if err := s.mediaRepo.UpdateOwner(ctx, mediaID, ownerID); err != nil {
-		if errors.Is(err, repo.ErrNotFound) {
-			return status.Error(codes.NotFound, "media not found")
-		}
-		// Race guard: между GetByID и UpdateOwner другой запрос мог установить owner.
-		if errors.Is(err, repo.ErrOwnerMismatch) {
-			media, err2 := s.mediaRepo.GetByID(ctx, mediaID)
-			if err2 != nil {
-				s.log.Error("attach: race check get media failed", slog.Any("error", err2))
-				return status.Error(codes.Internal, "internal error")
-			}
-			if media.OwnerID == ownerID {
-				return nil // идемпотентность: наш owner уже записан
-			}
-			return status.Errorf(codes.PermissionDenied, "owner mismatch: media belongs to %s", media.OwnerID)
-		}
-		s.log.Error("attach: update owner failed", slog.Any("error", err))
+	// Атомарно: INSERT в media_attachments + UPDATE usages_count.
+	if err := s.mediaRepo.CreateAttachment(ctx, mediaID, ownerID); err != nil {
+		s.log.Error("attach: create attachment failed", slog.Any("error", err))
 		return status.Error(codes.Internal, "internal error")
 	}
 	return nil
 }
 
+// DeleteMedia удаляет привязку media→callerID.
+// Если после удаления usages_count == 0 (или callerID == nil — force delete),
+// удаляет файлы из storage и саму запись media.
 func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) error {
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
@@ -187,16 +168,33 @@ func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) 
 		return status.Error(codes.Internal, "internal error")
 	}
 
-	if callerID != uuid.Nil && media.OwnerID != callerID {
-		return status.Error(codes.PermissionDenied, "access denied")
-	}
-
-	// Нельзя удалять media, пока оно обрабатывается — worker потеряет файл.
+	// Guard: нельзя удалять media, пока оно обрабатывается — worker потеряет файл.
 	switch media.Status {
 	case repo.MediaStatusProcessing:
 		return status.Errorf(codes.FailedPrecondition, "media is processing, cannot delete")
 	}
 
+	if callerID != uuid.Nil {
+		// Удаляем конкретную привязку. Если её нет — NotFound (handler превратит в nil).
+		usages, err := s.mediaRepo.DeleteAttachment(ctx, mediaID, callerID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return status.Error(codes.NotFound, "attachment not found")
+			}
+			s.log.Error("delete: delete attachment failed", slog.Any("error", err))
+			return status.Error(codes.Internal, "internal error")
+		}
+		// Media ещё используется другими сущностями — файлы и запись не трогаем.
+		if usages > 0 {
+			s.log.Info("media still in use after detach",
+				slog.String("media_id", mediaID.String()),
+				slog.Int("usages", usages),
+			)
+			return nil
+		}
+	}
+
+	// Force delete (callerID == nil) или usages == 0 — чистим файлы и БД.
 	prefix := path.Join(media.OwnerID.String(), media.ID.String()) + "/"
 	if err := s.storage.DeletePrefix(ctx, prefix); err != nil {
 		s.log.Error("delete prefix failed", slog.Any("error", err), slog.String("prefix", prefix))
