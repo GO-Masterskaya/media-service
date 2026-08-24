@@ -134,7 +134,7 @@ func main() {
 			},
 			slog.Default(),
 		)
-		cleanerWg.Add(1)
+		go cleaner.Start(ctx)
 		go func() {
 			defer cleanerWg.Done()
 			cleaner.Start(ctx)
@@ -223,7 +223,9 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				dlqPublisher.(*events.KafkaDLQPublisher).Close()
+				if err := dlqPublisher.Close(); err != nil {
+					slog.Error("dlq publisher close", "error", err)
+				}
 				slog.Info("dlq publisher closed")
 			}()
 		}
@@ -231,8 +233,9 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				cleanerWg.Wait()
-				slog.Info("processed event cleaner stopped")
+				if err := cleaner.Shutdown(shutdownCtx); err != nil {
+					slog.Error("processed event cleaner shutdown", "error", err)
+				}
 			}()
 		}
 		wg.Add(1)
