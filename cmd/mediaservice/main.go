@@ -86,7 +86,6 @@ func main() {
 	// +++ ADDED: 4.6.1 Kafka consumer + DLQ + retention cleaner (#18, #27, #39)
 	var (
 		cleaner       events.ProcessedEventCleaner
-		cleanerWg     sync.WaitGroup
 		kafkaConsumer *events.KafkaConsumer
 		dlqPublisher  events.DLQPublisher
 	)
@@ -135,10 +134,6 @@ func main() {
 			slog.Default(),
 		)
 		go cleaner.Start(ctx)
-		go func() {
-			defer cleanerWg.Done()
-			cleaner.Start(ctx)
-		}()
 
 		slog.Info("kafka components started",
 			"topic", cfg.KafkaTopic,
@@ -208,7 +203,6 @@ func main() {
 			}
 		}()
 
-		// +++ ADDED: cleaner shutdown (#39)
 		// +++ ADDED: Kafka + cleaner shutdown
 		if kafkaConsumer != nil {
 			wg.Add(1)
