@@ -118,10 +118,23 @@ func (r *PgMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uui
 }
 
 func (r *PgMediaRepo) UpdateOwner(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
-	const q = `UPDATE media SET owner_id = $1, updated_at = NOW() WHERE id = $2`
-	_, err := r.pool.Exec(ctx, q, ownerID, mediaID)
-	if err != nil {
-		return fmt.Errorf("update owner: %w", err)
+	const q = `UPDATE media SET owner_id = $1, updated_at = NOW() WHERE id = $2 AND (owner_id IS NULL OR owner_id = $1) RETURNING id`
+	var id uuid.UUID
+	err := r.pool.QueryRow(ctx, q, ownerID, mediaID).Scan(&id)
+	if err == nil {
+		return nil
 	}
-	return nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Различаем "записи нет" и "owner mismatch"
+		var dummy uuid.UUID
+		err2 := r.pool.QueryRow(ctx, `SELECT id FROM media WHERE id = $1`, mediaID).Scan(&dummy)
+		if err2 == nil {
+			return ErrOwnerMismatch
+		}
+		if errors.Is(err2, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("update owner check exists: %w", err2)
+	}
+	return fmt.Errorf("update owner: %w", err)
 }

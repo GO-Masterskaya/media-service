@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"mediaservice/internal/repo"
@@ -10,6 +11,7 @@ import (
 
 type ProcessedEventCleaner interface {
 	Start(ctx context.Context)
+	Shutdown(ctx context.Context) error
 }
 
 type RetentionConfig struct {
@@ -22,6 +24,10 @@ type processedEventCleaner struct {
 	repo repo.ProcessedEventRepo
 	cfg  RetentionConfig
 	log  *slog.Logger
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 func NewProcessedEventCleaner(
@@ -42,9 +48,10 @@ func NewProcessedEventCleaner(
 		cfg.BatchLimit = 1000
 	}
 	return &processedEventCleaner{
-		repo: repo,
-		cfg:  cfg,
-		log:  log,
+		repo:   repo,
+		cfg:    cfg,
+		log:    log,
+		stopCh: make(chan struct{}),
 	}
 }
 
@@ -52,16 +59,47 @@ func (c *processedEventCleaner) Start(ctx context.Context) {
 	ticker := time.NewTicker(c.cfg.Interval)
 	defer ticker.Stop()
 
-	c.runOnce(ctx)
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.runOnce(ctx)
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			c.log.Info("processed event cleaner stopped")
 			return
+		case <-c.stopCh:
+			c.log.Info("processed event cleaner stopped (shutdown requested)")
+			return
 		case <-ticker.C:
-			c.runOnce(ctx)
+			c.wg.Add(1)
+			go func() {
+				defer c.wg.Done()
+				c.runOnce(ctx)
+			}()
 		}
+	}
+}
+
+func (c *processedEventCleaner) Shutdown(ctx context.Context) error {
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		c.log.Info("processed event cleaner shutdown gracefully")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

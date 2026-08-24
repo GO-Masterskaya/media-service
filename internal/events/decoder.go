@@ -40,5 +40,8 @@ func DecodeDetach(payload json.RawMessage) (*DetachPayload, error) {
 	if p.MediaID == uuid.Nil {
 		return nil, PermanentError{fmt.Errorf("media_id required")}
 	}
+	if p.OwnerID == uuid.Nil {
+		return nil, PermanentError{fmt.Errorf("owner_id required")}
+	}
 	return &p, nil
 }

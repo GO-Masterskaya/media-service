@@ -83,9 +83,48 @@ func main() {
 
 	go rec.Run(ctx)
 
-	// +++ ADDED: 4.6.1 Retention cleaner for processed_events (#39)
-	var cleaner events.ProcessedEventCleaner
+	// +++ ADDED: 4.6.1 Kafka consumer + DLQ + retention cleaner (#18, #27, #39)
+	var (
+		cleaner       events.ProcessedEventCleaner
+		cleanerWg     sync.WaitGroup
+		kafkaConsumer *events.KafkaConsumer
+		dlqPublisher  events.DLQPublisher
+	)
 	if cfg.KafkaEnabled {
+		// DLQ publisher
+		var err error
+		dlqPublisher, err = events.NewKafkaDLQPublisher(cfg.KafkaBrokers, cfg.KafkaDLQTopic)
+		if err != nil {
+			slog.Error("dlq publisher init failed", "error", err)
+			os.Exit(1)
+		}
+
+		// Event handler
+		handler := events.NewHandler(
+			mediaSvc,
+			eventRepo,
+			dlqPublisher,
+			cfg.KafkaGroup,
+			slog.Default(),
+		)
+
+		// Consumer
+		kafkaConsumer, err = events.NewKafkaConsumer(
+			events.KafkaConsumerConfig{
+				Brokers: cfg.KafkaBrokers,
+				Topic:   cfg.KafkaTopic,
+				GroupID: cfg.KafkaGroup,
+			},
+			handler.Handle,
+			slog.Default(),
+		)
+		if err != nil {
+			slog.Error("kafka consumer init failed", "error", err)
+			os.Exit(1)
+		}
+		go kafkaConsumer.Run(ctx)
+
+		// Retention cleaner
 		cleaner = events.NewProcessedEventCleaner(
 			eventRepo,
 			events.RetentionConfig{
@@ -95,8 +134,17 @@ func main() {
 			},
 			slog.Default(),
 		)
-		go cleaner.Start(ctx)
-		slog.Info("processed event cleaner started", "interval", cfg.RetentionInterval, "older_than", cfg.RetentionOlderThan)
+		cleanerWg.Add(1)
+		go func() {
+			defer cleanerWg.Done()
+			cleaner.Start(ctx)
+		}()
+
+		slog.Info("kafka components started",
+			"topic", cfg.KafkaTopic,
+			"dlq_topic", cfg.KafkaDLQTopic,
+			"group", cfg.KafkaGroup,
+		)
 	}
 
 	// +++ ADDED: 4.7 gRPC server + registration
@@ -161,16 +209,32 @@ func main() {
 		}()
 
 		// +++ ADDED: cleaner shutdown (#39)
+		// +++ ADDED: Kafka + cleaner shutdown
+		if kafkaConsumer != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := kafkaConsumer.Shutdown(shutdownCtx); err != nil {
+					slog.Error("kafka consumer shutdown", "error", err)
+				}
+			}()
+		}
+		if dlqPublisher != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				dlqPublisher.(*events.KafkaDLQPublisher).Close()
+				slog.Info("dlq publisher closed")
+			}()
+		}
 		if cleaner != nil {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// cleaner.Stop() не нужен — он реагирует на ctx.Done()
-				// но ждём, пока текущий тик/пачка завершится
-				slog.Info("processed event cleaner stopping")
+				cleanerWg.Wait()
+				slog.Info("processed event cleaner stopped")
 			}()
 		}
-
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

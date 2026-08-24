@@ -84,6 +84,9 @@ type ProcessedEventRepo interface {
 	// limit ограничивает размер одной пачки, чтобы не держать долгую
 	// блокировку. Вызов из периодической задачи — вайринг в #18/#39.
 	DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error)
+	// BumpAttempt атомарно инкрементирует счётчик попыток в result jsonb.
+	// Возвращает новое значение. Требует status='processing' и совпадения owner.
+	BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error)
 }
 
 type PgProcessedEventRepo struct {
@@ -246,4 +249,25 @@ func scanProcessedEvent(row pgx.Row) (*ProcessedEvent, error) {
 		return nil, err
 	}
 	return &event, nil
+}
+
+func (r *PgProcessedEventRepo) BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error) {
+	const q = `
+		UPDATE processed_events
+		SET result = COALESCE(
+			result || jsonb_build_object('attempts', COALESCE((result->>'attempts')::int, 0) + 1),
+			'{"attempts":1}'::jsonb
+		),
+		updated_at = now()
+		WHERE event_id = $1 AND owner = $2 AND status = 'processing'
+		RETURNING (result->>'attempts')::int`
+	var attempts int
+	err := r.pool.QueryRow(ctx, q, eventID, owner).Scan(&attempts)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrClaimLost
+		}
+		return 0, fmt.Errorf("repo: bump attempt: %w", err)
+	}
+	return attempts, nil
 }

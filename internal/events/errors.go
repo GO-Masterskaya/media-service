@@ -32,7 +32,8 @@ func ClassifyError(err error) error {
 	}
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
-		case codes.InvalidArgument, codes.NotFound, codes.PermissionDenied, codes.Unauthenticated:
+		case codes.InvalidArgument, codes.NotFound, codes.PermissionDenied,
+			codes.Unauthenticated, codes.FailedPrecondition:
 			return PermanentError{err}
 		}
 	}
