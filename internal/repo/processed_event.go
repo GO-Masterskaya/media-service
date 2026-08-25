@@ -27,7 +27,7 @@ type ProcessedEvent struct {
 	EventID        uuid.UUID
 	Fingerprint    string
 	Status         EventStatus
-	Result         []byte // сырой jsonb, nil пока status=processing
+	Result         []byte
 	Owner          string
 	LeaseExpiresAt time.Time
 	CreatedAt      time.Time
@@ -115,15 +115,15 @@ func (r *PgProcessedEventRepo) Claim(ctx context.Context, eventID uuid.UUID, fin
 	// вернул бы старый и ErrFingerprintConflict не сработал бы вообще.
 	const upsert = `
 		INSERT INTO processed_events (event_id, fingerprint, status, owner, lease_expires_at, created_at, updated_at)
-		VALUES ($1, $2, 'processing', $3, now() + ($4 * interval '1 second'), now(), now())
+		VALUES ($1, $2, 'processing', $3, now() + make_interval(secs => $4), now(), now())
 		ON CONFLICT (event_id) DO UPDATE SET
 		owner = EXCLUDED.owner,
 		fingerprint = EXCLUDED.fingerprint,
-		lease_expires_at = NOW() + $4::interval,
+		lease_expires_at = NOW() + make_interval(secs => $4),
 		updated_at = NOW()
 		WHERE processed_events.status = 'processing'
 		AND (processed_events.lease_expires_at < NOW()
-		OR processed_events.owner = EXCLUDED.owner)  -- ← re-claim себя
+		OR processed_events.owner = EXCLUDED.owner)
 		  AND processed_events.fingerprint = EXCLUDED.fingerprint
 		RETURNING event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at`
 
