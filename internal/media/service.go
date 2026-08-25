@@ -148,7 +148,14 @@ func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uu
 	}
 
 	// Атомарно: INSERT в media_attachments + UPDATE usages_count.
+	// AttachMedia — исправленный блок CreateAttachment
 	if err := s.mediaRepo.CreateAttachment(ctx, mediaID, ownerID); err != nil {
+		if errors.Is(err, repo.ErrMediaDeleting) {
+			return status.Error(codes.FailedPrecondition, "media is being deleted")
+		}
+		if errors.Is(err, repo.ErrNotFound) {
+			return status.Error(codes.NotFound, "media not found")
+		}
 		s.log.Error("attach: create attachment failed", slog.Any("error", err))
 		return status.Error(codes.Internal, "internal error")
 	}

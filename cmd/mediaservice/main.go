@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -138,7 +139,11 @@ func main() {
 			slog.Error("kafka consumer init failed", "error", err)
 			os.Exit(1)
 		}
-		go kafkaConsumer.Run(ctx)
+		go func() {
+			if err := kafkaConsumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("kafka consumer run error", slog.Any("error", err))
+			}
+		}()
 
 		// Retention cleaner
 		cleaner = events.NewProcessedEventCleaner(

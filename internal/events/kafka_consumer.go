@@ -37,8 +37,8 @@ type KafkaConsumer struct {
 	client           kafkaClient
 	handler          func(ctx context.Context, raw []byte) Result
 	log              *slog.Logger
-	wg               sync.WaitGroup // partition workers
-	runWg            sync.WaitGroup // Run() itself — ждём перед wg.Wait()
+	wg               sync.WaitGroup
+	runWg            sync.WaitGroup
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	partitionWorkers sync.Map
@@ -255,7 +255,6 @@ func (c *KafkaConsumer) Shutdown(ctx context.Context) error {
 
 	c.client.Close()
 
-	// Шаг 1: Run() должен завершиться — после этого новые wg.Add невозможны.
 	runDone := make(chan struct{})
 	go func() {
 		c.runWg.Wait()
@@ -268,7 +267,6 @@ func (c *KafkaConsumer) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("kafka consumer shutdown timeout waiting Run: %w", ctx.Err())
 	}
 
-	// Шаг 2: теперь безопасно ждать воркеров.
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
@@ -281,12 +279,4 @@ func (c *KafkaConsumer) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("kafka consumer shutdown timeout waiting handlers: %w", ctx.Err())
 	}
-}
-
-func (c *KafkaConsumer) getTopic() string {
-	topics := c.client.GetConsumeTopics()
-	if len(topics) > 0 {
-		return topics[0]
-	}
-	return ""
 }

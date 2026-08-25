@@ -451,7 +451,7 @@ func TestShutdown_Order(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go c.Run(ctx)
+	go func() { _ = c.Run(ctx) }()
 
 	// Ждём, пока handler реально начнёт работу (processPartition уже внутри handler'а)
 	select {
