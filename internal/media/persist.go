@@ -15,11 +15,16 @@ import (
 	"mediaservice/internal/storage"
 )
 
+// compensateTimeout — отдельный дедлайн для DeleteObject после сбоя DB.
+// Нельзя использовать исходный ctx: он часто уже отменён (cancel/timeout),
+// а компенсация как раз нужна в этом случае.
+const compensateTimeout = 10 * time.Second
+
 // PersistUploadInput — уже провалидированные данные после upload.TempStore
 // и ffprobe (вызывающий слой MediaService.Upload).
 type PersistUploadInput struct {
 	OwnerID           uuid.UUID
-	MediaID           uuid.UUID // если Nil — генерируется здесь
+	MediaID           uuid.UUID // обязателен: задаёт Upload-слой на все попытки одного upload
 	IdempotencyKey    string
 	Filename          string
 	Mime              string
@@ -47,6 +52,9 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 	if in.OwnerID == uuid.Nil {
 		return nil, fmt.Errorf("%w: owner_id required", ErrInvalidArgument)
 	}
+	if in.MediaID == uuid.Nil {
+		return nil, fmt.Errorf("%w: media_id required", ErrInvalidArgument)
+	}
 	if in.IdempotencyKey == "" {
 		return nil, fmt.Errorf("%w: idempotency_key required", ErrInvalidArgument)
 	}
@@ -66,12 +74,7 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 		return nil, err
 	}
 
-	mediaID := in.MediaID
-	if mediaID == uuid.Nil {
-		mediaID = uuid.New()
-	}
-
-	key, err := storage.BuildKey(in.OwnerID, mediaID, storage.VariantOriginal, in.Mime, in.Filename)
+	key, err := storage.BuildKey(in.OwnerID, in.MediaID, storage.VariantOriginal, in.Mime, in.Filename)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
@@ -95,7 +98,7 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 	}
 
 	row := repo.Media{
-		ID:                mediaID,
+		ID:                in.MediaID,
 		OwnerID:           in.OwnerID,
 		Kind:              in.Kind,
 		OrigFilename:      in.Filename,
@@ -114,8 +117,9 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 		return &PersistUploadResult{Media: created, Replay: false}, nil
 	}
 
-	// Компенсация put при ошибке DB (включая concurrent unique).
-	if delErr := s.storage.DeleteObject(ctx, key); delErr != nil {
+	compensateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensateTimeout)
+	defer cancel()
+	if delErr := s.storage.DeleteObject(compensateCtx, key); delErr != nil {
 		s.log.Error("compensate delete after db failure",
 			slog.Any("error", delErr),
 			slog.String("storage_key", key),
@@ -123,7 +127,7 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 	}
 
 	if errors.Is(err, repo.ErrConcurrentConflict) {
-		existing, lookupErr := s.mediaRepo.GetByOwnerIdempotency(ctx, in.OwnerID, in.IdempotencyKey)
+		existing, lookupErr := s.mediaRepo.GetByOwnerIdempotency(compensateCtx, in.OwnerID, in.IdempotencyKey)
 		if lookupErr != nil {
 			return nil, fmt.Errorf("concurrent insert resolve: %w", lookupErr)
 		}
@@ -132,7 +136,7 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 
 	s.log.Error("insert media failed",
 		slog.Any("error", err),
-		slog.String("media_id", mediaID.String()),
+		slog.String("media_id", in.MediaID.String()),
 	)
 	return nil, err
 }

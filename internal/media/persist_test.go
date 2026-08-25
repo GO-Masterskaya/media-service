@@ -85,11 +85,12 @@ func (r *persistMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 }
 
 type countingStorage struct {
-	mu      sync.Mutex
-	puts    int
-	deletes int
-	objects map[string][]byte
-	putErr  error
+	mu             sync.Mutex
+	puts           int
+	deletes        int
+	objects        map[string][]byte
+	putErr         error
+	cancelAfterPut context.CancelFunc
 }
 
 func newCountingStorage() *countingStorage {
@@ -108,6 +109,9 @@ func (s *countingStorage) PutObject(ctx context.Context, key string, reader io.R
 	}
 	s.puts++
 	s.objects[key] = b
+	if s.cancelAfterPut != nil {
+		s.cancelAfterPut()
+	}
 	return nil
 }
 
@@ -136,8 +140,10 @@ func TestPersistUpload_firstCreatesMedia(t *testing.T) {
 	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
 
 	body := []byte("png-bytes")
+	mediaID := uuid.New()
 	in := PersistUploadInput{
 		OwnerID:           ownerID(),
+		MediaID:           mediaID,
 		IdempotencyKey:    "k1",
 		Filename:          "a.png",
 		Mime:              "image/png",
@@ -152,9 +158,26 @@ func TestPersistUpload_firstCreatesMedia(t *testing.T) {
 	res, err := svc.PersistUpload(context.Background(), in)
 	require.NoError(t, err)
 	require.False(t, res.Replay)
+	require.Equal(t, mediaID, res.Media.ID)
 	require.Equal(t, repo.MediaStatusProcessing, res.Media.Status)
 	require.Equal(t, 1, sto.puts)
 	require.Equal(t, 0, sto.deletes)
+}
+
+func TestPersistUpload_requiresMediaID(t *testing.T) {
+	svc := NewService(newPersistMediaRepo(), &svcStubDerivRepo{}, newCountingStorage(), time.Minute, svcTestLogger())
+	_, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           ownerID(),
+		IdempotencyKey:    "k0",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         1,
+		BodyFingerprint:   "bf",
+		ParamsFingerprint: ParamsFingerprint("image/png", false, false, nil),
+		Reader:            bytes.NewReader([]byte("x")),
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
 func TestPersistUpload_replaySameFingerprints(t *testing.T) {
@@ -166,6 +189,7 @@ func TestPersistUpload_replaySameFingerprints(t *testing.T) {
 	params := ParamsFingerprint("image/png", false, false, nil)
 	in := PersistUploadInput{
 		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
 		IdempotencyKey:    "k2",
 		Filename:          "a.png",
 		Mime:              "image/png",
@@ -195,6 +219,7 @@ func TestPersistUpload_conflictDifferentBody(t *testing.T) {
 	params := ParamsFingerprint("image/png", false, false, nil)
 	in := PersistUploadInput{
 		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
 		IdempotencyKey:    "k3",
 		Filename:          "a.png",
 		Mime:              "image/png",
@@ -222,6 +247,7 @@ func TestPersistUpload_compensateDeleteOnDBFailure(t *testing.T) {
 
 	in := PersistUploadInput{
 		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
 		IdempotencyKey:    "k4",
 		Filename:          "a.png",
 		Mime:              "image/png",
@@ -235,6 +261,35 @@ func TestPersistUpload_compensateDeleteOnDBFailure(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 1, sto.puts)
 	require.Equal(t, 1, sto.deletes)
+	require.Empty(t, sto.objects)
+}
+
+func TestPersistUpload_compensateUsesDetachedContext(t *testing.T) {
+	repoStub := newPersistMediaRepo()
+	repoStub.fail = errors.New("db down")
+	sto := newCountingStorage()
+	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sto.cancelAfterPut = cancel
+
+	in := PersistUploadInput{
+		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
+		IdempotencyKey:    "k4-cancel",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         4,
+		BodyFingerprint:   "bf-4c",
+		ParamsFingerprint: ParamsFingerprint("image/png", false, false, nil),
+		Reader:            bytes.NewReader([]byte("data")),
+	}
+
+	_, err := svc.PersistUpload(ctx, in)
+	require.Error(t, err)
+	require.Equal(t, 1, sto.puts)
+	require.Equal(t, 1, sto.deletes, "compensate DeleteObject must run on detached ctx")
 	require.Empty(t, sto.objects)
 }
 
@@ -258,6 +313,7 @@ func TestPersistUpload_concurrentConflictResolvesToReplay(t *testing.T) {
 
 	in := PersistUploadInput{
 		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
 		IdempotencyKey:    "k5",
 		Filename:          "a.png",
 		Mime:              "image/png",
@@ -293,6 +349,7 @@ func TestPersistUpload_raceAfterPutCompensatesAndReplays(t *testing.T) {
 
 	in := PersistUploadInput{
 		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
 		IdempotencyKey:    "k6",
 		Filename:          "a.png",
 		Mime:              "image/png",
