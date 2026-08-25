@@ -140,7 +140,9 @@ func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uui
 		return fmt.Errorf("select media for update: %w", err)
 	}
 	if status == string(MediaStatusDeleting) {
-		return fmt.Errorf("media is being deleted")
+		// Бизнес-ошибка: retry не поможет, медиа всё ещё будет deleting.
+		// Service мапит в FailedPrecondition → PermanentError.
+		return ErrMediaDeleting
 	}
 
 	var inserted bool

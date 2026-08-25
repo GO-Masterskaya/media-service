@@ -15,3 +15,4 @@ var (
 var ErrFingerprintConflict = errors.New("processed event fingerprint conflict")
 var ErrClaimHeld = errors.New("processed event claim held by another owner")
 var ErrClaimLost = errors.New("processed event claim lost")
+var ErrMediaDeleting = errors.New("media is being deleted")
