@@ -128,6 +128,21 @@ func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uui
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Сериализация с DeleteAttachment: блокируем media.
+	var status string
+	err = tx.QueryRow(ctx,
+		`SELECT status FROM media WHERE id = $1 FOR UPDATE`, mediaID,
+	).Scan(&status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("select media for update: %w", err)
+	}
+	if status == string(MediaStatusDeleting) {
+		return fmt.Errorf("media is being deleted")
+	}
+
 	var inserted bool
 	err = tx.QueryRow(ctx, `
 		INSERT INTO media_attachments (media_id, owner_id)
@@ -135,12 +150,11 @@ func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uui
 		ON CONFLICT (media_id, owner_id) DO NOTHING
 		RETURNING true
 	`, mediaID, ownerID).Scan(&inserted)
-
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("insert attachment: %w", err)
 	}
 	if !inserted {
-		return nil
+		return nil // уже привязано
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -161,6 +175,18 @@ func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uui
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Сериализация с CreateAttachment: блокируем media.
+	var dummy string
+	err = tx.QueryRow(ctx,
+		`SELECT status FROM media WHERE id = $1 FOR UPDATE`, mediaID,
+	).Scan(&dummy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("select media for update: %w", err)
+	}
+
 	var deleted bool
 	err = tx.QueryRow(ctx, `
 		DELETE FROM media_attachments
@@ -176,7 +202,10 @@ func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uui
 
 	var usages int
 	err = tx.QueryRow(ctx, `
-		UPDATE media SET usages_count = usages_count - 1 WHERE id = $1
+		UPDATE media
+		SET usages_count = GREATEST(0, usages_count - 1),
+		    status = CASE WHEN usages_count = 1 THEN 'deleting' ELSE status END
+		WHERE id = $1
 		RETURNING usages_count
 	`, mediaID).Scan(&usages)
 	if err != nil {

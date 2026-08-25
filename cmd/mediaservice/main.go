@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+
+	"github.com/google/uuid"
 
 	"google.golang.org/grpc"
 
@@ -98,12 +101,15 @@ func main() {
 			os.Exit(1)
 		}
 
+		host, _ := os.Hostname()
+		consumerID := fmt.Sprintf("%s-%d-%s", host, os.Getpid(), uuid.NewString()[:8])
+
 		// Event handler
 		handler := events.NewHandler(
 			mediaSvc,
 			eventRepo,
 			dlqPublisher,
-			cfg.KafkaGroup,
+			consumerID, // ← уникальный per-instance
 			slog.Default(),
 		)
 
@@ -203,7 +209,6 @@ func main() {
 			}
 		}()
 
-		// +++ ADDED: Kafka + cleaner shutdown
 		if kafkaConsumer != nil {
 			wg.Add(1)
 			go func() {
@@ -213,16 +218,7 @@ func main() {
 				}
 			}()
 		}
-		if dlqPublisher != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := dlqPublisher.Close(); err != nil {
-					slog.Error("dlq publisher close", "error", err)
-				}
-				slog.Info("dlq publisher closed")
-			}()
-		}
+
 		if cleaner != nil {
 			wg.Add(1)
 			go func() {
@@ -232,6 +228,7 @@ func main() {
 				}
 			}()
 		}
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -260,7 +257,15 @@ func main() {
 
 		wg.Wait()
 
-		// 8.3 Инфраструктура — быстрые закрытия соединений.
+		// 8.3 DLQ publisher закрываем после consumer'а, чтобы handler'и
+		// могли ещё отправить poison-сообщения во время shutdown.
+		if dlqPublisher != nil {
+			if err := dlqPublisher.Close(); err != nil {
+				slog.Error("dlq publisher close", "error", err)
+			}
+		}
+
+		// 8.4 Инфраструктура — быстрые закрытия соединений.
 		pool.Close()
 		if err := sto.Close(); err != nil {
 			slog.Error("storage close", "error", err)
