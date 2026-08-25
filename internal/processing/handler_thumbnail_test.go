@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"mediaservice/internal/config"
+	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"os"
 	"path/filepath"
@@ -65,16 +66,12 @@ func (m *memoryStorage) Close() error {
 }
 
 type mockRepo struct {
-	upsertFunc func(ctx context.Context, record *DerivativeRecord) (*DerivativeRecord, error)
+	upsertFunc func(ctx context.Context, record *repo.Derivative) (*repo.Derivative, error)
 }
 
-func (m *mockRepo) UpsertDerivative(ctx context.Context, record *DerivativeRecord) (*DerivativeRecord, error) {
+func (m *mockRepo) UpsertDerivative(ctx context.Context, record *repo.Derivative) (*repo.Derivative, error) {
 	if m.upsertFunc != nil {
-		res, err := m.upsertFunc(ctx, record)
-		if err != nil {
-			return nil, err
-		}
-		return res, nil
+		return m.upsertFunc(ctx, record)
 	}
 	return record, nil
 }
@@ -100,7 +97,7 @@ func TestThumbnailHandler_RollbackOnDBError(t *testing.T) {
 	}
 
 	m := &mockRepo{
-		upsertFunc: func(ctx context.Context, record *DerivativeRecord) (*DerivativeRecord, error) {
+		upsertFunc: func(ctx context.Context, record *repo.Derivative) (*repo.Derivative, error) {
 			return nil, errors.New("db connection failed")
 		},
 	}

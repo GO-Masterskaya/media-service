@@ -61,6 +61,16 @@ func (s *stubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo.De
 	return &d, s.err
 }
 
+func (s *stubDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.deriv != nil {
+		return s.deriv, nil
+	}
+	return d, nil
+}
+
 type stubStorage struct {
 	url *storage.PresignedURL
 	err error

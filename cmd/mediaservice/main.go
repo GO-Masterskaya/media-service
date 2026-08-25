@@ -18,6 +18,7 @@ import (
 	"mediaservice/internal/config"
 	"mediaservice/internal/events"
 	"mediaservice/internal/media"
+	"mediaservice/internal/processing"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"mediaservice/internal/upload"
@@ -56,6 +57,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 5. Запуск компонентов
+	//
+	// Думаю пока можем реализовать запуск-остановку просто списком,  но в идеале хотелось бы в отдельный менеджер вынести.
+
 	// +++ ADDED: 4.5 Storage (MinIO)
 	sto, err := storage.NewMinIO(storage.MinIOConfig{
 		Endpoint:  cfg.MinIOEndpoint,
@@ -73,6 +78,12 @@ func main() {
 	mediaRepo := repo.NewPgMediaRepo(pool)
 	derivRepo := repo.NewPgDerivativeRepo(pool)
 	eventRepo := repo.NewPgProcessedEventRepo(pool)
+
+	transcodeHandler := processing.NewTranscodeHandler(sto, derivRepo, cfg, slog.Default())
+	thumbnailHandler := processing.NewThumbnailHandler(sto, derivRepo, cfg, slog.Default())
+
+	_ = transcodeHandler
+	_ = thumbnailHandler
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
@@ -190,15 +201,17 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
-	// 8. Останавливаем компоненты
+	// 8. Останавливаем компоненты, передаем им shutdownCtx
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-
 		// 8.1 Перестаём принимать новые соединения.
+
+		// закрываем gRPC сервер
 		grpcServer.GracefulStop()
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
+		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.
 		var wg sync.WaitGroup
 
 		wg.Add(1)
@@ -252,7 +265,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// код Wait()'a стримов
+			//код Wait()'a стримов
 		}()
 
 		wg.Wait()

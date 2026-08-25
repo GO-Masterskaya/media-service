@@ -63,6 +63,16 @@ func (s *svcStubStorage) Insert(ctx context.Context, d repo.Derivative) (*repo.D
 	return &d, s.err
 }
 
+func (s *svcStubDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.deriv != nil {
+		return s.deriv, nil
+	}
+	return d, nil
+}
+
 type svcStubStorage struct {
 	url *storage.PresignedURL
 	err error
