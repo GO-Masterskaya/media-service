@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,9 +28,9 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 		defer cancel()
 	}
 
-	safePath := outputPath
-	if !filepath.IsAbs(outputPath) {
-		safePath = filepath.Join(outputRoot, outputPath)
+	safePath, err := resolveSafePath(outputRoot, outputPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid output path: %w", err)
 	}
 
 	var args []string
@@ -83,9 +84,9 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (st
 		defer cancel()
 	}
 
-	safePath := outputPath
-	if !filepath.IsAbs(outputPath) {
-		safePath = filepath.Join(outputRoot, outputPath)
+	safePath, err := resolveSafePath(outputRoot, outputPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid output path: %w", err)
 	}
 
 	var args []string
@@ -126,4 +127,24 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (st
 	}
 
 	return safePath, nil
+}
+
+// resolveSafePath гарантирует, что итоговый путь находиться строго внутри outputRoot
+func resolveSafePath(outputRoot, outputPath string) (string, error) {
+	cleanRoot := filepath.Clean(outputRoot)
+
+	var target string
+	if filepath.IsAbs(outputPath) {
+		target = filepath.Clean(outputPath)
+	} else {
+		target = filepath.Clean(filepath.Join(cleanRoot, outputPath))
+	}
+
+	// Проверяем относительный путь от cleanRoot к target
+	rel, err := filepath.Rel(cleanRoot, target)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", fmt.Errorf("path traversal detected: %s is outside %s", outputPath, cleanRoot)
+	}
+
+	return target, nil
 }
