@@ -3,6 +3,7 @@ package processing_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -34,6 +35,14 @@ func TestRepoAdapterMarkDoneInvalidUUID(t *testing.T) {
 func TestRepoAdapterReleaseJobInvalidUUID(t *testing.T) {
 	adapter := processing.NewRepoAdapter(nil, "worker-test")
 	err := adapter.ReleaseJob(context.Background(), "invalid-uuid")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parse job id")
+}
+
+// Тест проверяет валидацию UUID в ExtendLease адаптера
+func TestRepoAdapterExtendLeaseInvalidUUID(t *testing.T) {
+	adapter := processing.NewRepoAdapter(nil, "worker-test")
+	err := adapter.ExtendLease(context.Background(), "invalid-uuid", 30*time.Second)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "parse job id")
 }

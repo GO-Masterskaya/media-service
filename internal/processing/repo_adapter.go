@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -94,6 +95,19 @@ func (a *RepoAdapter) ReleaseJob(ctx context.Context, jobID string) error {
 			return fmt.Errorf("release job %s (non-critical): %w", jobID, err)
 		}
 		return fmt.Errorf("release job: %w", err)
+	}
+	return nil
+}
+
+// ExtendLease продлевает lease задачи через repo.ExtendLease.
+func (a *RepoAdapter) ExtendLease(ctx context.Context, jobID string, d time.Duration) error {
+	id, err := uuid.Parse(jobID)
+	if err != nil {
+		return fmt.Errorf("parse job id: %w", err)
+	}
+	err = a.jobRepo.ExtendLease(ctx, id, a.ownerID, d)
+	if err != nil {
+		return fmt.Errorf("extend lease: %w", err)
 	}
 	return nil
 }

@@ -37,6 +37,7 @@ type JobRepo interface {
 	MarkDone(ctx context.Context, jobID uuid.UUID, owner string) error
 	MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reason string) error
 	Release(ctx context.Context, jobID uuid.UUID, owner string) error
+	ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error
 }
 
 type PgJobRepo struct {
@@ -134,6 +135,28 @@ func (r *PgJobRepo) MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reas
 
 func (r *PgJobRepo) Release(ctx context.Context, jobID uuid.UUID, owner string) error {
 	return r.complete(ctx, jobID, owner, JobStatusQueued, "")
+}
+
+// ExtendLease атомарно продлевает lease для running-задачи, принадлежащей owner.
+// Новый lease_until = now() + d. Если задача не найдена, не принадлежит owner,
+// не в статусе running или lease уже истёк — возвращает ErrLeaseMismatch.
+func (r *PgJobRepo) ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error {
+	const q = `
+		UPDATE processing_jobs
+		SET lease_until = now() + ($3 * interval '1 millisecond')
+		WHERE id = $1
+		  AND locked_by = $2
+		  AND status = 'running'
+		  AND lease_until > now()
+	`
+	tag, err := r.pool.Exec(ctx, q, jobID, owner, d.Milliseconds())
+	if err != nil {
+		return fmt.Errorf("extend lease: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrLeaseMismatch
+	}
+	return nil
 }
 
 func (r *PgJobRepo) complete(ctx context.Context, jobID uuid.UUID, owner string, to JobStatus, reason string) error {

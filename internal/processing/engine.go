@@ -16,6 +16,7 @@ type Config struct {
 	WorkerConcurrency int
 	PollInterval      time.Duration
 	JobTimeout        time.Duration // таймаут на выполнение одной задачи
+	LeaseDuration     time.Duration // длительность lease при claim; heartbeat тикает каждые LeaseDuration/3
 }
 
 // Engine представляет собой ядро движка обработки задач.
@@ -45,6 +46,9 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = 10 * time.Minute
 	}
+	if cfg.LeaseDuration <= 0 {
+		cfg.LeaseDuration = 30 * time.Second
+	}
 	if metrics == nil {
 		metrics = NewMetrics(nil)
 	}
@@ -70,6 +74,8 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	slog.Info("processing engine started",
 		"concurrency", e.cfg.WorkerConcurrency,
 		"job_timeout", e.cfg.JobTimeout,
+		"lease_duration", e.cfg.LeaseDuration,
+		"heartbeat_interval", e.cfg.LeaseDuration/3,
 	)
 
 	return nil
@@ -133,6 +139,7 @@ func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 
 // processJob выполняет хендлер с recover() и обновляет статус задачи.
 // Хендлер получает отдельный контекст с таймаутом (не привязан к ctx движка).
+// Heartbeat-горутина продлевает lease каждые LeaseDuration/3.
 // Финализация (MarkDone/FailJob) выполняется на неотменяемом контексте.
 func (e *Engine) processJob(job *Job, workerID int) {
 	e.metrics.InFlightWorkers.Inc()
@@ -158,9 +165,16 @@ func (e *Engine) processJob(job *Job, workerID int) {
 	// Отдельный контекст для задачи — не привязан к ctx движка.
 	jobCtx, jobCancel := context.WithTimeout(context.Background(), e.cfg.JobTimeout)
 
+	// Heartbeat: продлеваем lease в фоне, пока handler работает.
+	heartbeatDone := make(chan struct{})
+	go e.heartbeatLoop(jobCtx, job.ID.String(), workerID, heartbeatDone)
+
 	// Запускаем хендлер с recover().
 	handlerErr := e.safeHandle(jobCtx, handler, *job, workerID)
 	jobCancel()
+
+	// Останавливаем heartbeat и ждём его завершения.
+	<-heartbeatDone
 
 	// Финализация на неотменяемом контексте — гарантирует запись в БД.
 	finCtx, finCancel := context.WithTimeout(context.Background(), finalizationTimeout)
@@ -188,6 +202,45 @@ func (e *Engine) processJob(job *Job, workerID int) {
 		)
 	}
 	e.metrics.JobsProcessedTotal.Inc()
+}
+
+// heartbeatLoop продлевает lease задачи каждые LeaseDuration/3.
+// Останавливается при отмене ctx (handler завершился или таймаут).
+// Закрывает done канал при выходе.
+func (e *Engine) heartbeatLoop(ctx context.Context, jobID string, workerID int, done chan<- struct{}) {
+	defer close(done)
+
+	interval := e.cfg.LeaseDuration / 3
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Используем фоновый контекст, чтобы heartbeat мог завершиться
+			// даже если jobCtx уже отменён (race между ticker и cancel).
+			extendCtx, extendCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := e.repo.ExtendLease(extendCtx, jobID, e.cfg.LeaseDuration)
+			extendCancel()
+
+			if err != nil {
+				e.metrics.LeaseExtensionErrorsTotal.Inc()
+				slog.Warn("heartbeat: failed to extend lease",
+					"worker_id", workerID,
+					"job_id", jobID,
+					"error", err,
+				)
+				return
+			}
+			e.metrics.LeaseExtensionsTotal.Inc()
+		}
+	}
 }
 
 // safeHandle оборачивает вызов handler.Handle в recover().

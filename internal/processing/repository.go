@@ -1,6 +1,9 @@
 package processing
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // JobRepository определяет интерфейс взаимодействия с базой данных (задача #25).
 type JobRepository interface {
@@ -21,4 +24,8 @@ type JobRepository interface {
 	// ReleaseJob возвращает задачу в queued (running → queued).
 	// Используется при graceful shutdown для задач, которые не успели выполниться.
 	ReleaseJob(ctx context.Context, jobID string) error
+
+	// ExtendLease продлевает lease задачи на указанную длительность.
+	// Используется heartbeat-горутиной для поддержания lease во время обработки.
+	ExtendLease(ctx context.Context, jobID string, d time.Duration) error
 }

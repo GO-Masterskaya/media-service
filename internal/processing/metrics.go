@@ -7,10 +7,12 @@ import (
 
 // Metrics содержит метрики Prometheus для движка обработки.
 type Metrics struct {
-	InFlightWorkers    prometheus.Gauge
-	DBQueueDepth       prometheus.Gauge
-	JobsProcessedTotal prometheus.Counter
-	JobsFailedTotal    prometheus.Counter
+	InFlightWorkers          prometheus.Gauge
+	DBQueueDepth             prometheus.Gauge
+	JobsProcessedTotal       prometheus.Counter
+	JobsFailedTotal          prometheus.Counter
+	LeaseExtensionsTotal     prometheus.Counter
+	LeaseExtensionErrorsTotal prometheus.Counter
 }
 
 // NewMetrics создаёт и регистрирует метрики.
@@ -45,6 +47,18 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Subsystem: "processing",
 			Name:      "jobs_failed_total",
 			Help:      "Total number of failed jobs.",
+		}),
+		LeaseExtensionsTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "lease_extensions_total",
+			Help:      "Total number of successful lease extensions (heartbeats).",
+		}),
+		LeaseExtensionErrorsTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "lease_extension_errors_total",
+			Help:      "Total number of failed lease extension attempts.",
 		}),
 	}
 }

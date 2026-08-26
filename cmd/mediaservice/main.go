@@ -131,6 +131,7 @@ func main() {
 	engine := processing.NewEngine(processing.Config{
 		WorkerConcurrency: cfg.WorkerConcurrency,
 		JobTimeout:        cfg.JobTimeout,
+		LeaseDuration:     cfg.JobLease,
 	}, repoAdapter, procRegistry, procMetrics)
 
 	if err := engine.Start(ctx); err != nil {

@@ -20,11 +20,12 @@ import (
 // MockJobRepository — потокобезопасный мок репозитория для unit-тестов.
 // Реализует pull-on-demand интерфейс (ClaimOne вместо ClaimQueued).
 type MockJobRepository struct {
-	mu         sync.Mutex
-	queuedJobs []processing.Job
-	doneJobs   map[string]bool   // jobID -> true
-	failedJobs map[string]string // jobID -> reason
-	released   map[string]bool   // jobID -> true
+	mu              sync.Mutex
+	queuedJobs      []processing.Job
+	doneJobs        map[string]bool   // jobID -> true
+	failedJobs      map[string]string // jobID -> reason
+	released        map[string]bool   // jobID -> true
+	leaseExtensions int               // количество вызовов ExtendLease
 }
 
 func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
@@ -74,6 +75,19 @@ func (m *MockJobRepository) ReleaseJob(_ context.Context, jobID string) error {
 	defer m.mu.Unlock()
 	m.released[jobID] = true
 	return nil
+}
+
+func (m *MockJobRepository) ExtendLease(_ context.Context, jobID string, d time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leaseExtensions++
+	return nil
+}
+
+func (m *MockJobRepository) GetLeaseExtensions() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.leaseExtensions
 }
 
 func (m *MockJobRepository) GetDoneJobs() map[string]bool {
@@ -518,4 +532,58 @@ func TestJobTimeout(t *testing.T) {
 	reason, ok := failed[jobID.String()]
 	assert.True(t, ok, "Задача с таймаутом должна быть помечена как failed")
 	assert.Contains(t, reason, "context deadline exceeded")
+}
+
+// 10. Тест: heartbeat продлевает lease для длительных задач
+func TestHeartbeatExtendsLease(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "long_video"},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	registry.Register("long_video", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		// Задача длится 500ms — это больше чем lease (150ms).
+		// Heartbeat должен сработать ≥1 раз (интервал 50ms = 150ms/3).
+		time.Sleep(500 * time.Millisecond)
+		return nil
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
+		LeaseDuration:     150 * time.Millisecond, // короткий lease для теста
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	// Ждём, пока задача будет обработана.
+	assert.Eventually(t, func() bool {
+		done := repo.GetDoneJobs()
+		return done[jobID.String()]
+	}, 3*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	// Проверяем, что heartbeat вызывался.
+	extensions := repo.GetLeaseExtensions()
+	assert.GreaterOrEqual(t, extensions, 1, "Heartbeat должен был продлить lease хотя бы 1 раз")
+
+	// Проверяем метрику.
+	assert.GreaterOrEqual(t, getCounterValue(t, metrics.LeaseExtensionsTotal), float64(1),
+		"Метрика lease_extensions_total должна быть ≥1")
+
+	// Задача должна быть done, а не failed.
+	done := repo.GetDoneJobs()
+	assert.True(t, done[jobID.String()], "Длительная задача с heartbeat должна быть done, а не зациклена")
 }
