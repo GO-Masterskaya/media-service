@@ -68,6 +68,9 @@ type Handler struct {
 	maxAttempts   int
 	log           *slog.Logger
 
+	claimHeldMu       sync.Mutex
+	claimHeldAttempts map[uuid.UUID]int
+
 	processedCounter *prometheus.CounterVec
 	dlqCounter       *prometheus.CounterVec
 	retryCounter     prometheus.Counter
@@ -110,17 +113,18 @@ func NewHandlerWithConfig(
 	initHandlerMetrics()
 
 	return &Handler{
-		mediaSvc:         mediaSvc,
-		eventRepo:        eventRepo,
-		dlq:              dlq,
-		consumerID:       consumerID,
-		leaseDuration:    cfg.LeaseDuration,
-		maxAttempts:      cfg.MaxAttempts,
-		log:              log,
-		processedCounter: eventsProcessed,
-		dlqCounter:       eventsDLQ,
-		retryCounter:     eventsRetried,
-		failCounter:      eventsFailed,
+		mediaSvc:          mediaSvc,
+		eventRepo:         eventRepo,
+		dlq:               dlq,
+		consumerID:        consumerID,
+		leaseDuration:     cfg.LeaseDuration,
+		maxAttempts:       cfg.MaxAttempts,
+		log:               log,
+		claimHeldAttempts: make(map[uuid.UUID]int),
+		processedCounter:  eventsProcessed,
+		dlqCounter:        eventsDLQ,
+		retryCounter:      eventsRetried,
+		failCounter:       eventsFailed,
 	}
 }
 
@@ -147,6 +151,7 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 		switch {
 		case errors.Is(err, repo.ErrFingerprintConflict):
 			h.failCounter.WithLabelValues("fingerprint_conflict").Inc()
+			h.clearClaimHeld(env.EventID)
 			if pubErr := h.sendDLQ(ctx, raw, env.EventID, "fingerprint conflict"); pubErr != nil {
 				return Result{Committable: false, EventID: env.EventID, Error: pubErr}
 			}
@@ -158,7 +163,20 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 			return Result{Committable: true, EventID: env.EventID, Error: err}
 
 		case errors.Is(err, repo.ErrClaimHeld):
-			return Result{Committable: false, EventID: env.EventID, Error: err}
+			h.claimHeldMu.Lock()
+			h.claimHeldAttempts[env.EventID]++
+			attempts := h.claimHeldAttempts[env.EventID]
+			h.claimHeldMu.Unlock()
+
+			if attempts >= h.maxAttempts {
+				reason := fmt.Sprintf("claim held timeout after %d attempts", attempts)
+				if pubErr := h.sendDLQ(ctx, raw, env.EventID, reason); pubErr != nil {
+					return Result{Committable: false, EventID: env.EventID, Error: pubErr}
+				}
+				h.clearClaimHeld(env.EventID)
+				return Result{Committable: true, EventID: env.EventID, Error: err}
+			}
+			return Result{Committable: false, EventID: env.EventID, Error: RetryableError{err}}
 
 		default:
 			h.log.Error("claim failed", slog.Any("error", err), slog.String("event_id", env.EventID.String()))
@@ -169,6 +187,7 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 	if !claimed {
 		h.processedCounter.WithLabelValues(env.EventType, "skipped").Inc()
 		h.log.Info("event already processed, skipping", slog.String("event_id", env.EventID.String()))
+		h.clearClaimHeld(env.EventID)
 		return Result{Committable: true, EventID: env.EventID}
 	}
 
@@ -184,6 +203,7 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 			return Result{Committable: false, EventID: env.EventID, Error: err}
 		}
 		h.processedCounter.WithLabelValues(env.EventType, "success").Inc()
+		h.clearClaimHeld(env.EventID)
 		return Result{Committable: true, EventID: env.EventID}
 	}
 
@@ -215,6 +235,7 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 				return Result{Committable: false, EventID: env.EventID, Error: err}
 			}
 			h.dlqCounter.WithLabelValues("max_attempts").Inc()
+			h.clearClaimHeld(env.EventID)
 			return Result{Committable: true, EventID: env.EventID, Error: cmdErr}
 		}
 		return Result{Committable: false, EventID: env.EventID, Error: cmdErr}
@@ -235,11 +256,18 @@ func (h *Handler) Handle(ctx context.Context, raw []byte) Result {
 			return Result{Committable: false, EventID: env.EventID, Error: err}
 		}
 		h.dlqCounter.WithLabelValues("permanent").Inc()
+		h.clearClaimHeld(env.EventID)
 		return Result{Committable: true, EventID: env.EventID, Error: cmdErr}
 	}
 
 	h.failCounter.WithLabelValues("unclassified").Inc()
 	return Result{Committable: false, EventID: env.EventID, Error: cmdErr}
+}
+
+func (h *Handler) clearClaimHeld(eventID uuid.UUID) {
+	h.claimHeldMu.Lock()
+	delete(h.claimHeldAttempts, eventID)
+	h.claimHeldMu.Unlock()
 }
 
 func (h *Handler) handleOnce(ctx context.Context, env *Envelope) error {

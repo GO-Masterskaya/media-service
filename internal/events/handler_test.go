@@ -144,6 +144,29 @@ func TestHandle_AlreadyProcessed(t *testing.T) {
 	assert.NoError(t, res.Error)
 }
 
+func TestHandle_ClaimHeld_MaxAttempts_DLQ(t *testing.T) {
+	repoStub := &stubEventRepo{claimErr: repo.ErrClaimHeld}
+	dlq := &stubDLQ{}
+	h := NewHandler(nil, repoStub, dlq, "test-consumer", testLog())
+	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
+	raw := makeEnvelope(t, "media.attach", payload)
+
+	// 1-я и 2-я попытки — backoff
+	res1 := h.Handle(context.Background(), raw)
+	assert.False(t, res1.Committable)
+	assert.ErrorIs(t, res1.Error, repo.ErrClaimHeld)
+
+	res2 := h.Handle(context.Background(), raw)
+	assert.False(t, res2.Committable)
+	assert.ErrorIs(t, res2.Error, repo.ErrClaimHeld)
+
+	// 3-я попытка — DLQ + Committable:true (не блокируем партицию вечно)
+	res3 := h.Handle(context.Background(), raw)
+	assert.True(t, res3.Committable)
+	assert.True(t, dlq.published)
+	assert.Contains(t, dlq.reason, "claim held timeout")
+}
+
 func TestHandle_ClaimHeld_NotCommittable(t *testing.T) {
 	repoStub := &stubEventRepo{claimErr: repo.ErrClaimHeld}
 	h := NewHandler(nil, repoStub, &stubDLQ{}, "test-consumer", testLog())

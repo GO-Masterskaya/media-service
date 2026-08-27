@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_media_status_updated_at;

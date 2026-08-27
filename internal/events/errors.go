@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -50,9 +51,9 @@ func ClassifyError(err error) error {
 	// gRPC статус — мапим по коду.
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
-		// Permanent: бизнес-ошибки и нарушения контракта.
-		// Retry бесполезен — состояние не изменится.
-		case codes.InvalidArgument,
+		// Permanent: бизнес-ошибки, нарушения контракта и отмены.
+		case codes.Canceled,
+			codes.InvalidArgument,
 			codes.NotFound,
 			codes.AlreadyExists,
 			codes.PermissionDenied,
@@ -72,6 +73,12 @@ func ClassifyError(err error) error {
 			codes.Unknown,
 			codes.DataLoss:
 			return RetryableError{err}
+		default:
+			// Неизвестный gRPC код — разработчик забыл классифицировать.
+			// Паника в dev/test, чтобы заметить сразу. В production
+			// fallback на RetryableError консервативен, но лучше явно
+			// добавить код в switch, чем молча retry'евать вечно.
+			panic(fmt.Sprintf("unclassified gRPC status code: %v", st.Code()))
 		}
 	}
 

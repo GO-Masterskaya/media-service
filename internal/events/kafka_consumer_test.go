@@ -91,13 +91,6 @@ func (m *mockKafkaClient) SetOffsets(offsets map[string]map[int32]kgo.EpochOffse
 	m.setOffsets = offsets
 }
 
-func (m *mockKafkaClient) PauseFetchPartitions(partitions map[string][]int32) map[string][]int32 {
-	return nil
-}
-
-func (m *mockKafkaClient) ResumeFetchPartitions(partitions map[string][]int32) {
-}
-
 func (m *mockKafkaClient) Close() {
 	if m.closed.CompareAndSwap(false, true) {
 		close(m.closeCh)
@@ -231,7 +224,7 @@ func TestProcessPartition_Committable(t *testing.T) {
 	rec2 := makeRecord("test-topic", 0, 11, []byte("msg-2"))
 	ftp := makeFetchTopicPartition("test-topic", 0, rec1, rec2)
 
-	c.processPartition(context.Background(), ftp)
+	c.processPartition(context.Background(), &partitionWorkerState{}, ftp)
 
 	require.Equal(t, []string{"msg-1", "msg-2"}, processed)
 	require.Len(t, mock.committed, 2)
@@ -261,7 +254,7 @@ func TestProcessPartition_NotCommittable_SetOffsets(t *testing.T) {
 	rec3 := makeRecord("test-topic", 0, 12, []byte("ok"))
 	ftp := makeFetchTopicPartition("test-topic", 0, rec1, rec2, rec3)
 
-	c.processPartition(context.Background(), ftp)
+	c.processPartition(context.Background(), &partitionWorkerState{}, ftp)
 
 	require.Len(t, mock.committed, 1)
 	require.Equal(t, int64(10), mock.committed[0].Offset)
@@ -290,7 +283,7 @@ func TestProcessPartition_CommitError(t *testing.T) {
 	rec2 := makeRecord("test-topic", 0, 11, []byte("msg-2"))
 	ftp := makeFetchTopicPartition("test-topic", 0, rec1, rec2)
 
-	c.processPartition(context.Background(), ftp)
+	c.processPartition(context.Background(), &partitionWorkerState{}, ftp)
 
 	require.Equal(t, 1, processed)
 	require.Len(t, mock.committed, 0)
@@ -472,7 +465,7 @@ func TestOnPartitionsRevoked(t *testing.T) {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		c.partitionWorker(context.Background(), "test-topic", 0, state)
+		c.partitionWorker(context.Background(), key, state)
 	}()
 
 	close(state.revoked)
@@ -505,7 +498,7 @@ func TestProcessPartition_StopCh(t *testing.T) {
 	ftp := makeFetchTopicPartition("test-topic", 0, rec1, rec2)
 
 	close(c.stopCh)
-	c.processPartition(context.Background(), ftp)
+	c.processPartition(context.Background(), &partitionWorkerState{}, ftp)
 
 	require.Equal(t, 0, processed)
 }
@@ -532,7 +525,7 @@ func TestProcessPartition_CtxDone(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.processPartition(ctx, ftp)
+	c.processPartition(ctx, &partitionWorkerState{}, ftp)
 
 	require.Equal(t, 0, processed)
 }

@@ -15,8 +15,6 @@ type kafkaClient interface {
 	PollFetches(ctx context.Context) kgo.Fetches
 	CommitRecords(ctx context.Context, rs ...*kgo.Record) error
 	SetOffsets(offsets map[string]map[int32]kgo.EpochOffset)
-	PauseFetchPartitions(partitions map[string][]int32) map[string][]int32
-	ResumeFetchPartitions(partitions map[string][]int32)
 	Close()
 	GetConsumeTopics() []string
 }
@@ -31,6 +29,7 @@ type partitionWorkerState struct {
 	ch      chan kgo.FetchTopicPartition
 	revoked chan struct{}
 	done    chan struct{}
+	retries int
 }
 
 type KafkaConsumer struct {
@@ -83,8 +82,9 @@ func NewKafkaConsumer(
 					if val, ok := c.partitionWorkers.Load(key); ok {
 						state := val.(*partitionWorkerState)
 						close(state.revoked)
-						<-state.done
-						c.partitionWorkers.Delete(key)
+						// Не ждём state.done — ребаланс не должен блокироваться
+						// на длительной обработке. Воркер сам завершится и удалит
+						// себя из map через defer.
 					}
 				}
 			}
@@ -127,7 +127,7 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 				// пока воркер не заберёт фетч. Это естественный backpressure —
 				// новые данные не читаются, пока старые не обработаны.
 				state := &partitionWorkerState{
-					ch:      make(chan kgo.FetchTopicPartition),
+					ch:      make(chan kgo.FetchTopicPartition, 1),
 					revoked: make(chan struct{}),
 					done:    make(chan struct{}),
 				}
@@ -135,10 +135,10 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 				stateAny = actual
 				if !loaded {
 					c.wg.Add(1)
-					go func(s *partitionWorkerState, topic string, partition int32) {
+					go func(s *partitionWorkerState, k string) {
 						defer c.wg.Done()
-						c.partitionWorker(ctx, topic, partition, s)
-					}(state, p.Topic, p.Partition)
+						c.partitionWorker(ctx, k, s)
+					}(state, key)
 				}
 			}
 
@@ -155,16 +155,16 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 
 func (c *KafkaConsumer) partitionWorker(
 	ctx context.Context,
-	topic string,
-	partition int32,
+	key string,
 	state *partitionWorkerState,
 ) {
 	defer close(state.done)
+	defer c.partitionWorkers.Delete(key)
 
-	// Небуферизованный канал сам регулирует поток:
-	// PollFetches блокируется на ch <- p, пока воркер не освободится.
-	// PauseFetchPartitions здесь не нужен — иначе партиция уйдёт на паузу
-	// после первого фетча и не будет читаться до revoke/shutdown.
+	// Канал с буфером 1: позволяет EachPartition отправить
+	// следующий фетч, пока воркер обрабатывает предыдущий.
+	// Сохраняет параллельность между партициями и backpressure
+	// (третий фетч подряд заблокирует отправку).
 	for {
 		select {
 		case <-ctx.Done():
@@ -172,24 +172,24 @@ func (c *KafkaConsumer) partitionWorker(
 		case <-c.stopCh:
 			select {
 			case p := <-state.ch:
-				c.processPartition(ctx, p)
+				c.processPartition(ctx, state, p)
 			default:
 			}
 			return
 		case <-state.revoked:
 			select {
 			case p := <-state.ch:
-				c.processPartition(ctx, p)
+				c.processPartition(ctx, state, p)
 			default:
 			}
 			return
 		case p := <-state.ch:
-			c.processPartition(ctx, p)
+			c.processPartition(ctx, state, p)
 		}
 	}
 }
 
-func (c *KafkaConsumer) processPartition(ctx context.Context, p kgo.FetchTopicPartition) {
+func (c *KafkaConsumer) processPartition(ctx context.Context, state *partitionWorkerState, p kgo.FetchTopicPartition) {
 	for _, record := range p.Records {
 		select {
 		case <-ctx.Done():
@@ -220,7 +220,12 @@ func (c *KafkaConsumer) processPartition(ctx context.Context, p kgo.FetchTopicPa
 				slog.Any("error", res.Error),
 			)
 
-			timer := time.NewTimer(5 * time.Second)
+			backoff := time.Duration(5*(1<<state.retries)) * time.Second
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+			state.retries++
+			timer := time.NewTimer(backoff)
 			select {
 			case <-timer.C:
 			case <-ctx.Done():
@@ -232,7 +237,7 @@ func (c *KafkaConsumer) processPartition(ctx context.Context, p kgo.FetchTopicPa
 			}
 			return
 		}
-
+		state.retries = 0
 		if err := c.client.CommitRecords(ctx, record); err != nil {
 			c.log.Error("offset commit failed, stopping partition processing",
 				slog.Any("error", err),

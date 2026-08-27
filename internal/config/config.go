@@ -133,6 +133,9 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
 	fmt.Fprintf(&b, "KafkaGroup:%q", c.KafkaGroup)
+	fmt.Fprintf(&b, "RetentionInterval:%s, ", c.RetentionInterval)
+	fmt.Fprintf(&b, "RetentionOlderThan:%s, ", c.RetentionOlderThan)
+	fmt.Fprintf(&b, "RetentionBatchSize:%d, ", c.RetentionBatchSize)
 	b.WriteString("}")
 	return b.String()
 }
