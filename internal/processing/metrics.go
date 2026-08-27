@@ -7,11 +7,11 @@ import (
 
 // Metrics содержит метрики Prometheus для движка обработки.
 type Metrics struct {
-	InFlightWorkers          prometheus.Gauge
-	DBQueueDepth             prometheus.Gauge
-	JobsProcessedTotal       prometheus.Counter
-	JobsFailedTotal          prometheus.Counter
-	LeaseExtensionsTotal     prometheus.Counter
+	InFlightWorkers           prometheus.Gauge
+	DBQueueDepth              prometheus.Gauge
+	JobsProcessedTotal        prometheus.Counter
+	JobsFailedTotal           prometheus.Counter
+	LeaseExtensionsTotal      prometheus.Counter
 	LeaseExtensionErrorsTotal prometheus.Counter
 }
 

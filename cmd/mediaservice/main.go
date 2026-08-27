@@ -78,9 +78,6 @@ func main() {
 	transcodeHandler := processing.NewTranscodeHandler(sto, derivRepo, cfg, slog.Default())
 	thumbnailHandler := processing.NewThumbnailHandler(sto, derivRepo, cfg, slog.Default())
 
-	_ = transcodeHandler
-	_ = thumbnailHandler
-
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
 	reconcilerCfg := media.ReconcilerConfig{
@@ -129,18 +126,34 @@ func main() {
 	// 5.1 Processing Engine
 	jobRepo := repo.NewPgJobRepo(pool)
 	ownerID := uuid.NewString() // уникальный ID этого экземпляра сервиса
-	repoAdapter := processing.NewRepoAdapter(jobRepo, ownerID)
+	repoAdapter := processing.NewRepoAdapter(jobRepo, ownerID, cfg.JobLease, cfg.MaxJobAttempts)
 
 	procRegistry := processing.NewRegistry()
-	// Обработчики регистрируются по мере реализации задач #15 (thumbnail) и #16 (transcode).
-	// procRegistry.Register("thumbnail", ...)
+	// Регистрация обработчиков: адаптируем ProcessThumbnail/ProcessTranscode к Handler.Handle(ctx, Job).
+	// TODO: после появления InsertWithJobs (#55) задачи будут реально попадать в очередь.
+	procRegistry.Register("thumbnail", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		_, err := thumbnailHandler.ProcessThumbnail(ctx, processing.MediaRecord{
+			ID:        job.MediaID,
+			SourceKey: "", // будет заполняться из БД при полной интеграции
+		})
+		return err
+	}))
+	procRegistry.Register("transcode", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		_, err := transcodeHandler.ProcessTranscode(ctx, processing.MediaRecord{
+			ID:        job.MediaID,
+			SourceKey: "", // будет заполняться из БД при полной интеграции
+		})
+		return err
+	}))
 
 	procMetrics := processing.NewMetrics(prometheus.DefaultRegisterer)
 
 	engine := processing.NewEngine(processing.Config{
 		WorkerConcurrency: cfg.WorkerConcurrency,
+		PollInterval:      cfg.PollInterval,
 		JobTimeout:        cfg.JobTimeout,
 		LeaseDuration:     cfg.JobLease,
+		MaxAttempts:       cfg.MaxJobAttempts,
 	}, repoAdapter, procRegistry, procMetrics)
 
 	if err := engine.Start(ctx); err != nil {

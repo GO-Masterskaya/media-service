@@ -14,23 +14,36 @@ import (
 // RepoAdapter адаптирует repo.PgJobRepo к интерфейсу processing.JobRepository.
 // Маппит типы между пакетами repo и processing, хранит ownerID экземпляра Engine.
 type RepoAdapter struct {
-	jobRepo *repo.PgJobRepo
-	ownerID string // уникальный идентификатор этого экземпляра Engine (для lease)
+	jobRepo       *repo.PgJobRepo
+	ownerID       string        // уникальный идентификатор этого экземпляра Engine (для lease)
+	leaseDuration time.Duration // начальный lease при claim
+	maxAttempts   int           // максимальное количество попыток (для reaper)
 }
 
 // NewRepoAdapter создаёт адаптер. ownerID — уникальная строка, идентифицирующая
 // этот экземпляр сервиса (например, hostname или UUID).
-func NewRepoAdapter(jobRepo *repo.PgJobRepo, ownerID string) *RepoAdapter {
+// leaseDuration — начальный lease при захвате задачи.
+// maxAttempts — максимальное количество попыток перед terminal failed (0 = default 3).
+func NewRepoAdapter(jobRepo *repo.PgJobRepo, ownerID string, leaseDuration time.Duration, maxAttempts int) *RepoAdapter {
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
 	return &RepoAdapter{
-		jobRepo: jobRepo,
-		ownerID: ownerID,
+		jobRepo:       jobRepo,
+		ownerID:       ownerID,
+		leaseDuration: leaseDuration,
+		maxAttempts:   maxAttempts,
 	}
 }
 
 // ClaimOne забирает одну задачу из БД и маппит repo.Job → processing.Job.
 // Если очередь пуста, возвращает (nil, nil).
-func (a *RepoAdapter) ClaimOne(ctx context.Context) (*Job, error) {
-	repoJob, err := a.jobRepo.ClaimNext(ctx, a.ownerID)
+func (a *RepoAdapter) ClaimOne(ctx context.Context, leaseDuration time.Duration) (*Job, error) {
+	if leaseDuration <= 0 {
+		leaseDuration = a.leaseDuration
+	}
+
+	repoJob, err := a.jobRepo.ClaimNext(ctx, a.ownerID, leaseDuration)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return nil, nil
@@ -39,9 +52,11 @@ func (a *RepoAdapter) ClaimOne(ctx context.Context) (*Job, error) {
 	}
 
 	return &Job{
-		ID:      repoJob.ID,
-		MediaID: repoJob.MediaID,
-		Type:    repoJob.Type,
+		ID:        repoJob.ID,
+		MediaID:   repoJob.MediaID,
+		Type:      repoJob.Type,
+		Attempts:  repoJob.Attempts,
+		CreatedAt: repoJob.CreatedAt,
 	}, nil
 }
 
@@ -110,4 +125,12 @@ func (a *RepoAdapter) ExtendLease(ctx context.Context, jobID string, d time.Dura
 		return fmt.Errorf("extend lease: %w", err)
 	}
 	return nil
+}
+
+// ReapExpiredLeases делегирует reaping протухших lease в repo.
+func (a *RepoAdapter) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = a.maxAttempts
+	}
+	return a.jobRepo.ReapExpiredLeases(ctx, maxAttempts)
 }

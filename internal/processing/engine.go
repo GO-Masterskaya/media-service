@@ -9,7 +9,11 @@ import (
 	"time"
 )
 
-const finalizationTimeout = 5 * time.Second
+const (
+	finalizationTimeout   = 5 * time.Second
+	heartbeatMaxRetries   = 2 // ретраи heartbeat перед отменой jobCtx
+	minQueueDepthInterval = 5 * time.Second
+)
 
 // Config задаёт параметры работы ядра движка обработки.
 type Config struct {
@@ -17,6 +21,7 @@ type Config struct {
 	PollInterval      time.Duration
 	JobTimeout        time.Duration // таймаут на выполнение одной задачи
 	LeaseDuration     time.Duration // длительность lease при claim; heartbeat тикает каждые LeaseDuration/3
+	MaxAttempts       int           // максимум попыток перед terminal failed (для retry логики)
 }
 
 // Engine представляет собой ядро движка обработки задач.
@@ -24,15 +29,18 @@ type Config struct {
 // Каждый воркер самостоятельно забирает задачу из БД (pull-on-demand),
 // выполняет хендлер с отдельным контекстом и таймаутом, и финализирует
 // результат (MarkDone/FailJob) на неотменяемом контексте.
+// Reaper-горутина периодически подбирает задачи с протухшим lease.
 type Engine struct {
 	cfg      Config
 	repo     JobRepository
 	registry *Registry
 	metrics  *Metrics
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	once   sync.Once
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	once    sync.Once
+	started bool
+	mu      sync.Mutex
 }
 
 // NewEngine создаёт и инициализирует новый Engine.
@@ -41,13 +49,16 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 		cfg.WorkerConcurrency = 2
 	}
 	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 50 * time.Millisecond
+		cfg.PollInterval = time.Second
 	}
 	if cfg.JobTimeout <= 0 {
-		cfg.JobTimeout = 10 * time.Minute
+		cfg.JobTimeout = 12 * time.Minute
 	}
 	if cfg.LeaseDuration <= 0 {
 		cfg.LeaseDuration = 30 * time.Second
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 3
 	}
 	if metrics == nil {
 		metrics = NewMetrics(nil)
@@ -61,21 +72,41 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 	}
 }
 
-// Start запускает воркеры под переданным контекстом.
+// Start запускает воркеры и reaper под переданным контекстом.
+// Идемпотентен: повторный вызов возвращает ошибку.
 func (e *Engine) Start(parentCtx context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.started {
+		return fmt.Errorf("processing engine already started")
+	}
+
+	if e.registry.Len() == 0 {
+		slog.Warn("processing engine not started: no handlers registered")
+		return nil
+	}
+
 	ctx, cancel := context.WithCancel(parentCtx)
 	e.cancel = cancel
+	e.started = true
 
 	for i := 0; i < e.cfg.WorkerConcurrency; i++ {
 		e.wg.Add(1)
 		go e.workerLoop(ctx, i)
 	}
 
+	// Reaper: подбирает задачи с протухшим lease.
+	e.wg.Add(1)
+	go e.reaperLoop(ctx)
+
 	slog.Info("processing engine started",
 		"concurrency", e.cfg.WorkerConcurrency,
 		"job_timeout", e.cfg.JobTimeout,
 		"lease_duration", e.cfg.LeaseDuration,
 		"heartbeat_interval", e.cfg.LeaseDuration/3,
+		"max_attempts", e.cfg.MaxAttempts,
+		"poll_interval", e.cfg.PollInterval,
 	)
 
 	return nil
@@ -94,10 +125,45 @@ func (e *Engine) Stop() {
 	})
 }
 
+// reaperLoop периодически подбирает running-задачи с протухшим lease.
+// Интервал = LeaseDuration (проверяем не реже чем раз в lease).
+func (e *Engine) reaperLoop(ctx context.Context) {
+	defer e.wg.Done()
+
+	interval := e.cfg.LeaseDuration
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reaped, err := e.repo.ReapExpiredLeases(ctx, e.cfg.MaxAttempts)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				slog.Error("reaper: failed to reap expired leases", "error", err)
+				continue
+			}
+			if reaped > 0 {
+				slog.Info("reaper: recovered expired leases", "count", reaped)
+			}
+		}
+	}
+}
+
 // workerLoop выполняет цикл работы отдельного воркера.
 // Воркер сам клеймит задачу, когда свободен (pull-on-demand).
 func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 	defer e.wg.Done()
+
+	var lastDepthCheck time.Time
 
 	for {
 		select {
@@ -106,7 +172,7 @@ func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 		default:
 		}
 
-		job, err := e.repo.ClaimOne(ctx)
+		job, err := e.repo.ClaimOne(ctx, e.cfg.LeaseDuration)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -120,28 +186,41 @@ func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 		}
 
 		if job == nil {
-			// Очередь пуста — обновляем метрику и ждём.
-			if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
-				e.metrics.DBQueueDepth.Set(float64(depth))
+			// Очередь пуста — обновляем метрику (не чаще minQueueDepthInterval).
+			if time.Since(lastDepthCheck) >= minQueueDepthInterval {
+				if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
+					e.metrics.DBQueueDepth.Set(float64(depth))
+				}
+				lastDepthCheck = time.Now()
 			}
 			e.sleep(ctx, e.cfg.PollInterval)
 			continue
 		}
 
-		// Обновляем метрику глубины очереди в БД.
-		if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
-			e.metrics.DBQueueDepth.Set(float64(depth))
+		// Обновляем метрику глубины очереди в БД (не чаще minQueueDepthInterval).
+		if time.Since(lastDepthCheck) >= minQueueDepthInterval {
+			if depth, err := e.repo.GetQueueDepth(ctx); err == nil {
+				e.metrics.DBQueueDepth.Set(float64(depth))
+			}
+			lastDepthCheck = time.Now()
 		}
 
-		e.processJob(job, workerID)
+		e.processJob(ctx, job, workerID)
 	}
 }
 
 // processJob выполняет хендлер с recover() и обновляет статус задачи.
-// Хендлер получает отдельный контекст с таймаутом (не привязан к ctx движка).
+//
+// jobCtx привязан к ctx движка (ТЗ §3.6): при shutdown хендлер получает
+// отмену и задача возвращается в queued через ReleaseJob.
+//
+// Retry: при ошибке handler, если attempts < MaxAttempts → ReleaseJob
+// (возврат в queued для повторной попытки); иначе → FailJob (terminal).
+//
 // Heartbeat-горутина продлевает lease каждые LeaseDuration/3.
-// Финализация (MarkDone/FailJob) выполняется на неотменяемом контексте.
-func (e *Engine) processJob(job *Job, workerID int) {
+// При потере lease heartbeat отменяет jobCtx — хендлер получит ctx.Err().
+// Финализация (MarkDone/FailJob/ReleaseJob) выполняется на неотменяемом контексте.
+func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 	e.metrics.InFlightWorkers.Inc()
 	defer e.metrics.InFlightWorkers.Dec()
 
@@ -162,12 +241,14 @@ func (e *Engine) processJob(job *Job, workerID int) {
 		return
 	}
 
-	// Отдельный контекст для задачи — не привязан к ctx движка.
-	jobCtx, jobCancel := context.WithTimeout(context.Background(), e.cfg.JobTimeout)
+	// jobCtx привязан к engineCtx: при shutdown движка хендлер получает отмену.
+	// JobTimeout ограничивает максимальное время выполнения одной задачи.
+	jobCtx, jobCancel := context.WithTimeout(engineCtx, e.cfg.JobTimeout)
 
 	// Heartbeat: продлеваем lease в фоне, пока handler работает.
+	// При потере lease — отменяем jobCtx.
 	heartbeatDone := make(chan struct{})
-	go e.heartbeatLoop(jobCtx, job.ID.String(), workerID, heartbeatDone)
+	go e.heartbeatLoop(jobCtx, jobCancel, job.ID.String(), workerID, heartbeatDone)
 
 	// Запускаем хендлер с recover().
 	handlerErr := e.safeHandle(jobCtx, handler, *job, workerID)
@@ -181,12 +262,45 @@ func (e *Engine) processJob(job *Job, workerID int) {
 	defer finCancel()
 
 	if handlerErr != nil {
+		// Определяем причину ошибки: shutdown движка или ошибка handler.
+		if engineCtx.Err() != nil {
+			// Движок остановлен — возвращаем задачу в queued, не считаем ошибкой.
+			slog.Info("job interrupted by shutdown, releasing back to queue",
+				"worker_id", workerID,
+				"job_id", job.ID.String(),
+				"job_type", job.Type,
+			)
+			if releaseErr := e.repo.ReleaseJob(finCtx, job.ID.String()); releaseErr != nil {
+				slog.Error("failed to release job on shutdown", "job_id", job.ID.String(), "error", releaseErr)
+			}
+			return
+		}
+
 		slog.Error("job handling error",
 			"worker_id", workerID,
 			"job_id", job.ID.String(),
 			"job_type", job.Type,
+			"attempt", job.Attempts+1,
+			"max_attempts", e.cfg.MaxAttempts,
 			"error", handlerErr,
 		)
+
+		// Retry: если попытки не исчерпаны — возвращаем в queued (reaper добавит backoff).
+		// Иначе — terminal failed.
+		if job.Attempts+1 < e.cfg.MaxAttempts {
+			if releaseErr := e.repo.ReleaseJob(finCtx, job.ID.String()); releaseErr != nil {
+				slog.Error("failed to release job for retry", "job_id", job.ID.String(), "error", releaseErr)
+			} else {
+				slog.Info("job released for retry",
+					"job_id", job.ID.String(),
+					"attempt", job.Attempts+1,
+					"max_attempts", e.cfg.MaxAttempts,
+				)
+			}
+			e.metrics.JobsFailedTotal.Inc()
+			return
+		}
+
 		if failErr := e.repo.FailJob(finCtx, job.ID.String(), handlerErr.Error()); failErr != nil {
 			slog.Error("failed to mark job as failed", "job_id", job.ID.String(), "error", failErr)
 		}
@@ -200,14 +314,20 @@ func (e *Engine) processJob(job *Job, workerID int) {
 			"job_id", job.ID.String(),
 			"error", err,
 		)
+		// Метрику НЕ инкрементим — задача фактически не помечена как done.
+		// Reaper подберёт её после протухания lease.
+		e.metrics.JobsFailedTotal.Inc()
+		return
 	}
 	e.metrics.JobsProcessedTotal.Inc()
 }
 
 // heartbeatLoop продлевает lease задачи каждые LeaseDuration/3.
 // Останавливается при отмене ctx (handler завершился или таймаут).
+// При невозможности продлить lease (после heartbeatMaxRetries) — отменяет jobCtx,
+// чтобы хендлер не работал впустую.
 // Закрывает done канал при выходе.
-func (e *Engine) heartbeatLoop(ctx context.Context, jobID string, workerID int, done chan<- struct{}) {
+func (e *Engine) heartbeatLoop(ctx context.Context, cancelJob context.CancelFunc, jobID string, workerID int, done chan<- struct{}) {
 	defer close(done)
 
 	interval := e.cfg.LeaseDuration / 3
@@ -217,6 +337,8 @@ func (e *Engine) heartbeatLoop(ctx context.Context, jobID string, workerID int, 
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	consecutiveFailures := 0
 
 	for {
 		select {
@@ -230,14 +352,25 @@ func (e *Engine) heartbeatLoop(ctx context.Context, jobID string, workerID int, 
 			extendCancel()
 
 			if err != nil {
+				consecutiveFailures++
 				e.metrics.LeaseExtensionErrorsTotal.Inc()
 				slog.Warn("heartbeat: failed to extend lease",
 					"worker_id", workerID,
 					"job_id", jobID,
 					"error", err,
+					"consecutive_failures", consecutiveFailures,
 				)
-				return
+				if consecutiveFailures > heartbeatMaxRetries {
+					slog.Error("heartbeat: lease lost, cancelling job",
+						"worker_id", workerID,
+						"job_id", jobID,
+					)
+					cancelJob()
+					return
+				}
+				continue
 			}
+			consecutiveFailures = 0
 			e.metrics.LeaseExtensionsTotal.Inc()
 		}
 	}

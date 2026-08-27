@@ -37,7 +37,7 @@ func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
 	}
 }
 
-func (m *MockJobRepository) ClaimOne(_ context.Context) (*processing.Job, error) {
+func (m *MockJobRepository) ClaimOne(_ context.Context, _ time.Duration) (*processing.Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -84,6 +84,10 @@ func (m *MockJobRepository) ExtendLease(_ context.Context, jobID string, d time.
 	return nil
 }
 
+func (m *MockJobRepository) ReapExpiredLeases(_ context.Context, _ int) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockJobRepository) GetLeaseExtensions() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,6 +109,16 @@ func (m *MockJobRepository) GetFailedJobs() map[string]string {
 	defer m.mu.Unlock()
 	cp := make(map[string]string, len(m.failedJobs))
 	for k, v := range m.failedJobs {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (m *MockJobRepository) GetReleasedJobs() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make(map[string]bool, len(m.released))
+	for k, v := range m.released {
 		cp[k] = v
 	}
 	return cp
@@ -313,7 +327,11 @@ func TestUnknownJobTypeMarkedFailed(t *testing.T) {
 
 	repo := NewMockJobRepository(jobs)
 	registry := processing.NewRegistry()
-	// Не регистрируем handler для "completely_unknown_type"
+	// Регистрируем dummy handler, чтобы реестр был непустой и движок стартовал.
+	// Задача "completely_unknown_type" всё равно не совпадёт ни с одним handler.
+	registry.Register("dummy_type", processing.HandlerFunc(func(_ context.Context, _ processing.Job) error {
+		return nil
+	}))
 
 	cfg := processing.Config{
 		WorkerConcurrency: 1,
@@ -345,11 +363,11 @@ func TestUnknownJobTypeMarkedFailed(t *testing.T) {
 	assert.Contains(t, reason, "unknown job type")
 }
 
-// 6. Тест: ошибка handler помечает задачу как failed
+// 6. Тест: ошибка handler помечает задачу как failed при исчерпанных попытках
 func TestHandlerErrorMarkedFailed(t *testing.T) {
 	jobID := uuid.New()
 	jobs := []processing.Job{
-		{ID: jobID, MediaID: uuid.New(), Type: "failing_handler"},
+		{ID: jobID, MediaID: uuid.New(), Type: "failing_handler", Attempts: 2}, // последняя попытка (MaxAttempts=3)
 	}
 
 	repo := NewMockJobRepository(jobs)
@@ -364,6 +382,7 @@ func TestHandlerErrorMarkedFailed(t *testing.T) {
 		WorkerConcurrency: 1,
 		PollInterval:      10 * time.Millisecond,
 		JobTimeout:        5 * time.Second,
+		MaxAttempts:       3,
 	}
 
 	reg := prometheus.NewRegistry()
@@ -387,6 +406,54 @@ func TestHandlerErrorMarkedFailed(t *testing.T) {
 	reason, ok := failed[jobID.String()]
 	assert.True(t, ok, "Задача с ошибкой handler должна быть помечена как failed")
 	assert.Contains(t, reason, "ffmpeg exit code 1")
+}
+
+// 6b. Тест: ошибка handler при незавершённых попытках → retry через ReleaseJob
+func TestHandlerErrorRetry(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "failing_handler", Attempts: 0}, // первая попытка
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	registry.Register("failing_handler", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return errors.New("temporary ffmpeg error")
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      10 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
+		MaxAttempts:       3,
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	// Задача должна уйти в released (retry), а не в failed
+	assert.Eventually(t, func() bool {
+		released := repo.GetReleasedJobs()
+		return released[jobID.String()]
+	}, 2*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	// Проверяем что задача НЕ в failed
+	failed := repo.GetFailedJobs()
+	_, isFailed := failed[jobID.String()]
+	assert.False(t, isFailed, "Задача с первой попыткой не должна быть помечена как failed")
+
+	// Проверяем что задача в released
+	released := repo.GetReleasedJobs()
+	assert.True(t, released[jobID.String()], "Задача с первой попыткой должна быть released для retry")
 }
 
 // 7. Тест: успешная задача помечается как done (MarkDone)
@@ -438,7 +505,7 @@ func TestPanicInHandlerRecovery(t *testing.T) {
 	normalJobID := uuid.New()
 
 	jobs := []processing.Job{
-		{ID: panicJobID, MediaID: uuid.New(), Type: "panicker"},
+		{ID: panicJobID, MediaID: uuid.New(), Type: "panicker", Attempts: 2}, // последняя попытка → failed
 		{ID: normalJobID, MediaID: uuid.New(), Type: "normal"},
 	}
 
@@ -492,7 +559,7 @@ func TestPanicInHandlerRecovery(t *testing.T) {
 func TestJobTimeout(t *testing.T) {
 	jobID := uuid.New()
 	jobs := []processing.Job{
-		{ID: jobID, MediaID: uuid.New(), Type: "slow"},
+		{ID: jobID, MediaID: uuid.New(), Type: "slow", Attempts: 2}, // последняя попытка → failed
 	}
 
 	repo := NewMockJobRepository(jobs)

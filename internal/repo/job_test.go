@@ -53,7 +53,7 @@ func TestJobRepo(t *testing.T) {
 
 		const owner = "worker-1"
 		claimedAt := time.Now()
-		job, err := jobs.ClaimNext(ctx, owner)
+		job, err := jobs.ClaimNext(ctx, owner, DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestJobRepo(t *testing.T) {
 			wg.Add(1)
 			go func(owner string) {
 				defer wg.Done()
-				job, err := jobs.ClaimNext(ctx, owner)
+				job, err := jobs.ClaimNext(ctx, owner, DefaultJobLease)
 				out <- result{job, err}
 			}(fmt.Sprintf("worker-%d", i))
 		}
@@ -174,7 +174,7 @@ func TestJobRepo(t *testing.T) {
 		resetDB(t, pool)
 		mediaID := seedMedia(t, pool)
 		jobID := seedJob(t, pool, mediaID, "thumbnail", "queued")
-		job, err := jobs.ClaimNext(ctx, "worker-1")
+		job, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,7 +193,7 @@ func TestJobRepo(t *testing.T) {
 		seedJob(t, pool, mediaID, "thumbnail", "queued")
 		seedJob(t, pool, mediaID, "transcode", "queued")
 
-		job, err := jobs.ClaimNext(ctx, "worker-1")
+		job, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func TestJobRepo(t *testing.T) {
 		mediaID := seedMedia(t, pool)
 		seedJob(t, pool, mediaID, "thumbnail", "queued")
 
-		job, err := jobs.ClaimNext(ctx, "worker-1")
+		job, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -236,11 +236,11 @@ func TestJobRepo(t *testing.T) {
 		seedJob(t, pool, mediaID, "thumbnail", "queued")
 		seedJob(t, pool, mediaID, "transcode", "queued")
 
-		j1, err := jobs.ClaimNext(ctx, "worker-1")
+		j1, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
-		j2, err := jobs.ClaimNext(ctx, "worker-2")
+		j2, err := jobs.ClaimNext(ctx, "worker-2", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,7 +277,7 @@ func TestJobRepo(t *testing.T) {
 		resetDB(t, pool)
 		mediaID := seedMedia(t, pool)
 		seedJob(t, pool, mediaID, "thumbnail", "queued")
-		job, err := jobs.ClaimNext(ctx, "worker-1")
+		job, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -311,14 +311,14 @@ func TestJobRepo(t *testing.T) {
 		resetDB(t, pool)
 		mediaID := seedMedia(t, pool)
 		seedJob(t, pool, mediaID, "thumbnail", "queued")
-		job, err := jobs.ClaimNext(ctx, "worker-1")
+		job, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := jobs.Release(ctx, job.ID, "worker-1"); err != nil {
 			t.Fatal(err)
 		}
-		again, err := jobs.ClaimNext(ctx, "worker-2")
+		again, err := jobs.ClaimNext(ctx, "worker-2", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
 		}

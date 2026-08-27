@@ -43,3 +43,10 @@ func (r *Registry) Get(jobType string) (Handler, error) {
 	}
 	return h, nil
 }
+
+// Len возвращает количество зарегистрированных обработчиков.
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.handlers)
+}

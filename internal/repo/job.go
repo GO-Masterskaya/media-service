@@ -29,15 +29,18 @@ type Job struct {
 	Status     JobStatus
 	LockedBy   string
 	LeaseUntil time.Time
+	Attempts   int
+	CreatedAt  time.Time
 }
 
 type JobRepo interface {
 	Enqueue(ctx context.Context, mediaID uuid.UUID, jobType string) (*Job, error)
-	ClaimNext(ctx context.Context, owner string) (*Job, error)
+	ClaimNext(ctx context.Context, owner string, leaseDuration time.Duration) (*Job, error)
 	MarkDone(ctx context.Context, jobID uuid.UUID, owner string) error
 	MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reason string) error
 	Release(ctx context.Context, jobID uuid.UUID, owner string) error
 	ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error
+	ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error)
 }
 
 type PgJobRepo struct {
@@ -48,8 +51,8 @@ func NewPgJobRepo(pool *pgxpool.Pool) *PgJobRepo {
 	return &PgJobRepo{pool: pool}
 }
 
-func ClaimNextJob(ctx context.Context, pool *pgxpool.Pool, owner string) (*Job, error) {
-	return NewPgJobRepo(pool).ClaimNext(ctx, owner)
+func ClaimNextJob(ctx context.Context, pool *pgxpool.Pool, owner string, leaseDuration time.Duration) (*Job, error) {
+	return NewPgJobRepo(pool).ClaimNext(ctx, owner, leaseDuration)
 }
 
 func (r *PgJobRepo) Enqueue(ctx context.Context, mediaID uuid.UUID, jobType string) (*Job, error) {
@@ -58,7 +61,7 @@ func (r *PgJobRepo) Enqueue(ctx context.Context, mediaID uuid.UUID, jobType stri
 		INSERT INTO processing_jobs (id, media_id, type, status)
 		VALUES ($1, $2, $3, 'queued')
 		ON CONFLICT (media_id, type) DO NOTHING
-		RETURNING id, media_id, type, status, locked_by, lease_until
+		RETURNING id, media_id, type, status, locked_by, lease_until, attempts, created_at
 	`
 
 	job, err := scanJob(r.pool.QueryRow(ctx, insert, id, mediaID, jobType))
@@ -70,7 +73,7 @@ func (r *PgJobRepo) Enqueue(ctx context.Context, mediaID uuid.UUID, jobType stri
 	}
 
 	const sel = `
-		SELECT id, media_id, type, status, locked_by, lease_until
+		SELECT id, media_id, type, status, locked_by, lease_until, attempts, created_at
 		FROM processing_jobs
 		WHERE media_id = $1 AND type = $2
 	`
@@ -84,7 +87,11 @@ func (r *PgJobRepo) Enqueue(ctx context.Context, mediaID uuid.UUID, jobType stri
 	return job, nil
 }
 
-func (r *PgJobRepo) ClaimNext(ctx context.Context, owner string) (*Job, error) {
+func (r *PgJobRepo) ClaimNext(ctx context.Context, owner string, leaseDuration time.Duration) (*Job, error) {
+	if leaseDuration <= 0 {
+		leaseDuration = DefaultJobLease
+	}
+
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -108,10 +115,10 @@ func (r *PgJobRepo) ClaimNext(ctx context.Context, owner string) (*Job, error) {
 		    lease_until = now() + ($2 * interval '1 millisecond')
 		FROM next
 		WHERE j.id = next.id
-		RETURNING j.id, j.media_id, j.type, j.status, j.locked_by, j.lease_until
+		RETURNING j.id, j.media_id, j.type, j.status, j.locked_by, j.lease_until, j.attempts, j.created_at
 	`
 
-	job, err := scanJob(tx.QueryRow(ctx, q, owner, DefaultJobLease.Milliseconds()))
+	job, err := scanJob(tx.QueryRow(ctx, q, owner, leaseDuration.Milliseconds()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -193,15 +200,30 @@ func (r *PgJobRepo) complete(ctx context.Context, jobID uuid.UUID, owner string,
 		return ErrLeaseMismatch
 	}
 
-	_, err = tx.Exec(ctx, `
-		UPDATE processing_jobs
-		SET status = $2,
-		    last_error = NULLIF($3, ''),
-		    locked_by = NULL,
-		    lease_until = NULL,
-		    locked_at = NULL
-		WHERE id = $1
-	`, jobID, to, reason)
+	// При возврате в queued (retry) инкрементируем attempts и добавляем backoff.
+	if to == JobStatusQueued {
+		_, err = tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = $2,
+			    last_error = NULLIF($3, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    attempts = attempts + 1,
+			    run_after = now() + ((attempts + 1) * interval '30 seconds')
+			WHERE id = $1
+		`, jobID, to, reason)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = $2,
+			    last_error = NULLIF($3, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL
+			WHERE id = $1
+		`, jobID, to, reason)
+	}
 	if err != nil {
 		return fmt.Errorf("update job: %w", err)
 	}
@@ -263,7 +285,7 @@ func scanJob(row pgx.Row) (*Job, error) {
 	var job Job
 	var lockedBy *string
 	var leaseUntil *time.Time
-	if err := row.Scan(&job.ID, &job.MediaID, &job.Type, &job.Status, &lockedBy, &leaseUntil); err != nil {
+	if err := row.Scan(&job.ID, &job.MediaID, &job.Type, &job.Status, &lockedBy, &leaseUntil, &job.Attempts, &job.CreatedAt); err != nil {
 		return nil, err
 	}
 	if lockedBy != nil {
@@ -277,9 +299,12 @@ func scanJob(row pgx.Row) (*Job, error) {
 
 // ClaimBatch атомарно забирает до limit задач со статусом queued, переводя их в running.
 // Используется движком обработки (Engine) для пакетной загрузки задач.
-func (r *PgJobRepo) ClaimBatch(ctx context.Context, owner string, limit int) ([]Job, error) {
+func (r *PgJobRepo) ClaimBatch(ctx context.Context, owner string, limit int, leaseDuration time.Duration) ([]Job, error) {
 	if limit <= 0 {
 		return nil, nil
+	}
+	if leaseDuration <= 0 {
+		leaseDuration = DefaultJobLease
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -305,10 +330,10 @@ func (r *PgJobRepo) ClaimBatch(ctx context.Context, owner string, limit int) ([]
 		    lease_until = now() + ($2 * interval '1 millisecond')
 		FROM next
 		WHERE j.id = next.id
-		RETURNING j.id, j.media_id, j.type, j.status, j.locked_by, j.lease_until
+		RETURNING j.id, j.media_id, j.type, j.status, j.locked_by, j.lease_until, j.attempts, j.created_at
 	`
 
-	rows, err := tx.Query(ctx, q, owner, DefaultJobLease.Milliseconds(), limit)
+	rows, err := tx.Query(ctx, q, owner, leaseDuration.Milliseconds(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim batch: %w", err)
 	}
@@ -319,7 +344,7 @@ func (r *PgJobRepo) ClaimBatch(ctx context.Context, owner string, limit int) ([]
 		var job Job
 		var lockedBy *string
 		var leaseUntil *time.Time
-		if err := rows.Scan(&job.ID, &job.MediaID, &job.Type, &job.Status, &lockedBy, &leaseUntil); err != nil {
+		if err := rows.Scan(&job.ID, &job.MediaID, &job.Type, &job.Status, &lockedBy, &leaseUntil, &job.Attempts, &job.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan claimed job: %w", err)
 		}
 		if lockedBy != nil {
@@ -368,4 +393,52 @@ func CanTransition(from, to string) bool {
 		}
 	}
 	return false
+}
+
+// ReapExpiredLeases возвращает running-задачи с протухшим lease обратно в queued
+// (с инкрементом attempts и exponential backoff через run_after).
+// Задачи, превысившие maxAttempts, переводятся в failed.
+// Возвращает количество обработанных задач.
+func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	// 1. Re-queue задачи, у которых ещё есть попытки.
+	// Backoff: run_after = now() + (attempts * 30 seconds).
+	const requeueQ = `
+		UPDATE processing_jobs
+		SET status     = 'queued',
+		    locked_by  = NULL,
+		    lease_until = NULL,
+		    locked_at  = NULL,
+		    attempts   = attempts + 1,
+		    run_after  = now() + ((attempts + 1) * interval '30 seconds')
+		WHERE status = 'running'
+		  AND lease_until < now()
+		  AND attempts < $1
+	`
+	tagRequeued, err := r.pool.Exec(ctx, requeueQ, maxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("reap expired leases (requeue): %w", err)
+	}
+
+	// 2. Fail задачи, у которых попытки исчерпаны.
+	const failQ = `
+		UPDATE processing_jobs
+		SET status     = 'failed',
+		    locked_by  = NULL,
+		    lease_until = NULL,
+		    locked_at  = NULL,
+		    last_error = 'max attempts exceeded (lease expired)'
+		WHERE status = 'running'
+		  AND lease_until < now()
+		  AND attempts >= $1
+	`
+	tagFailed, err := r.pool.Exec(ctx, failQ, maxAttempts)
+	if err != nil {
+		return tagRequeued.RowsAffected(), fmt.Errorf("reap expired leases (fail): %w", err)
+	}
+
+	return tagRequeued.RowsAffected() + tagFailed.RowsAffected(), nil
 }
