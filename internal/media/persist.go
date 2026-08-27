@@ -20,6 +20,11 @@ import (
 // а компенсация как раз нужна в этом случае.
 const compensateTimeout = 10 * time.Second
 
+var allowedJobTypes = map[string]struct{}{
+	"thumbnail": {},
+	"transcode": {},
+}
+
 // PersistUploadInput — уже провалидированные данные после upload.TempStore
 // и ffprobe (вызывающий слой MediaService.Upload).
 type PersistUploadInput struct {
@@ -65,6 +70,9 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 	if in.Reader == nil {
 		return nil, fmt.Errorf("%w: reader required", ErrInvalidArgument)
 	}
+	if err := validateJobTypes(in.JobTypes); err != nil {
+		return nil, err
+	}
 
 	existing, err := s.mediaRepo.GetByOwnerIdempotency(ctx, in.OwnerID, in.IdempotencyKey)
 	if err == nil {
@@ -72,6 +80,20 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 	}
 	if !errors.Is(err, repo.ErrNotFound) {
 		s.log.Error("idempotency lookup failed", slog.Any("error", err))
+		return nil, err
+	}
+
+	// До Put: тот же media_id с другим idempotency_key не должен перезаписать
+	// чужой объект в MinIO (ключ строится из id/mime/filename).
+	byID, err := s.mediaRepo.GetByID(ctx, in.MediaID)
+	if err == nil {
+		if byID.IdempotencyKey == in.IdempotencyKey {
+			return matchIdempotent(byID, in)
+		}
+		return nil, ErrAlreadyExists
+	}
+	if !errors.Is(err, repo.ErrNotFound) {
+		s.log.Error("media id lookup failed", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -166,7 +188,21 @@ func (s *Service) compensateDelete(ctx context.Context, key string) {
 	}
 }
 
+func validateJobTypes(jobTypes []string) error {
+	for _, jt := range jobTypes {
+		if _, ok := allowedJobTypes[jt]; !ok {
+			return fmt.Errorf("%w: unsupported job type %q", ErrInvalidArgument, jt)
+		}
+	}
+	return nil
+}
+
 func matchIdempotent(existing *repo.Media, in PersistUploadInput) (*PersistUploadResult, error) {
+	switch existing.Status {
+	case repo.MediaStatusDeleting, repo.MediaStatusFailed:
+		return nil, fmt.Errorf("%w: media status %s", ErrFailedPrecondition, existing.Status)
+	}
+
 	// Строки до миграции fingerprints: DEFAULT '' без бэкфилла. Пустые fp
 	// не сравниваем с новыми — иначе любой ретрай станет AlreadyExists.
 	legacyEmpty := existing.BodyFingerprint == "" && existing.ParamsFingerprint == ""

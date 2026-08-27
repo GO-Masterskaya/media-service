@@ -271,6 +271,87 @@ func TestPersistUpload_legacyEmptyFingerprintsReplay(t *testing.T) {
 	require.Equal(t, 0, sto.puts)
 }
 
+func TestPersistUpload_rejectsUnknownJobType(t *testing.T) {
+	svc := NewService(newPersistMediaRepo(), &svcStubDerivRepo{}, newCountingStorage(), time.Minute, svcTestLogger())
+	_, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
+		IdempotencyKey:    "k-job",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         1,
+		BodyFingerprint:   "bf",
+		ParamsFingerprint: ParamsFingerprint("image/png", false, false, nil),
+		JobTypes:          []string{"thumbnail", "nope"},
+		Reader:            bytes.NewReader([]byte("x")),
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestPersistUpload_replayRejectsDeletingStatus(t *testing.T) {
+	repoStub := newPersistMediaRepo()
+	params := ParamsFingerprint("image/png", false, false, nil)
+	repoStub.byKey[repoStub.key(ownerID(), "k-del")] = &repo.Media{
+		ID:                uuid.New(),
+		OwnerID:           ownerID(),
+		IdempotencyKey:    "k-del",
+		BodyFingerprint:   "bf-del",
+		ParamsFingerprint: params,
+		Status:            repo.MediaStatusDeleting,
+		StorageKey:        "x/original.png",
+	}
+	sto := newCountingStorage()
+	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
+
+	_, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
+		IdempotencyKey:    "k-del",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         1,
+		BodyFingerprint:   "bf-del",
+		ParamsFingerprint: params,
+		Reader:            bytes.NewReader([]byte("x")),
+	})
+	require.ErrorIs(t, err, ErrFailedPrecondition)
+	require.Equal(t, 0, sto.puts)
+}
+
+func TestPersistUpload_idTakenBeforePutDoesNotOverwrite(t *testing.T) {
+	params := ParamsFingerprint("image/png", false, false, nil)
+	mediaID := uuid.New()
+	repoStub := newPersistMediaRepo()
+	repoStub.byKey[repoStub.key(ownerID(), "other-key")] = &repo.Media{
+		ID:                mediaID,
+		OwnerID:           ownerID(),
+		IdempotencyKey:    "other-key",
+		BodyFingerprint:   "bf-other",
+		ParamsFingerprint: params,
+		Status:            repo.MediaStatusStored,
+		StorageKey:        "owner/" + mediaID.String() + "/original.png",
+	}
+	sto := newCountingStorage()
+	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
+
+	_, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           ownerID(),
+		MediaID:           mediaID,
+		IdempotencyKey:    "new-key",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         4,
+		BodyFingerprint:   "bf-new",
+		ParamsFingerprint: params,
+		Reader:            bytes.NewReader([]byte("data")),
+	})
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Equal(t, 0, sto.puts, "must not PutObject over existing media_id")
+}
+
 func TestPersistUpload_compensateDeleteOnDBFailure(t *testing.T) {
 	repoStub := newPersistMediaRepo()
 	repoStub.fail = errors.New("db down")
