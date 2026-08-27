@@ -20,7 +20,9 @@ func BodyFingerprint(r io.Reader) (hexDigest string, n int64, err error) {
 }
 
 // ParamsFingerprint — стабильный хэш существенных init-параметров upload
-// (mime, processing flags, expires_at). Без filename и expected_size.
+// (mime, processing flags, expires_at).
+// Kind и size намеренно не входят: kind выводится ffprobe после приёма тела,
+// размер покрыт BodyFingerprint; filename/expected_size — не часть контракта replay.
 func ParamsFingerprint(mime string, makeThumbnail, transcode bool, expiresAt *time.Time) string {
 	expires := ""
 	if expiresAt != nil {

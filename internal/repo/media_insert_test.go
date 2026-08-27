@@ -114,6 +114,33 @@ func TestInsertWithJobs(t *testing.T) {
 			t.Fatalf("ok=%d conflict=%d want 1/1 ids=%v", ok, conflict, seen)
 		}
 	})
+
+	t.Run("rejects nil media id", func(t *testing.T) {
+		resetDB(t, pool)
+		m := sampleMedia(uuid.New(), "nil-id", "body", "params")
+		m.ID = uuid.Nil
+		_, err := mediaRepo.InsertWithJobs(ctx, m, nil)
+		if err == nil {
+			t.Fatal("expected error for nil media id")
+		}
+	})
+
+	t.Run("same media id different idempotency is id conflict", func(t *testing.T) {
+		resetDB(t, pool)
+		owner := uuid.New()
+		id := uuid.New()
+		first := sampleMedia(owner, "idem-a", "body-a", "params-a")
+		first.ID = id
+		if _, err := mediaRepo.InsertWithJobs(ctx, first, nil); err != nil {
+			t.Fatal(err)
+		}
+		second := sampleMedia(owner, "idem-b", "body-b", "params-b")
+		second.ID = id
+		_, err := mediaRepo.InsertWithJobs(ctx, second, nil)
+		if !errors.Is(err, ErrIDConflict) {
+			t.Fatalf("got %v, want ErrIDConflict", err)
+		}
+	})
 }
 
 func sampleMedia(owner uuid.UUID, key, bodyFP, paramsFP string) Media {

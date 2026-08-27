@@ -128,10 +128,11 @@ func (r *PgMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UU
 
 // InsertWithJobs атомарно создаёт media и requested jobs в одной TX.
 // Статус: processing если есть jobs, иначе stored.
-// При unique (owner_id, idempotency_key) возвращает ErrConcurrentConflict.
+// m.ID обязателен (ключ хранилища строится снаружи из того же id).
+// Unique (owner_id, idempotency_key) → ErrConcurrentConflict; PK id → ErrIDConflict.
 func (r *PgMediaRepo) InsertWithJobs(ctx context.Context, m Media, jobTypes []string) (*Media, error) {
 	if m.ID == uuid.Nil {
-		m.ID = uuid.New()
+		return nil, fmt.Errorf("media id required")
 	}
 	if len(m.Metadata) == 0 {
 		m.Metadata = json.RawMessage(`{}`)
@@ -174,8 +175,8 @@ func (r *PgMediaRepo) InsertWithJobs(ctx context.Context, m Media, jobTypes []st
 		m.ExpiresAt,
 	))
 	if err != nil {
-		if isUniqueViolation(err) {
-			return nil, ErrConcurrentConflict
+		if mapped := mapInsertUniqueViolation(err); mapped != nil {
+			return nil, mapped
 		}
 		return nil, fmt.Errorf("insert media: %w", err)
 	}
@@ -197,9 +198,22 @@ func (r *PgMediaRepo) InsertWithJobs(ctx context.Context, m Media, jobTypes []st
 	return created, nil
 }
 
-func isUniqueViolation(err error) bool {
+// mapInsertUniqueViolation различает 23505 по имени констрейнта/индекса.
+// Любой другой unique не мапится в ErrConcurrentConflict — иначе PK/прочие
+// индексы ошибочно уходят в resolve по idempotency_key.
+func mapInsertUniqueViolation(err error) error {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return nil
+	}
+	switch pgErr.ConstraintName {
+	case "uq_media_owner_id_idempotency_key":
+		return ErrConcurrentConflict
+	case "media_pkey":
+		return ErrIDConflict
+	default:
+		return fmt.Errorf("unique violation on %q: %w", pgErr.ConstraintName, err)
+	}
 }
 
 // ListDeleting возвращает записи со статусом deleting, обновлённые раньше cutoff.

@@ -46,8 +46,9 @@ type PersistUploadResult struct {
 }
 
 // PersistUpload кладёт оригинал в MinIO, затем атомарно пишет media+jobs.
-// Порядок: MinIO → DB. При ошибке DB — best-effort storage.DeleteObject;
-// необработанный orphan подхватывает media.Reconciler.
+// Порядок: MinIO → DB. При ошибке DB — best-effort storage.DeleteObject,
+// но только если объект не принадлежит уже закоммиченной строке (тот же StorageKey).
+// Необработанный orphan подхватывает media.Reconciler.
 func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*PersistUploadResult, error) {
 	if in.OwnerID == uuid.Nil {
 		return nil, fmt.Errorf("%w: owner_id required", ErrInvalidArgument)
@@ -117,6 +118,44 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 		return &PersistUploadResult{Media: created, Replay: false}, nil
 	}
 
+	// Сначала резолвим конфликт: при совпадающем StorageKey объект уже принадлежит
+	// победителю — удалять нельзя (типичный ретрай с тем же media_id).
+	if errors.Is(err, repo.ErrConcurrentConflict) {
+		existing, lookupErr := s.mediaRepo.GetByOwnerIdempotency(ctx, in.OwnerID, in.IdempotencyKey)
+		if lookupErr != nil {
+			s.compensateDelete(ctx, key)
+			return nil, fmt.Errorf("concurrent insert resolve: %w", lookupErr)
+		}
+		if existing.StorageKey != key {
+			s.compensateDelete(ctx, key)
+		}
+		return matchIdempotent(existing, in)
+	}
+
+	if errors.Is(err, repo.ErrIDConflict) {
+		existing, lookupErr := s.mediaRepo.GetByID(ctx, in.MediaID)
+		if lookupErr != nil {
+			s.compensateDelete(ctx, key)
+			return nil, fmt.Errorf("id conflict resolve: %w", lookupErr)
+		}
+		if existing.StorageKey != key {
+			s.compensateDelete(ctx, key)
+		}
+		if existing.IdempotencyKey == in.IdempotencyKey {
+			return matchIdempotent(existing, in)
+		}
+		return nil, ErrAlreadyExists
+	}
+
+	s.compensateDelete(ctx, key)
+	s.log.Error("insert media failed",
+		slog.Any("error", err),
+		slog.String("media_id", in.MediaID.String()),
+	)
+	return nil, err
+}
+
+func (s *Service) compensateDelete(ctx context.Context, key string) {
 	compensateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensateTimeout)
 	defer cancel()
 	if delErr := s.storage.DeleteObject(compensateCtx, key); delErr != nil {
@@ -125,26 +164,16 @@ func (s *Service) PersistUpload(ctx context.Context, in PersistUploadInput) (*Pe
 			slog.String("storage_key", key),
 		)
 	}
-
-	if errors.Is(err, repo.ErrConcurrentConflict) {
-		existing, lookupErr := s.mediaRepo.GetByOwnerIdempotency(compensateCtx, in.OwnerID, in.IdempotencyKey)
-		if lookupErr != nil {
-			return nil, fmt.Errorf("concurrent insert resolve: %w", lookupErr)
-		}
-		return matchIdempotent(existing, in)
-	}
-
-	s.log.Error("insert media failed",
-		slog.Any("error", err),
-		slog.String("media_id", in.MediaID.String()),
-	)
-	return nil, err
 }
 
 func matchIdempotent(existing *repo.Media, in PersistUploadInput) (*PersistUploadResult, error) {
-	if existing.BodyFingerprint == in.BodyFingerprint &&
-		existing.ParamsFingerprint == in.ParamsFingerprint {
+	// Строки до миграции fingerprints: DEFAULT '' без бэкфилла. Пустые fp
+	// не сравниваем с новыми — иначе любой ретрай станет AlreadyExists.
+	legacyEmpty := existing.BodyFingerprint == "" && existing.ParamsFingerprint == ""
+	if legacyEmpty ||
+		(existing.BodyFingerprint == in.BodyFingerprint &&
+			existing.ParamsFingerprint == in.ParamsFingerprint) {
 		return &PersistUploadResult{Media: existing, Replay: true}, nil
 	}
-	return nil, repo.ErrAlreadyExists
+	return nil, ErrAlreadyExists
 }

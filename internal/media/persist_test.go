@@ -235,8 +235,40 @@ func TestPersistUpload_conflictDifferentBody(t *testing.T) {
 	in.BodyFingerprint = "bf-new"
 	in.Reader = bytes.NewReader([]byte("xyz"))
 	_, err = svc.PersistUpload(context.Background(), in)
-	require.ErrorIs(t, err, repo.ErrAlreadyExists)
+	require.ErrorIs(t, err, ErrAlreadyExists)
 	require.Equal(t, 1, sto.puts)
+}
+
+func TestPersistUpload_legacyEmptyFingerprintsReplay(t *testing.T) {
+	repoStub := newPersistMediaRepo()
+	params := ParamsFingerprint("image/png", false, false, nil)
+	repoStub.byKey[repoStub.key(ownerID(), "k-legacy")] = &repo.Media{
+		ID:                uuid.New(),
+		OwnerID:           ownerID(),
+		IdempotencyKey:    "k-legacy",
+		BodyFingerprint:   "",
+		ParamsFingerprint: "",
+		Status:            repo.MediaStatusStored,
+		StorageKey:        "legacy/original.png",
+	}
+	sto := newCountingStorage()
+	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
+
+	res, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
+		IdempotencyKey:    "k-legacy",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         3,
+		BodyFingerprint:   "bf-new",
+		ParamsFingerprint: params,
+		Reader:            bytes.NewReader([]byte("abc")),
+	})
+	require.NoError(t, err)
+	require.True(t, res.Replay)
+	require.Equal(t, 0, sto.puts)
 }
 
 func TestPersistUpload_compensateDeleteOnDBFailure(t *testing.T) {
@@ -330,26 +362,33 @@ func TestPersistUpload_concurrentConflictResolvesToReplay(t *testing.T) {
 	require.Equal(t, 0, sto.puts)
 }
 
-func TestPersistUpload_raceAfterPutCompensatesAndReplays(t *testing.T) {
+func TestPersistUpload_raceAfterPutSameKeyDoesNotDelete(t *testing.T) {
+	// Штатный ретрай: тот же media_id → тот же StorageKey. Победитель уже
+	// закоммитил строку; проигравший не должен сносить общий объект.
 	params := ParamsFingerprint("image/png", false, false, nil)
-	winnerID := uuid.New()
+	owner := ownerID()
+	mediaID := uuid.New()
+	key, err := storage.BuildKey(owner, mediaID, storage.VariantOriginal, "image/png", "a.png")
+	require.NoError(t, err)
+
 	repoStub := &raceAfterPutRepo{
+		conflict: repo.ErrConcurrentConflict,
 		winner: &repo.Media{
-			ID:                winnerID,
-			OwnerID:           ownerID(),
+			ID:                mediaID,
+			OwnerID:           owner,
 			IdempotencyKey:    "k6",
 			BodyFingerprint:   "bf-6",
 			ParamsFingerprint: params,
 			Status:            repo.MediaStatusStored,
-			StorageKey:        "winner/original.png",
+			StorageKey:        key,
 		},
 	}
 	sto := newCountingStorage()
 	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
 
-	in := PersistUploadInput{
-		OwnerID:           ownerID(),
-		MediaID:           uuid.New(),
+	res, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           owner,
+		MediaID:           mediaID,
 		IdempotencyKey:    "k6",
 		Filename:          "a.png",
 		Mime:              "image/png",
@@ -358,23 +397,106 @@ func TestPersistUpload_raceAfterPutCompensatesAndReplays(t *testing.T) {
 		BodyFingerprint:   "bf-6",
 		ParamsFingerprint: params,
 		Reader:            bytes.NewReader([]byte("data")),
+	})
+	require.NoError(t, err)
+	require.True(t, res.Replay)
+	require.Equal(t, mediaID, res.Media.ID)
+	require.Equal(t, 1, sto.puts)
+	require.Equal(t, 0, sto.deletes, "must not delete winner's object at shared key")
+	require.Contains(t, sto.objects, key)
+}
+
+func TestPersistUpload_raceAfterPutDifferentKeyCompensates(t *testing.T) {
+	params := ParamsFingerprint("image/png", false, false, nil)
+	winnerID := uuid.New()
+	repoStub := &raceAfterPutRepo{
+		conflict: repo.ErrConcurrentConflict,
+		winner: &repo.Media{
+			ID:                winnerID,
+			OwnerID:           ownerID(),
+			IdempotencyKey:    "k6b",
+			BodyFingerprint:   "bf-6b",
+			ParamsFingerprint: params,
+			Status:            repo.MediaStatusStored,
+			StorageKey:        "winner/other-media/original.png",
+		},
 	}
-	res, err := svc.PersistUpload(context.Background(), in)
+	sto := newCountingStorage()
+	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
+
+	res, err := svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           ownerID(),
+		MediaID:           uuid.New(),
+		IdempotencyKey:    "k6b",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         4,
+		BodyFingerprint:   "bf-6b",
+		ParamsFingerprint: params,
+		Reader:            bytes.NewReader([]byte("data")),
+	})
 	require.NoError(t, err)
 	require.True(t, res.Replay)
 	require.Equal(t, winnerID, res.Media.ID)
 	require.Equal(t, 1, sto.puts)
 	require.Equal(t, 1, sto.deletes)
+	require.Empty(t, sto.objects)
+}
+
+func TestPersistUpload_idConflictSameKeyDoesNotDelete(t *testing.T) {
+	params := ParamsFingerprint("image/png", false, false, nil)
+	owner := ownerID()
+	mediaID := uuid.New()
+	key, err := storage.BuildKey(owner, mediaID, storage.VariantOriginal, "image/png", "a.png")
+	require.NoError(t, err)
+
+	repoStub := &raceAfterPutRepo{
+		conflict: repo.ErrIDConflict,
+		winner: &repo.Media{
+			ID:                mediaID,
+			OwnerID:           owner,
+			IdempotencyKey:    "other-key",
+			BodyFingerprint:   "bf-other",
+			ParamsFingerprint: params,
+			Status:            repo.MediaStatusStored,
+			StorageKey:        key,
+		},
+	}
+	sto := newCountingStorage()
+	svc := NewService(repoStub, &svcStubDerivRepo{}, sto, time.Minute, svcTestLogger())
+
+	_, err = svc.PersistUpload(context.Background(), PersistUploadInput{
+		OwnerID:           owner,
+		MediaID:           mediaID,
+		IdempotencyKey:    "k-id-conflict",
+		Filename:          "a.png",
+		Mime:              "image/png",
+		Kind:              repo.MediaKindImage,
+		SizeBytes:         4,
+		BodyFingerprint:   "bf-new",
+		ParamsFingerprint: params,
+		Reader:            bytes.NewReader([]byte("data")),
+	})
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Equal(t, 1, sto.puts)
+	require.Equal(t, 0, sto.deletes)
+	require.Contains(t, sto.objects, key)
 }
 
 // raceAfterPutRepo: lookup miss until InsertWithJobs races; then returns winner.
 type raceAfterPutRepo struct {
 	winner      *repo.Media
+	conflict    error
 	afterInsert bool
 }
 
 func (r *raceAfterPutRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
-	return nil, repo.ErrNotFound
+	if !r.afterInsert || r.winner.ID != id {
+		return nil, repo.ErrNotFound
+	}
+	cp := *r.winner
+	return &cp, nil
 }
 
 func (r *raceAfterPutRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
@@ -387,6 +509,9 @@ func (r *raceAfterPutRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uu
 
 func (r *raceAfterPutRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
 	r.afterInsert = true
+	if r.conflict != nil {
+		return nil, r.conflict
+	}
 	return nil, repo.ErrConcurrentConflict
 }
 
