@@ -11,6 +11,7 @@ import (
 	"mediaservice/internal/storage"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -150,13 +151,18 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 	}()
 
 	metadata := make(map[string]any)
+	var width, height int
+	var dur time.Duration
 	if infoProbe, err := Probe(ctx, actualOutputPath); err == nil && infoProbe != nil {
 		if infoProbe.Width > 0 && infoProbe.Height > 0 {
 			metadata["width"] = infoProbe.Width
 			metadata["height"] = infoProbe.Height
+			width = infoProbe.Width
+			height = infoProbe.Height
 		}
 		if infoProbe.Duration > 0 {
 			metadata["duration"] = infoProbe.Duration
+			dur = infoProbe.Duration
 		}
 	} else if err != nil && h.log != nil {
 		h.log.Warn("failed to probe transcoded file metadata", "media_id", media.ID, "error", err)
@@ -169,6 +175,9 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		Mime:       mime,
 		SizeBytes:  info.Size(),
 		StorageKey: key,
+		Width:      width,
+		Height:     height,
+		Duration:   dur,
 	}
 
 	resRecord, err := h.repo.UpsertDerivative(ctx, record)

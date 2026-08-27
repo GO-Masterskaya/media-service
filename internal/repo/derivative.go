@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,9 @@ type Derivative struct {
 	Mime       string
 	SizeBytes  int64
 	StorageKey string
+	Width      int
+	Height     int
+	Duration   time.Duration
 }
 
 type DerivativeRepo interface {
@@ -81,19 +85,33 @@ func (r *PgDerivativeRepo) UpsertDerivative(ctx context.Context, d *Derivative) 
 	}
 
 	const q = `
-		INSERT INTO media_derivative (id, media_id, variant, mime, size_bytes, storage_key)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO media_derivative (id, media_id, variant, mime, size_bytes, storage_key, width, height, duration)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (media_id, variant) DO UPDATE SET
 			mime = EXCLUDED.mime,
 			size_bytes = EXCLUDED.size_bytes,
-			storage_key = EXCLUDED.storage_key
-		RETURNING id, media_id, variant, mime, size_bytes, storage_key
+			storage_key = EXCLUDED.storage_key,
+			width = EXCLUDED.width,
+			height = EXCLUDED.height,
+			duration = EXCLUDED.duration
+		RETURNING id, media_id, variant, mime, size_bytes, storage_key, width, height, duration
 	`
 
-	row := r.pool.QueryRow(ctx, q, d.ID, d.MediaID, d.Variant, d.Mime, d.SizeBytes, d.StorageKey)
+	row := r.pool.QueryRow(ctx, q, d.ID, d.MediaID, d.Variant,
+		d.Mime, d.SizeBytes, d.StorageKey, d.Width, d.Height, d.Duration)
 	var out Derivative
-	if err := row.Scan(&out.ID, &out.MediaID, &out.Variant, &out.Mime, &out.SizeBytes, &out.StorageKey); err != nil {
-		return nil, fmt.Errorf("upsert derivative^ %w", err)
+	if err := row.Scan(
+		&out.ID,
+		&out.MediaID,
+		&out.Variant,
+		&out.Mime,
+		&out.SizeBytes,
+		&out.StorageKey,
+		&out.Width,
+		&out.Height,
+		&out.Duration,
+	); err != nil {
+		return nil, fmt.Errorf("upsert derivative: %w", err)
 	}
 
 	return &out, nil
