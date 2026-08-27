@@ -74,7 +74,7 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		return nil, err
 	}
 
-	workDir, err := os.MkdirTemp("", "transcode-*")
+	workDir, err := os.MkdirTemp(h.cfg.ProcessingTempDir, "transcode-*")
 	if err != nil {
 		h.logError("failed to create temp dir", media.ID, err)
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)

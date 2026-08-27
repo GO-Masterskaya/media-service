@@ -5,10 +5,10 @@ coverage.out
 tmp/
 
 # Media processing artifacts
-*.mp4
-*.gif
-*.bin
-*.png
-*.jpeg
-*.jpg
-*.m3u8
+internal/processing/*.mp4
+internal/processing/*.gif
+internal/processing/*.bin
+internal/processing/*.png
+internal/processing/*.jpeg
+internal/processing/*.jpg
+internal/processing/*.m3u8

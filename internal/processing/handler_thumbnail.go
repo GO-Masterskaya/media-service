@@ -124,7 +124,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	}
 
 	// Изолированная директория под конкретный таск исключает гонки при ретраях
-	tempDir, err := os.MkdirTemp("", "thumb_*")
+	tempDir, err := os.MkdirTemp(h.cfg.ProcessingTempDir, "thumb_*")
 	if err != nil {
 		h.logError("failed to create temp dir", media.ID, err)
 		return nil, fmt.Errorf("error create dir: %w", err)
@@ -202,8 +202,6 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	}
 
 	// UpsertDerivative обновляет или создает запись о производной.
-	// На стороне репозитория UPSERT должен выполняться по уникальному индексу (media_id, variant):
-	// ON CONFLICT (media_id, variant) DO UPDATE SET ...
 	res, err := h.repo.UpsertDerivative(ctx, record)
 	if err != nil {
 		h.logError("failed to save derivative in db", media.ID, err)

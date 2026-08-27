@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-var outputRoot = os.TempDir()
-
 const (
 	defaultThumbnailTimeout = 2 * time.Minute
 	defaultTranscodeTimeout = 10 * time.Minute
@@ -28,7 +26,7 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 		defer cancel()
 	}
 
-	safePath, err := resolveSafePath(outputRoot, outputPath)
+	safePath, err := resolveSafePath(filepath.Dir(outputPath), outputPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid output path: %w", err)
 	}
@@ -84,7 +82,7 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (st
 		defer cancel()
 	}
 
-	safePath, err := resolveSafePath(outputRoot, outputPath)
+	safePath, err := resolveSafePath(filepath.Dir(outputPath), outputPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid output path: %w", err)
 	}
@@ -131,7 +129,10 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (st
 
 // resolveSafePath гарантирует, что итоговый путь находиться строго внутри outputRoot
 func resolveSafePath(outputRoot, outputPath string) (string, error) {
-	cleanRoot := filepath.Clean(outputRoot)
+	cleanRoot, err := filepath.EvalSymlinks(outputRoot)
+	if err != nil {
+		cleanRoot = filepath.Clean(outputRoot)
+	}
 
 	var target string
 	if filepath.IsAbs(outputPath) {
@@ -142,7 +143,7 @@ func resolveSafePath(outputRoot, outputPath string) (string, error) {
 
 	// Проверяем относительный путь от cleanRoot к target
 	rel, err := filepath.Rel(cleanRoot, target)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path traversal detected: %s is outside %s", outputPath, cleanRoot)
 	}
 
