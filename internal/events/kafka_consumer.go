@@ -123,6 +123,9 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 
 			stateAny, loaded := c.partitionWorkers.Load(key)
 			if !loaded {
+				// Небуферизованный канал: PollFetches блокируется на ch <- p,
+				// пока воркер не заберёт фетч. Это естественный backpressure —
+				// новые данные не читаются, пока старые не обработаны.
 				state := &partitionWorkerState{
 					ch:      make(chan kgo.FetchTopicPartition),
 					revoked: make(chan struct{}),
@@ -158,12 +161,10 @@ func (c *KafkaConsumer) partitionWorker(
 ) {
 	defer close(state.done)
 
-	c.client.PauseFetchPartitions(map[string][]int32{topic: {partition}})
-	defer func() {
-		c.client.ResumeFetchPartitions(map[string][]int32{topic: {partition}})
-		c.log.Debug("resumed partition", "topic", topic, "partition", partition)
-	}()
-
+	// Небуферизованный канал сам регулирует поток:
+	// PollFetches блокируется на ch <- p, пока воркер не освободится.
+	// PauseFetchPartitions здесь не нужен — иначе партиция уйдёт на паузу
+	// после первого фетча и не будет читаться до revoke/shutdown.
 	for {
 		select {
 		case <-ctx.Done():
