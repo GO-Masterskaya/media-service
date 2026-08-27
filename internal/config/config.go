@@ -68,6 +68,7 @@ type Config struct {
 	KafkaTopic    string   `env:"KAFKA_TOPIC"           env-default:"media.events"`
 	KafkaDLQTopic string   `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
 	KafkaGroup    string   `env:"KAFKA_GROUP"           env-default:"media-service"`
+
 	// StrictOwnerCheck включает строгую проверку владельца.
 	// При true требуется валидный auth interceptor (TODO #5).
 	// Пока используется как feature-flag для deploy-модели за gateway.
@@ -132,7 +133,6 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
 	fmt.Fprintf(&b, "KafkaGroup:%q", c.KafkaGroup)
-	fmt.Fprintf(&b, "StrictOwnerCheck:%v, ", c.StrictOwnerCheck)
 	b.WriteString("}")
 	return b.String()
 }
