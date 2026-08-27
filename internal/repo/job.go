@@ -200,30 +200,15 @@ func (r *PgJobRepo) complete(ctx context.Context, jobID uuid.UUID, owner string,
 		return ErrLeaseMismatch
 	}
 
-	// При возврате в queued (retry) инкрементируем attempts и добавляем backoff.
-	if to == JobStatusQueued {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = $2,
-			    last_error = NULLIF($3, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL,
-			    attempts = attempts + 1,
-			    run_after = now() + ((attempts + 1) * interval '30 seconds')
-			WHERE id = $1
-		`, jobID, to, reason)
-	} else {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = $2,
-			    last_error = NULLIF($3, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL
-			WHERE id = $1
-		`, jobID, to, reason)
-	}
+	_, err = tx.Exec(ctx, `
+		UPDATE processing_jobs
+		SET status = $2,
+		    last_error = NULLIF($3, ''),
+		    locked_by = NULL,
+		    lease_until = NULL,
+		    locked_at = NULL
+		WHERE id = $1
+	`, jobID, to, reason)
 	if err != nil {
 		return fmt.Errorf("update job: %w", err)
 	}
