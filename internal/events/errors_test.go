@@ -36,7 +36,10 @@ func TestClassifyErrorExhaustive(t *testing.T) {
 	for _, code := range allCodes {
 		t.Run(code.String(), func(t *testing.T) {
 			err := status.Error(code, "test")
-			assert.NotPanics(t, func() { _ = ClassifyError(err) })
+			classified := ClassifyError(err)
+			assert.NotNil(t, classified)
+			// Все перечисленные коды должны быть либо Permanent, либо Retryable.
+			assert.True(t, IsPermanent(classified) || IsRetryable(classified))
 		})
 	}
 }

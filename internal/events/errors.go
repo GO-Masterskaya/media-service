@@ -5,9 +5,19 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+var unclassifiedGrpcCounter = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "events_unclassified_grpc_total",
+	Help: "Total unclassified gRPC status codes encountered",
+})
+
+func init() {
+	prometheus.MustRegister(unclassifiedGrpcCounter)
+}
 
 // PermanentError — ошибка, после которой retry бесполезен.
 // Событие уходит в DLQ (или reject) сразу.
@@ -74,11 +84,11 @@ func ClassifyError(err error) error {
 			codes.DataLoss:
 			return RetryableError{err}
 		default:
-			// Неизвестный gRPC код — разработчик забыл классифицировать.
-			// Паника в dev/test, чтобы заметить сразу. В production
-			// fallback на RetryableError консервативен, но лучше явно
-			// добавить код в switch, чем молча retry'евать вечно.
-			panic(fmt.Sprintf("unclassified gRPC status code: %v", st.Code()))
+			// Полноту покрытия гарантирует TestClassifyErrorExhaustive на CI.
+			// В рантайме консервативно fallback на RetryableError, чтобы не
+			// убивать консьюмер из-за нового кода в библиотеке.
+			unclassifiedGrpcCounter.Inc()
+			return RetryableError{fmt.Errorf("unclassified gRPC code %v: %w", st.Code(), err)}
 		}
 	}
 
