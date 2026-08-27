@@ -36,7 +36,7 @@ func TestClassifyErrorExhaustive(t *testing.T) {
 	for _, code := range allCodes {
 		t.Run(code.String(), func(t *testing.T) {
 			err := status.Error(code, "test")
-			assert.NotPanics(t, func() { ClassifyError(err) })
+			assert.NotPanics(t, func() { _ = ClassifyError(err) })
 		})
 	}
 }
