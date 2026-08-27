@@ -108,12 +108,23 @@ func (r *PgMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*Media, b
 	if err == nil {
 		return &m, true, nil
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Либо записи нет вовсе, либо она уже deleting — оба случая безопасно
-		// трактуются вызывающим как идемпотентный успех (см. интерфейс выше).
-		return nil, false, nil
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, fmt.Errorf("mark deleting: %w", err)
 	}
-	return nil, false, fmt.Errorf("mark deleting: %w", err)
+
+	// 0 строк: либо записи нет вовсе, либо она уже в status=deleting (повтор
+	// после сбоя на предыдущей попытке, или гонка с параллельным вызовом).
+	// Различаем отдельным чтением — если просто вернуть found=false здесь
+	// безусловно, повторный delete зависшей deleting-записи молча вернёт
+	// "успех", не доведя удаление до конца (см. ревью PR #13/#17).
+	existing, getErr := r.GetByID(ctx, id)
+	if getErr != nil {
+		if errors.Is(getErr, ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("mark deleting: check existing: %w", getErr)
+	}
+	return existing, true, nil
 }
 
 // ListDeleting возвращает записи со статусом deleting, обновлённые раньше cutoff.

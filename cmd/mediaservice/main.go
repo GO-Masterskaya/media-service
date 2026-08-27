@@ -86,9 +86,14 @@ func main() {
 	grpcServer := grpc.NewServer()
 	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck, cfg.DeleteBatchSize))
 
-	// +++ ADDED: TTL reaper (#17). Останавливается сам по ctx.Done() вместе
-	// с остальными компонентами при graceful shutdown.
-	reaper := media.NewReaper(mediaSvc, cfg.TTLReapInterval, cfg.TTLReapBatchSize, slog.Default())
+	// +++ ADDED: TTL reaper (#17, ревью PR #13/#17: dry-run/kill-switch/метрики
+	// по образцу reconciler). Graceful shutdown — через reaper.Shutdown ниже.
+	reaperCfg := media.ReaperConfig{
+		Interval:  cfg.TTLReapInterval,
+		BatchSize: cfg.TTLReapBatchSize,
+		DryRun:    cfg.TTLReapDryRun,
+	}
+	reaper := media.NewReaperWithConfig(mediaSvc, reaperCfg, slog.Default())
 	go reaper.Run(ctx)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -145,6 +150,14 @@ func main() {
 			defer wg.Done()
 			if err := rec.Shutdown(shutdownCtx); err != nil {
 				slog.Error("reconciler shutdown", "error", err)
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := reaper.Shutdown(shutdownCtx); err != nil {
+				slog.Error("reaper shutdown", "error", err)
 			}
 		}()
 

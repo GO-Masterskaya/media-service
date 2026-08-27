@@ -19,7 +19,11 @@ type MediaServer struct {
 	mediav1.UnimplementedMediaServiceServer
 	svc              *media.Service
 	strictOwnerCheck bool
-	deleteBatchSize  int
+	// deleteBatchSize: временно не используется — DeleteByOwner отключен
+	// до #5 (см. комментарий над DeleteByOwner ниже). Поле и конструктор
+	// сохранены как есть, чтобы не перекраивать сигнатуру повторно, когда
+	// RPC включится обратно.
+	deleteBatchSize int
 }
 
 func NewMediaServer(svc *media.Service, strictOwnerCheck bool, deleteBatchSize int) *MediaServer {
@@ -117,30 +121,21 @@ func (s *MediaServer) DeleteMedia(ctx context.Context, req *mediav1.DeleteMediaR
 	return &mediav1.DeleteMediaResponse{Deleted: true}, nil
 }
 
-// DeleteByOwner — issue #13. Каскадно удаляет всё media вызывающего owner'а.
-// v1 разрешает удалять только СВОИ данные (callerID == owner_id из запроса).
+// DeleteByOwner — issue #13, ВРЕМЕННО ОТКЛЮЧЕНО (ревью PR #13/#17).
+//
+// callerID здесь берётся из x-owner-id в metadata, которая НИКЕМ не
+// валидируется — auth interceptor ещё не написан (см. TODO #5 в конфиге).
+// Для одиночного DeleteMedia это принятый в v1 риск (см. ТЗ §5, как и у
+// GetDownloadURL): максимум один чужой объект за раз. Для DeleteByOwner —
+// необратимое МАССОВОЕ удаление — тот же риск неприемлем: злоумышленнику
+// достаточно подставить чужой uuid и в заголовок, и в тело запроса, чтобы
+// стереть чужую медиатеку целиком.
+//
+// Доменная логика (Service.DeleteByOwner) и её тесты (delete_test.go)
+// оставлены нетронутыми — RPC включится обратно, как только появится
+// настоящая проверка токена (#5). До тех пор — Unimplemented.
 func (s *MediaServer) DeleteByOwner(ctx context.Context, req *mediav1.DeleteByOwnerRequest) (*mediav1.DeleteByOwnerResponse, error) {
-	if req.OwnerId == "" {
-		return nil, status.Error(codes.InvalidArgument, "owner_id is required")
-	}
-	ownerID, err := uuid.Parse(req.OwnerId)
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "invalid owner_id")
-	}
-
-	callerID, err := s.resolveCaller(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if callerID != ownerID {
-		return nil, status.Error(codes.PermissionDenied, "access denied")
-	}
-
-	count, err := s.svc.DeleteByOwner(ctx, ownerID, s.deleteBatchSize)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "internal error")
-	}
-	return &mediav1.DeleteByOwnerResponse{DeletedCount: uint32(count)}, nil
+	return nil, status.Error(codes.Unimplemented, "DeleteByOwner is disabled until request-level auth validation ships (#5): x-owner-id is currently caller-supplied and unverified, unsafe for irreversible bulk delete")
 }
 
 // resolveCaller — единая точка решения strict/non-strict.

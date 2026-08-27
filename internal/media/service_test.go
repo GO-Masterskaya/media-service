@@ -30,6 +30,15 @@ type svcStubMediaRepo struct {
 	markDeletingErr   error
 	hardDeleteErr     error
 
+	// markDeletingFunc, если задан, заменяет статичное markDeletingFound —
+	// нужен для сценариев вроде "ретрай зависшей deleting-записи", где
+	// поведение должно зависеть от текущего состояния, а не быть константой.
+	markDeletingFunc func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error)
+
+	// hardDeleteFunc, если задан, заменяет статичный hardDeleteErr — нужен
+	// для сценариев вроде "одна запись в batch не удаляется, остальные да".
+	hardDeleteFunc func(ctx context.Context, id uuid.UUID) error
+
 	listDeletableByOwner func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error)
 	listExpiredIDs       func(ctx context.Context, limit int) ([]uuid.UUID, error)
 }
@@ -45,6 +54,9 @@ func (s *svcStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 }
 
 func (s *svcStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+	if s.markDeletingFunc != nil {
+		return s.markDeletingFunc(ctx, id)
+	}
 	if s.markDeletingErr != nil {
 		return nil, false, s.markDeletingErr
 	}
@@ -55,6 +67,9 @@ func (s *svcStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*rep
 }
 
 func (s *svcStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	if s.hardDeleteFunc != nil {
+		return s.hardDeleteFunc(ctx, id)
+	}
 	return s.hardDeleteErr
 }
 
@@ -92,6 +107,10 @@ func (s *svcStubStorage) Insert(ctx context.Context, d repo.Derivative) (*repo.D
 type svcStubStorage struct {
 	url *storage.PresignedURL
 	err error
+
+	// deletePrefixFunc, если задан, заменяет заглушку DeletePrefix — нужен
+	// для проверки, что удаление реально дошло до вызова к хранилищу.
+	deletePrefixFunc func(ctx context.Context, prefix string) error
 }
 
 func (s *svcStubStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
@@ -103,8 +122,13 @@ func (s *svcStubStorage) GetObject(ctx context.Context, key string) (io.ReadClos
 func (s *svcStubStorage) PresignGetObject(ctx context.Context, key string, ttl time.Duration) (*storage.PresignedURL, error) {
 	return s.url, s.err
 }
-func (s *svcStubStorage) DeleteObject(ctx context.Context, key string) error    { return nil }
-func (s *svcStubStorage) DeletePrefix(ctx context.Context, prefix string) error { return nil }
+func (s *svcStubStorage) DeleteObject(ctx context.Context, key string) error { return nil }
+func (s *svcStubStorage) DeletePrefix(ctx context.Context, prefix string) error {
+	if s.deletePrefixFunc != nil {
+		return s.deletePrefixFunc(ctx, prefix)
+	}
+	return nil
+}
 func (s *svcStubStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
 	return nil
 }

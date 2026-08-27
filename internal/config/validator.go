@@ -40,6 +40,12 @@ func (c *Config) validate() error {
 	if c.TTLReapInterval <= 0 {
 		return fmt.Errorf("TTL_REAP_INTERVAL must be > 0, got %s", c.TTLReapInterval)
 	}
+	if c.TTLReapBatchSize <= 0 {
+		return fmt.Errorf("TTL_REAP_BATCH_SIZE must be > 0, got %d", c.TTLReapBatchSize)
+	}
+	if c.DeleteBatchSize <= 0 {
+		return fmt.Errorf("DELETE_BATCH_SIZE must be > 0, got %d", c.DeleteBatchSize)
+	}
 	if c.RateLimitRPS <= 0 {
 		return fmt.Errorf("RATE_LIMIT_RPS must be > 0, got %d", c.RateLimitRPS)
 	}

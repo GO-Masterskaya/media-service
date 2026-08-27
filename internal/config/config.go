@@ -38,6 +38,9 @@ type Config struct {
 	PresignTTL       time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
 	TTLReapInterval  time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
 	TTLReapBatchSize int           `env:"TTL_REAP_BATCH_SIZE"   env-default:"100"`
+	// TTLReapDryRun: только считать/логировать "would delete", ничего не
+	// удалять — рекомендуется на первый выкат reaper'а (ревью PR #13/#17).
+	TTLReapDryRun bool `env:"TTL_REAP_DRY_RUN"      env-default:"false"`
 
 	// Delete
 	DeleteBatchSize int `env:"DELETE_BATCH_SIZE" env-default:"100"`
@@ -116,6 +119,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "PresignTTL:%s, ", c.PresignTTL)
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
 	fmt.Fprintf(&b, "TTLReapBatchSize:%d, ", c.TTLReapBatchSize)
+	fmt.Fprintf(&b, "TTLReapDryRun:%t, ", c.TTLReapDryRun)
 	fmt.Fprintf(&b, "DeleteBatchSize:%d, ", c.DeleteBatchSize)
 	fmt.Fprintf(&b, "UploadTempDir:%q, ", c.UploadTempDir)
 	fmt.Fprintf(&b, "UploadReserveBytes:%d, ", c.UploadReserveBytes)

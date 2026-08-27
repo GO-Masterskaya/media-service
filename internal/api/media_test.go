@@ -233,3 +233,18 @@ func TestGetDownloadURL_ServiceError(t *testing.T) {
 
 	requireGRPCCode(t, err, codes.NotFound)
 }
+
+// TestDeleteByOwner_Disabled — issue #13/#17 ревью: DeleteByOwner временно
+// отключён, пока x-owner-id ничем не валидируется (см. комментарий в
+// media.go). Тест фиксирует это осознанное поведение, чтобы его нельзя было
+// случайно "вернуть" без соответствующей проверки авторизации.
+func TestDeleteByOwner_Disabled(t *testing.T) {
+	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false, 100)
+
+	_, err := server.DeleteByOwner(ctxWithOwner(ownerID().String()), &mediav1.DeleteByOwnerRequest{
+		OwnerId: ownerID().String(),
+	})
+
+	requireGRPCCode(t, err, codes.Unimplemented)
+}
