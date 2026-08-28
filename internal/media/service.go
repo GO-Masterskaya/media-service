@@ -23,6 +23,9 @@ var (
 	ErrInvalidArgument    = errors.New("invalid argument")
 	ErrFailedPrecondition = errors.New("media not ready")
 	ErrAccessDenied       = errors.New("access denied")
+	// ErrAlreadyExists — тот же (owner_id, idempotency_key) с другим fingerprint
+	// (или media_id занят другим idempotency_key). gRPC: codes.AlreadyExists.
+	ErrAlreadyExists = errors.New("already exists")
 )
 
 type Service struct {

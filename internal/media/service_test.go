@@ -29,6 +29,12 @@ type svcStubMediaRepo struct {
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
 }
+func (s *svcStubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return s.media, s.err
+}
+func (s *svcStubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, s.err
+}
 func (s *svcStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
