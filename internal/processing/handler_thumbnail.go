@@ -2,6 +2,7 @@ package processing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -145,7 +146,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		sec = h.cfg.ThumbSecond
 	}
 
-	actualOutputPath, err := GenerateThumbnail(ctx, sourcePath, outputPath, media.Kind, sec)
+	actualOutputPath, err := GenerateThumbnail(ctx, tempDir, sourcePath, outputPath, media.Kind, sec)
 	if err != nil {
 		h.logError("failed to generate thumbnail via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error call ffmpeg: %w", err)
@@ -184,26 +185,26 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	}()
 
 	metadata := make(map[string]any)
-	var width, height int
 	if infoProbe, err := Probe(ctx, actualOutputPath); err == nil && infoProbe != nil {
 		metadata["width"] = infoProbe.Width
 		metadata["height"] = infoProbe.Height
-		width = infoProbe.Width
-		height = infoProbe.Height
 	} else if err != nil {
 		if h.log != nil {
 			h.log.Warn("failed to probe thumbnail metadata", "media_id", media.ID, "error", err)
 		}
 	}
 
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+	}
 	record := &repo.Derivative{
 		MediaID:    media.ID,
 		Variant:    string(storage.VariantThumb),
 		Mime:       mime,
 		SizeBytes:  info.Size(),
 		StorageKey: key,
-		Width:      width,
-		Height:     height,
+		Metadata:   rawMetadata,
 	}
 
 	// UpsertDerivative обновляет или создает запись о производной.

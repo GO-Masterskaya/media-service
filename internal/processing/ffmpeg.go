@@ -19,14 +19,14 @@ const (
 
 // GenerateThumbnail создаёт превью через ffmpeg.
 // Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 2m.
-func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind Kind, sec int) (string, error) {
+func GenerateThumbnail(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind, sec int) (string, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultThumbnailTimeout)
 		defer cancel()
 	}
 
-	safePath, err := resolveSafePath(filepath.Dir(outputPath), outputPath)
+	safePath, err := resolveSafePath(outputRoot, outputPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid output path: %w", err)
 	}
@@ -75,14 +75,14 @@ func GenerateThumbnail(ctx context.Context, inputPath, outputPath string, kind K
 
 // Transcode создаёт рендицию через ffmpeg.
 // Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 10m.
-func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (string, error) {
+func Transcode(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind) (string, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTranscodeTimeout)
 		defer cancel()
 	}
 
-	safePath, err := resolveSafePath(filepath.Dir(outputPath), outputPath)
+	safePath, err := resolveSafePath(outputRoot, outputPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid output path: %w", err)
 	}
@@ -129,23 +129,25 @@ func Transcode(ctx context.Context, inputPath, outputPath string, kind Kind) (st
 
 // resolveSafePath гарантирует, что итоговый путь находиться строго внутри outputRoot
 func resolveSafePath(outputRoot, outputPath string) (string, error) {
-	cleanRoot, err := filepath.EvalSymlinks(outputRoot)
-	if err != nil {
-		cleanRoot = filepath.Clean(outputRoot)
+	cleanRoot := filepath.Clean(outputRoot)
+	if r, err := filepath.EvalSymlinks(cleanRoot); err == nil {
+		cleanRoot = r
 	}
 
-	var target string
-	if filepath.IsAbs(outputPath) {
-		target = filepath.Clean(outputPath)
-	} else {
-		target = filepath.Clean(filepath.Join(cleanRoot, outputPath))
+	target := outputPath
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(cleanRoot, target)
+	}
+	target = filepath.Clean(target)
+
+	// Самого файла ещё нет, поэтому разворачиваем его каталог.
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(target)); err == nil {
+		target = filepath.Join(parent, filepath.Base(target))
 	}
 
-	// Проверяем относительный путь от cleanRoot к target
 	rel, err := filepath.Rel(cleanRoot, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path traversal detected: %s is outside %s", outputPath, cleanRoot)
 	}
-
 	return target, nil
 }
