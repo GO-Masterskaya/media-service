@@ -166,6 +166,9 @@ func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uu
 // Если после удаления usages_count == 0 (или callerID == nil — force delete),
 // удаляет файлы из storage и саму запись media.
 func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) error {
+	if callerID == uuid.Nil {
+		return status.Error(codes.InvalidArgument, "caller_id required")
+	}
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
@@ -181,27 +184,27 @@ func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) 
 		return status.Errorf(codes.FailedPrecondition, "media is processing, cannot delete")
 	}
 
-	if callerID != uuid.Nil {
-		// Удаляем конкретную привязку. Если её нет — NotFound (handler превратит в nil).
-		usages, err := s.mediaRepo.DeleteAttachment(ctx, mediaID, callerID)
-		if err != nil {
-			if errors.Is(err, repo.ErrNotFound) {
-				return status.Error(codes.NotFound, "attachment not found")
-			}
-			s.log.Error("delete: delete attachment failed", slog.Any("error", err))
-			return status.Error(codes.Internal, "internal error")
+	// Удаляем конкретную привязку. Если её нет — NotFound (handler превратит в nil).
+	usages, err := s.mediaRepo.DeleteAttachment(ctx, mediaID, callerID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return status.Error(codes.NotFound, "attachment not found")
 		}
-		// Media ещё используется другими сущностями — файлы и запись не трогаем.
-		if usages > 0 {
-			s.log.Info("media still in use after detach",
-				slog.String("media_id", mediaID.String()),
-				slog.Int("usages", usages),
-			)
-			return nil
-		}
+		s.log.Error("delete: delete attachment failed", slog.Any("error", err))
+		return status.Error(codes.Internal, "internal error")
 	}
 
-	// Force delete (callerID == nil) или usages == 0 — чистим файлы и БД.
+	// Media ещё используется другими сущностями — файлы и запись не трогаем.
+	if usages > 0 {
+		s.log.Info("media still in use after detach",
+			slog.String("media_id", mediaID.String()),
+			slog.Int("usages", usages),
+		)
+		return nil
+	}
+
+	// usages == 0 — DeleteAttachment уже установил status = 'deleting' в транзакции.
+	// Новые attach'и заблокированы. Чистим файлы и БД.
 	prefix := path.Join(media.OwnerID.String(), media.ID.String()) + "/"
 	if err := s.storage.DeletePrefix(ctx, prefix); err != nil {
 		s.log.Error("delete prefix failed", slog.Any("error", err), slog.String("prefix", prefix))

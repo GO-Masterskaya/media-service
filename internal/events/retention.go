@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"sync/atomic"
+
 	"mediaservice/internal/repo"
 )
 
@@ -28,6 +30,8 @@ type processedEventCleaner struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	tickRunning atomic.Bool
 }
 
 func NewProcessedEventCleaner(
@@ -74,9 +78,14 @@ func (c *processedEventCleaner) Start(ctx context.Context) {
 			c.log.Info("processed event cleaner stopped (shutdown requested)")
 			return
 		case <-ticker.C:
+			if !c.tickRunning.CompareAndSwap(false, true) {
+				c.log.Warn("retention tick skipped: previous tick still running")
+				continue
+			}
 			c.wg.Add(1)
 			go func() {
 				defer c.wg.Done()
+				defer c.tickRunning.Store(false)
 				c.runOnce(ctx)
 			}()
 		}

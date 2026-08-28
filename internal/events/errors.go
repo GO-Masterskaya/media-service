@@ -4,19 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-var unclassifiedGrpcCounter = prometheus.NewCounter(prometheus.CounterOpts{
-	Name: "events_unclassified_grpc_total",
-	Help: "Total unclassified gRPC status codes encountered",
-})
+var (
+	unclassifiedGrpcOnce    sync.Once
+	unclassifiedGrpcCounter prometheus.Counter
+)
 
-func init() {
-	prometheus.MustRegister(unclassifiedGrpcCounter)
+func initUnclassifiedGrpcCounter() {
+	unclassifiedGrpcOnce.Do(func() {
+		unclassifiedGrpcCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "events_unclassified_grpc_total",
+			Help: "Total unclassified gRPC status codes encountered",
+		})
+		prometheus.MustRegister(unclassifiedGrpcCounter)
+	})
 }
 
 // PermanentError — ошибка, после которой retry бесполезен.
@@ -87,6 +94,7 @@ func ClassifyError(err error) error {
 			// Полноту покрытия гарантирует TestClassifyErrorExhaustive на CI.
 			// В рантайме консервативно fallback на RetryableError, чтобы не
 			// убивать консьюмер из-за нового кода в библиотеке.
+			initUnclassifiedGrpcCounter()
 			unclassifiedGrpcCounter.Inc()
 			return RetryableError{fmt.Errorf("unclassified gRPC code %v: %w", st.Code(), err)}
 		}
