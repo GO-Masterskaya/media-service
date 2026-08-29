@@ -6,7 +6,8 @@ var (
 	ErrNotFound           = errors.New("not found")
 	ErrLeaseMismatch      = errors.New("job lease mismatch")
 	ErrInvalidTransition  = errors.New("invalid job status transition")
-	ErrConcurrentConflict = errors.New("concurrent modification")
+	ErrConcurrentConflict = errors.New("concurrent modification") // unique (owner, idempotency_key)
+	ErrIDConflict         = errors.New("media id conflict")       // PK media.id
 )
 
 // Processed events (Kafka идемпотентность, задача #28)

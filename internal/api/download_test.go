@@ -46,6 +46,14 @@ func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, er
 	return m.media, m.mediaErr
 }
 
+func (m *mockMediaRepo) GetByOwnerIdempotency(_ context.Context, _ uuid.UUID, _ string) (*repo.Media, error) {
+	return nil, repo.ErrNotFound
+}
+
+func (m *mockMediaRepo) InsertWithJobs(_ context.Context, media repo.Media, _ []string) (*repo.Media, error) {
+	return &media, nil
+}
+
 func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
 }
@@ -125,13 +133,14 @@ func TestMapDownloadError(t *testing.T) {
 		{name: "access denied", in: media.ErrAccessDenied, wantCode: codes.PermissionDenied},
 		{name: "invalid argument", in: media.ErrInvalidArgument, wantCode: codes.InvalidArgument},
 		{name: "failed precondition", in: media.ErrFailedPrecondition, wantCode: codes.FailedPrecondition},
+		{name: "already exists", in: media.ErrAlreadyExists, wantCode: codes.AlreadyExists},
 		{name: "deadline exceeded", in: context.DeadlineExceeded, wantCode: codes.DeadlineExceeded},
 		{name: "internal", in: errors.New("boom"), wantCode: codes.Internal},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mapDownloadError(tt.in)
+			err := mapMediaError(tt.in)
 			assert.Equal(t, tt.wantCode, status.Code(err))
 		})
 	}

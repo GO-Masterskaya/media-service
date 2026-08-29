@@ -34,6 +34,10 @@ func main() {
 	// 2. Настраиваем логгер (при выводе cfg секреты пропускаются).
 	slog.SetDefault(config.NewLogger())
 	slog.Info("starting media service", "config", cfg)
+	if err = os.MkdirAll(cfg.ProcessingTempDir, 0750); err != nil {
+		slog.Error("failed to create processing temp dir", "dir", cfg.ProcessingTempDir, "error", err)
+		os.Exit(1)
+	}
 
 	// 3. Миграции до пула: standalone не поднимается на устаревшей схеме.
 	if err := repo.RunMigrations(cfg.PostgresDSN); err != nil {

@@ -37,6 +37,7 @@ type Config struct {
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
 	Rendition         int           `env:"RENDITION"             env-default:"720"`
 	ThumbSecond       int           `env:"THUMB_SECOND"          env-default:"1"`
+	ProcessingTempDir string        `env:"PROCESSING_TEMP_DIR" env-default:"/tmp/processing"`
 
 	// Storage / TTL
 	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
