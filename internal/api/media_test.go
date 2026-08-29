@@ -31,6 +31,14 @@ func (s *stubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media,
 	return s.media, s.err
 }
 
+func (s *stubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return s.media, s.err
+}
+
+func (s *stubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, s.err
+}
+
 func (s *stubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
