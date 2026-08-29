@@ -4,7 +4,7 @@ coverage.out
 *.test
 tmp/
 .DS_Store
-mediaservice
+/mediaservice
 
 # Media processing artifacts
 internal/processing/*.mp4

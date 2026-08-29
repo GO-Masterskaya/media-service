@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -134,18 +135,30 @@ func main() {
 
 	procRegistry := processing.NewRegistry()
 	// Регистрация обработчиков: адаптируем ProcessThumbnail/ProcessTranscode к Handler.Handle(ctx, Job).
-	// TODO: после появления InsertWithJobs (#55) задачи будут реально попадать в очередь.
+	// Загружаем MediaRecord из БД по job.MediaID для получения актуального SourceKey, OwnerID и Kind.
 	procRegistry.Register("thumbnail", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
-		_, err := thumbnailHandler.ProcessThumbnail(ctx, processing.MediaRecord{
-			ID:        job.MediaID,
-			SourceKey: "", // будет заполняться из БД при полной интеграции
+		m, err := mediaRepo.GetByID(ctx, job.MediaID)
+		if err != nil {
+			return fmt.Errorf("fetch media for thumbnail: %w", err)
+		}
+		_, err = thumbnailHandler.ProcessThumbnail(ctx, processing.MediaRecord{
+			ID:        m.ID,
+			OwnerID:   m.OwnerID,
+			Kind:      processing.Kind(m.Kind),
+			SourceKey: m.StorageKey,
 		})
 		return err
 	}))
 	procRegistry.Register("transcode", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
-		_, err := transcodeHandler.ProcessTranscode(ctx, processing.MediaRecord{
-			ID:        job.MediaID,
-			SourceKey: "", // будет заполняться из БД при полной интеграции
+		m, err := mediaRepo.GetByID(ctx, job.MediaID)
+		if err != nil {
+			return fmt.Errorf("fetch media for transcode: %w", err)
+		}
+		_, err = transcodeHandler.ProcessTranscode(ctx, processing.MediaRecord{
+			ID:        m.ID,
+			OwnerID:   m.OwnerID,
+			Kind:      processing.Kind(m.Kind),
+			SourceKey: m.StorageKey,
 		})
 		return err
 	}))

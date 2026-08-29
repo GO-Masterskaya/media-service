@@ -22,6 +22,7 @@ import (
 type MockJobRepository struct {
 	mu              sync.Mutex
 	queuedJobs      []processing.Job
+	runningJobs     map[string]processing.Job
 	doneJobs        map[string]bool   // jobID -> true
 	failedJobs      map[string]string // jobID -> reason
 	released        map[string]bool   // jobID -> true
@@ -30,10 +31,11 @@ type MockJobRepository struct {
 
 func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
 	return &MockJobRepository{
-		queuedJobs: jobs,
-		doneJobs:   make(map[string]bool),
-		failedJobs: make(map[string]string),
-		released:   make(map[string]bool),
+		queuedJobs:  jobs,
+		runningJobs: make(map[string]processing.Job),
+		doneJobs:    make(map[string]bool),
+		failedJobs:  make(map[string]string),
+		released:    make(map[string]bool),
 	}
 }
 
@@ -47,6 +49,7 @@ func (m *MockJobRepository) ClaimOne(_ context.Context, _ time.Duration) (*proce
 
 	job := m.queuedJobs[0]
 	m.queuedJobs = m.queuedJobs[1:]
+	m.runningJobs[job.ID.String()] = job
 	return &job, nil
 }
 
@@ -60,6 +63,7 @@ func (m *MockJobRepository) MarkDone(_ context.Context, jobID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.doneJobs[jobID] = true
+	delete(m.runningJobs, jobID)
 	return nil
 }
 
@@ -67,6 +71,7 @@ func (m *MockJobRepository) FailJob(_ context.Context, jobID string, reason stri
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failedJobs[jobID] = reason
+	delete(m.runningJobs, jobID)
 	return nil
 }
 
@@ -74,6 +79,11 @@ func (m *MockJobRepository) ReleaseJob(_ context.Context, jobID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.released[jobID] = true
+	if j, ok := m.runningJobs[jobID]; ok {
+		j.Attempts++
+		m.queuedJobs = append(m.queuedJobs, j)
+		delete(m.runningJobs, jobID)
+	}
 	return nil
 }
 
@@ -406,9 +416,10 @@ func TestHandlerErrorMarkedFailed(t *testing.T) {
 	reason, ok := failed[jobID.String()]
 	assert.True(t, ok, "Задача с ошибкой handler должна быть помечена как failed")
 	assert.Contains(t, reason, "ffmpeg exit code 1")
+	assert.Equal(t, float64(1), getCounterValue(t, metrics.JobsFailedTotal), "JobsFailedTotal должен быть 1 при терминальном отказе")
 }
 
-// 6b. Тест: ошибка handler при незавершённых попытках → retry через ReleaseJob
+// 6b. Тест: временная ошибка handler → retry через ReleaseJob → успешное выполнение на повторной попытке
 func TestHandlerErrorRetry(t *testing.T) {
 	jobID := uuid.New()
 	jobs := []processing.Job{
@@ -418,13 +429,17 @@ func TestHandlerErrorRetry(t *testing.T) {
 	repo := NewMockJobRepository(jobs)
 	registry := processing.NewRegistry()
 
+	var attempts atomic.Int32
 	registry.Register("failing_handler", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
-		return errors.New("temporary ffmpeg error")
+		if attempts.Add(1) == 1 {
+			return errors.New("temporary ffmpeg error")
+		}
+		return nil
 	}))
 
 	cfg := processing.Config{
 		WorkerConcurrency: 1,
-		PollInterval:      10 * time.Millisecond,
+		PollInterval:      5 * time.Millisecond,
 		JobTimeout:        5 * time.Second,
 		MaxAttempts:       3,
 	}
@@ -438,22 +453,83 @@ func TestHandlerErrorRetry(t *testing.T) {
 
 	require.NoError(t, engine.Start(ctx))
 
-	// Задача должна уйти в released (retry), а не в failed
+	// Задача должна сначала уйти в released (retry), а затем успешно завершиться (done)
 	assert.Eventually(t, func() bool {
-		released := repo.GetReleasedJobs()
-		return released[jobID.String()]
+		done := repo.GetDoneJobs()
+		return done[jobID.String()]
 	}, 2*time.Second, 20*time.Millisecond)
 
 	engine.Stop()
 
+	// Проверяем что задача была released на первой попытке
+	released := repo.GetReleasedJobs()
+	assert.True(t, released[jobID.String()], "Задача с первой попыткой должна была быть released для retry")
+
+	// Проверяем что задача успешно выполнена
+	done := repo.GetDoneJobs()
+	assert.True(t, done[jobID.String()], "Задача после retry должна успешно выполниться")
+
 	// Проверяем что задача НЕ в failed
 	failed := repo.GetFailedJobs()
 	_, isFailed := failed[jobID.String()]
-	assert.False(t, isFailed, "Задача с первой попыткой не должна быть помечена как failed")
+	assert.False(t, isFailed, "Успешно отретраенная задача не должна быть failed")
 
-	// Проверяем что задача в released
-	released := repo.GetReleasedJobs()
-	assert.True(t, released[jobID.String()], "Задача с первой попыткой должна быть released для retry")
+	// Метрика JobsFailedTotal не должна расти на retry!
+	assert.Equal(t, float64(0), getCounterValue(t, metrics.JobsFailedTotal), "JobsFailedTotal не должен расти на retry")
+	assert.Equal(t, float64(1), getCounterValue(t, metrics.JobsProcessedTotal), "JobsProcessedTotal должен быть 1")
+}
+
+// 6c. Тест: детерминированная ошибка хендлера проходит все retry и завершается terminal failed (без бесконечного цикла)
+func TestDeterministicFailureExhaustsRetries(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "persistently_failing", Attempts: 0},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+
+	var attemptsCount atomic.Int32
+	registry.Register("persistently_failing", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		attemptsCount.Add(1)
+		return errors.New("deterministic unrecoverable error")
+	}))
+
+	cfg := processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
+		MaxAttempts:       3,
+	}
+
+	reg := prometheus.NewRegistry()
+	metrics := processing.NewMetrics(reg)
+	engine := processing.NewEngine(cfg, repo, registry, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, engine.Start(ctx))
+
+	// Задача должна пройти 3 попытки и стать failed
+	assert.Eventually(t, func() bool {
+		failed := repo.GetFailedJobs()
+		_, ok := failed[jobID.String()]
+		return ok
+	}, 3*time.Second, 20*time.Millisecond)
+
+	engine.Stop()
+
+	failed := repo.GetFailedJobs()
+	reason, ok := failed[jobID.String()]
+	assert.True(t, ok, "Детерминированно падающая задача должна завершиться в failed")
+	assert.Contains(t, reason, "deterministic unrecoverable error")
+
+	// Проверяем, что было ровно 3 попытки
+	assert.Equal(t, int32(3), attemptsCount.Load(), "Должно быть совершено ровно MaxAttempts (3) попыток")
+
+	// Метрика JobsFailedTotal должна быть ровно 1 (терминальный отказ)
+	assert.Equal(t, float64(1), getCounterValue(t, metrics.JobsFailedTotal), "JobsFailedTotal должен быть равен 1")
 }
 
 // 7. Тест: успешная задача помечается как done (MarkDone)

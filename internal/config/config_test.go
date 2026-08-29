@@ -66,6 +66,32 @@ func TestLoadValidationError(t *testing.T) {
 	}
 }
 
+func TestLoadProcessingValidationErrors(t *testing.T) {
+	tests := []struct {
+		envKey   string
+		envVal   string
+		errMatch string
+	}{
+		{"JOB_TIMEOUT", "0s", "JOB_TIMEOUT"},
+		{"JOB_LEASE", "0s", "JOB_LEASE"},
+		{"POLL_INTERVAL", "0s", "POLL_INTERVAL"},
+		{"JOB_MAX_ATTEMPTS", "0", "JOB_MAX_ATTEMPTS"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.envKey, func(t *testing.T) {
+			t.Setenv(tt.envKey, tt.envVal)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected validation error for %s=%s", tt.envKey, tt.envVal)
+			}
+			if !strings.Contains(err.Error(), tt.errMatch) {
+				t.Errorf("error %q should contain %q", err.Error(), tt.errMatch)
+			}
+		})
+	}
+}
+
 func TestConfigStringRedactsSecrets(t *testing.T) {
 	cfg := Config{
 		GRPCAuthToken:  "super-secret-token",

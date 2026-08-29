@@ -200,15 +200,29 @@ func (r *PgJobRepo) complete(ctx context.Context, jobID uuid.UUID, owner string,
 		return ErrLeaseMismatch
 	}
 
-	_, err = tx.Exec(ctx, `
-		UPDATE processing_jobs
-		SET status = $2,
-		    last_error = NULLIF($3, ''),
-		    locked_by = NULL,
-		    lease_until = NULL,
-		    locked_at = NULL
-		WHERE id = $1
-	`, jobID, to, reason)
+	if to == JobStatusQueued {
+		_, err = tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = $2,
+			    last_error = NULLIF($3, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    attempts = attempts + 1,
+			    run_after = now() + ((attempts + 1) * interval '30 seconds')
+			WHERE id = $1
+		`, jobID, to, reason)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = $2,
+			    last_error = NULLIF($3, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL
+			WHERE id = $1
+		`, jobID, to, reason)
+	}
 	if err != nil {
 		return fmt.Errorf("update job: %w", err)
 	}
@@ -382,12 +396,18 @@ func CanTransition(from, to string) bool {
 
 // ReapExpiredLeases возвращает running-задачи с протухшим lease обратно в queued
 // (с инкрементом attempts и exponential backoff через run_after).
-// Задачи, превысившие maxAttempts, переводятся в failed.
+// Задачи, превысившие maxAttempts, переводятся в failed и пересчитывают статус media.
 // Возвращает количество обработанных задач.
 func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("reap expired leases begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// 1. Re-queue задачи, у которых ещё есть попытки.
 	// Backoff: run_after = now() + (attempts * 30 seconds).
@@ -403,7 +423,7 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int
 		  AND lease_until < now()
 		  AND attempts < $1
 	`
-	tagRequeued, err := r.pool.Exec(ctx, requeueQ, maxAttempts)
+	tagRequeued, err := tx.Exec(ctx, requeueQ, maxAttempts)
 	if err != nil {
 		return 0, fmt.Errorf("reap expired leases (requeue): %w", err)
 	}
@@ -419,11 +439,39 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int
 		WHERE status = 'running'
 		  AND lease_until < now()
 		  AND attempts >= $1
+		RETURNING media_id
 	`
-	tagFailed, err := r.pool.Exec(ctx, failQ, maxAttempts)
+	rows, err := tx.Query(ctx, failQ, maxAttempts)
 	if err != nil {
-		return tagRequeued.RowsAffected(), fmt.Errorf("reap expired leases (fail): %w", err)
+		return 0, fmt.Errorf("reap expired leases (fail): %w", err)
+	}
+	defer rows.Close()
+
+	var failedCount int64
+	mediaIDs := make(map[uuid.UUID]struct{})
+	for rows.Next() {
+		failedCount++
+		var mediaID uuid.UUID
+		if err := rows.Scan(&mediaID); err != nil {
+			return 0, fmt.Errorf("reap expired leases scan media_id: %w", err)
+		}
+		mediaIDs[mediaID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("reap expired leases rows error: %w", err)
+	}
+	rows.Close()
+
+	// 3. Пересчитываем статус media для всех затронутых media_id
+	for mediaID := range mediaIDs {
+		if err := recalcMedia(ctx, tx, mediaID, "max attempts exceeded (lease expired)"); err != nil {
+			return 0, fmt.Errorf("reap expired leases recalc media %s: %w", mediaID, err)
+		}
 	}
 
-	return tagRequeued.RowsAffected() + tagFailed.RowsAffected(), nil
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("reap expired leases commit tx: %w", err)
+	}
+
+	return tagRequeued.RowsAffected() + failedCount, nil
 }

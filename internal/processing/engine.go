@@ -285,7 +285,7 @@ func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 			"error", handlerErr,
 		)
 
-		// Retry: если попытки не исчерпаны — возвращаем в queued (reaper добавит backoff).
+		// Retry: если попытки не исчерпаны — возвращаем в queued (с инкрементом attempts и backoff в Release).
 		// Иначе — terminal failed.
 		if job.Attempts+1 < e.cfg.MaxAttempts {
 			if releaseErr := e.repo.ReleaseJob(finCtx, job.ID.String()); releaseErr != nil {
@@ -297,7 +297,6 @@ func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 					"max_attempts", e.cfg.MaxAttempts,
 				)
 			}
-			e.metrics.JobsFailedTotal.Inc()
 			return
 		}
 
@@ -316,7 +315,6 @@ func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 		)
 		// Метрику НЕ инкрементим — задача фактически не помечена как done.
 		// Reaper подберёт её после протухания lease.
-		e.metrics.JobsFailedTotal.Inc()
 		return
 	}
 	e.metrics.JobsProcessedTotal.Inc()
