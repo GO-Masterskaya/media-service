@@ -319,6 +319,36 @@ func TestJobRepo(t *testing.T) {
 		if err := jobs.Release(ctx, job.ID, "worker-1"); err != nil {
 			t.Fatal(err)
 		}
+
+		// Проверяем, что задача перешла в queued, attempts инкрементирован, locked_by сброшен, run_after сдвинут
+		var status string
+		var attempts int
+		var lockedBy *string
+		var runAfter time.Time
+		err = pool.QueryRow(ctx, `SELECT status, attempts, locked_by, run_after FROM processing_jobs WHERE id = $1`, job.ID).
+			Scan(&status, &attempts, &lockedBy, &runAfter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "queued" {
+			t.Fatalf("status %s, want queued", status)
+		}
+		if attempts != 1 {
+			t.Fatalf("attempts %d, want 1", attempts)
+		}
+		if lockedBy != nil {
+			t.Fatalf("locked_by %v, want nil", lockedBy)
+		}
+		if !runAfter.After(time.Now()) {
+			t.Fatalf("run_after %v should be in the future (backoff)", runAfter)
+		}
+
+		// Сбрасываем run_after для симуляции истечения задержки ретрая
+		_, err = pool.Exec(ctx, `UPDATE processing_jobs SET run_after = now() WHERE id = $1`, job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		again, err := jobs.ClaimNext(ctx, "worker-2", DefaultJobLease)
 		if err != nil {
 			t.Fatal(err)
@@ -328,6 +358,77 @@ func TestJobRepo(t *testing.T) {
 		}
 		if again.LockedBy != "worker-2" {
 			t.Fatalf("locked_by %q, want worker-2", again.LockedBy)
+		}
+		if again.Attempts != 1 {
+			t.Fatalf("attempts %d, want 1", again.Attempts)
+		}
+	})
+
+	t.Run("reap expired leases requeues and fails with media update", func(t *testing.T) {
+		resetDB(t, pool)
+		mediaID1 := seedMedia(t, pool)
+		mediaID2 := seedMedia(t, pool)
+
+		// Задача 1: running, протухший lease, attempts = 0 -> должна уйти в queued (attempts = 1)
+		job1ID := uuid.New()
+		_, err := pool.Exec(ctx, `
+			INSERT INTO processing_jobs (id, media_id, type, status, locked_by, lease_until, attempts)
+			VALUES ($1, $2, 'thumbnail', 'running', 'worker-old', now() - interval '10 seconds', 0)
+		`, job1ID, mediaID1)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Задача 2: running, протухший lease, attempts = 3 (maxAttempts = 3) -> должна стать failed, а media2 -> failed
+		job2ID := uuid.New()
+		_, err = pool.Exec(ctx, `
+			INSERT INTO processing_jobs (id, media_id, type, status, locked_by, lease_until, attempts)
+			VALUES ($1, $2, 'transcode', 'running', 'worker-old', now() - interval '10 seconds', 3)
+		`, job2ID, mediaID2)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		reaped, err := jobs.ReapExpiredLeases(ctx, 3)
+		if err != nil {
+			t.Fatalf("reap: %v", err)
+		}
+		if reaped != 2 {
+			t.Fatalf("reaped %d, want 2", reaped)
+		}
+
+		// Проверяем job1
+		var j1Status string
+		var j1Attempts int
+		var j1LockedBy *string
+		err = pool.QueryRow(ctx, `SELECT status, attempts, locked_by FROM processing_jobs WHERE id = $1`, job1ID).
+			Scan(&j1Status, &j1Attempts, &j1LockedBy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j1Status != "queued" || j1Attempts != 1 || j1LockedBy != nil {
+			t.Fatalf("job1: status=%s, attempts=%d, locked_by=%v", j1Status, j1Attempts, j1LockedBy)
+		}
+
+		// Проверяем job2
+		var j2Status string
+		var j2Error *string
+		err = pool.QueryRow(ctx, `SELECT status, last_error FROM processing_jobs WHERE id = $1`, job2ID).
+			Scan(&j2Status, &j2Error)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j2Status != "failed" {
+			t.Fatalf("job2 status=%s, want failed", j2Status)
+		}
+
+		// Проверяем media2: должен стать failed!
+		m2, err := mediaRepo.GetByID(ctx, mediaID2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m2.Status != MediaStatusFailed {
+			t.Fatalf("media2 status=%s, want failed", m2.Status)
 		}
 	})
 
