@@ -165,9 +165,9 @@ func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uu
 	return nil
 }
 
-// DeleteMedia удаляет привязку media→callerID.
-// Если после удаления usages_count == 0 (или callerID == nil — force delete),
-// удаляет файлы из storage и саму запись media.
+// DeleteMedia удаляет привязку media→callerID и, если usages_count становится 0,
+// callerID обязателен: nil вызовет InvalidArgument. Force delete (без проверки
+// привязок) доступен только через repo напрямую, не через этот метод.
 func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) error {
 	if callerID == uuid.Nil {
 		return status.Error(codes.InvalidArgument, "caller_id required")
