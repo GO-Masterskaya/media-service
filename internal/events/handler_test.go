@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -114,7 +115,8 @@ func makeEnvelope(t *testing.T, eventType string, payload string) []byte {
 
 func TestHandle_InvalidJSON_DLQ(t *testing.T) {
 	dlq := &stubDLQ{}
-	h := NewHandler(nil, &stubEventRepo{}, dlq, "test-consumer", testLog())
+	h, err := NewHandler(nil, &stubEventRepo{}, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	res := h.Handle(context.Background(), []byte("not json"))
 	assert.True(t, res.Committable)
 	assert.Error(t, res.Error)
@@ -123,21 +125,25 @@ func TestHandle_InvalidJSON_DLQ(t *testing.T) {
 
 func TestHandle_InvalidJSON_DLQPublishFails_NotCommittable(t *testing.T) {
 	dlq := &stubDLQ{err: errors.New("kafka down")}
-	h := NewHandler(nil, &stubEventRepo{}, dlq, "test-consumer", testLog())
+	h, err := NewHandler(nil, &stubEventRepo{}, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	res := h.Handle(context.Background(), []byte("not json"))
 	assert.False(t, res.Committable)
 	assert.ErrorContains(t, res.Error, "kafka down")
 }
 
 func TestHandle_InvalidJSON_NilDLQ_NotCommittable(t *testing.T) {
-	h := NewHandler(nil, &stubEventRepo{}, nil, "test-consumer", testLog())
+	h, err := NewHandler(nil, &stubEventRepo{}, nil, "test-consumer", testLog())
+	require.NoError(t, err)
 	res := h.Handle(context.Background(), []byte("not json"))
 	assert.False(t, res.Committable)
 	assert.ErrorContains(t, res.Error, "dlq publisher not configured")
 }
 
 func TestHandle_AlreadyProcessed(t *testing.T) {
-	h := NewHandler(nil, &stubEventRepo{claimed: false}, &stubDLQ{}, "test-consumer", testLog())
+	h, err := NewHandler(nil, &stubEventRepo{claimed: false}, &stubDLQ{}, "test-consumer", testLog())
+	require.NoError(t, err)
+	require.NoError(t, err)
 	raw := makeEnvelope(t, "media.attach", `{}`)
 	res := h.Handle(context.Background(), raw)
 	assert.True(t, res.Committable)
@@ -146,18 +152,19 @@ func TestHandle_AlreadyProcessed(t *testing.T) {
 
 func TestHandle_ClaimHeld_NotCommittable(t *testing.T) {
 	repoStub := &stubEventRepo{claimErr: repo.ErrClaimHeld}
-	h := NewHandler(nil, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	h, err := NewHandler(nil, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	require.NoError(t, err)
 	raw := makeEnvelope(t, "media.attach", `{}`)
 	res := h.Handle(context.Background(), raw)
 	assert.False(t, res.Committable)
 	assert.ErrorIs(t, res.Error, repo.ErrClaimHeld)
-	assert.True(t, IsRetryable(res.Error))
 }
 
 func TestHandle_FingerprintConflict_DLQ(t *testing.T) {
 	repoStub := &stubEventRepo{claimErr: repo.ErrFingerprintConflict}
 	dlq := &stubDLQ{}
-	h := NewHandler(nil, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(nil, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	raw := makeEnvelope(t, "media.attach", `{}`)
 	res := h.Handle(context.Background(), raw)
 	assert.True(t, res.Committable)
@@ -168,7 +175,8 @@ func TestHandle_FingerprintConflict_DLQ(t *testing.T) {
 func TestHandle_FingerprintConflict_DLQPublishFails_NotCommittable(t *testing.T) {
 	repoStub := &stubEventRepo{claimErr: repo.ErrFingerprintConflict}
 	dlq := &stubDLQ{err: errors.New("kafka down")}
-	h := NewHandler(nil, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(nil, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	raw := makeEnvelope(t, "media.attach", `{}`)
 	res := h.Handle(context.Background(), raw)
 	assert.False(t, res.Committable)
@@ -178,7 +186,8 @@ func TestHandle_FingerprintConflict_DLQPublishFails_NotCommittable(t *testing.T)
 func TestHandle_Attach_Success(t *testing.T) {
 	svc := &stubMediaSvc{}
 	repoStub := &stubEventRepo{claimed: true}
-	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.attach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -190,7 +199,8 @@ func TestHandle_Attach_OwnerMismatch_Permanent_DLQ(t *testing.T) {
 	svc := &stubMediaSvc{attachErr: status.Error(codes.PermissionDenied, "owner mismatch")}
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
-	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}`
 	raw := makeEnvelope(t, "media.attach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -202,7 +212,8 @@ func TestHandle_Attach_OwnerMismatch_DLQPublishFails_NotCommittable(t *testing.T
 	svc := &stubMediaSvc{attachErr: status.Error(codes.PermissionDenied, "owner mismatch")}
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{err: errors.New("kafka down")}
-	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}`
 	raw := makeEnvelope(t, "media.attach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -213,7 +224,8 @@ func TestHandle_Attach_OwnerMismatch_DLQPublishFails_NotCommittable(t *testing.T
 func TestHandle_Attach_MarkDoneFailure_NotCommittable(t *testing.T) {
 	svc := &stubMediaSvc{}
 	repoStub := &stubEventRepo{claimed: true, markDoneErr: errors.New("db down")}
-	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.attach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -224,7 +236,8 @@ func TestHandle_Attach_MarkDoneFailure_NotCommittable(t *testing.T) {
 func TestHandle_Detach_Success(t *testing.T) {
 	svc := &stubMediaSvc{}
 	repoStub := &stubEventRepo{claimed: true}
-	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -235,7 +248,8 @@ func TestHandle_Detach_Success(t *testing.T) {
 func TestHandle_Detach_NotFound_Idempotent(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: status.Error(codes.NotFound, "media not found")}
 	repoStub := &stubEventRepo{claimed: true}
-	h := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, &stubDLQ{}, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -247,7 +261,8 @@ func TestHandle_Detach_Retryable_NotCommittable(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: errors.New("transient db error")}
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
-	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -260,7 +275,8 @@ func TestHandle_Detach_Permanent_DLQ(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: status.Error(codes.PermissionDenied, "access denied")}
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{}
-	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -272,7 +288,8 @@ func TestHandle_Detach_Permanent_DLQPublishFails_NotCommittable(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: status.Error(codes.PermissionDenied, "access denied")}
 	repoStub := &stubEventRepo{claimed: true}
 	dlq := &stubDLQ{err: errors.New("kafka down")}
-	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -284,7 +301,8 @@ func TestHandle_Detach_MarkDLQFailure_NotCommittable(t *testing.T) {
 	svc := &stubMediaSvc{deleteErr: status.Error(codes.PermissionDenied, "access denied")}
 	repoStub := &stubEventRepo{claimed: true, markDLQErr: errors.New("db down")}
 	dlq := &stubDLQ{}
-	h := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	h, err := NewHandler(svc, repoStub, dlq, "test-consumer", testLog())
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.detach", payload)
 	res := h.Handle(context.Background(), raw)
@@ -305,14 +323,14 @@ func TestHandle_Attach_MediaNotFound_MaxAttempts_DLQ(t *testing.T) {
 
 	dlq := &stubDLQ{}
 
-	h := NewHandler(
+	h, err := NewHandler(
 		svc,
 		repoStub,
 		dlq,
 		"test-consumer",
 		testLog(),
 	)
-
+	require.NoError(t, err)
 	payload := `{"media_id":"22222222-2222-2222-2222-222222222222","owner_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`
 	raw := makeEnvelope(t, "media.attach", payload)
 

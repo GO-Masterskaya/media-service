@@ -80,7 +80,7 @@ func NewHandler(
 	dlq DLQPublisher,
 	consumerID string,
 	log *slog.Logger,
-) *Handler {
+) (*Handler, error) {
 	return NewHandlerWithConfig(mediaSvc, eventRepo, dlq, consumerID, HandlerConfig{
 		LeaseDuration: 30 * time.Second,
 		MaxAttempts:   3,
@@ -94,12 +94,12 @@ func NewHandlerWithConfig(
 	consumerID string,
 	cfg HandlerConfig,
 	log *slog.Logger,
-) *Handler {
+) (*Handler, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	if consumerID == "" {
-		consumerID = "unknown"
+		return nil, fmt.Errorf("consumerID required")
 	}
 	if cfg.LeaseDuration <= 0 {
 		cfg.LeaseDuration = 30 * time.Second
@@ -121,7 +121,7 @@ func NewHandlerWithConfig(
 		dlqCounter:       eventsDLQ,
 		retryCounter:     eventsRetried,
 		failCounter:      eventsFailed,
-	}
+	}, nil
 }
 
 type Result struct {

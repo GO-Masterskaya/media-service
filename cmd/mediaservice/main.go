@@ -117,14 +117,17 @@ func main() {
 		consumerID := fmt.Sprintf("%s-%d-%s", host, os.Getpid(), uuid.NewString()[:8])
 
 		// Event handler
-		handler := events.NewHandler(
+		handler, err := events.NewHandler(
 			mediaSvc,
 			eventRepo,
 			dlqPublisher,
 			consumerID, // ← уникальный per-instance
 			slog.Default(),
 		)
-
+		if err != nil {
+			slog.Error("event handler init failed", "error", err)
+			os.Exit(1)
+		}
 		// Consumer
 		kafkaConsumer, err = events.NewKafkaConsumer(
 			events.KafkaConsumerConfig{

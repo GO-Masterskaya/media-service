@@ -261,7 +261,7 @@ func (r *PgProcessedEventRepo) BumpAttempt(ctx context.Context, eventID uuid.UUI
 	const q = `
 		UPDATE processed_events
 		SET retry_count = retry_count + 1,
-+		    last_error_at = NOW(),
+		    last_error_at = NOW(),
  		    updated_at = now()
  		WHERE event_id = $1 AND owner = $2 AND status = 'processing'
 		RETURNING retry_count`

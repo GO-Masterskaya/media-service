@@ -105,6 +105,26 @@ func (s *ProcessedEventSuite) TestFreshClaim() {
 	require.Equal(t, "worker-a", ev.Owner)
 }
 
+// TestClaim_SameOwnerRenewal — тот же owner может продлевать свой живой lease.
+// Это защищает от ситуации, когда инстанс получает повторную доставку события
+// и должен обновить lease_expires_at, не теряя claim.
+func (s *ProcessedEventSuite) TestClaim_SameOwnerRenewal() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", 50*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	// Тот же worker-a с тем же fingerprint: lease продлевается
+	ev, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.Equal(t, "worker-a", ev.Owner)
+	// Lease должен был продлиться
+	require.True(t, ev.LeaseExpiresAt.After(time.Now().Add(30*time.Second)))
+}
+
 // TestConcurrentClaim - второй consumer того же event_id с живым lease не
 // выполняет side effect параллельно.
 func (s *ProcessedEventSuite) TestConcurrentClaim() {
