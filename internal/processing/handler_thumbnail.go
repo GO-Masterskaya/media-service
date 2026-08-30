@@ -2,11 +2,13 @@ package processing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"mediaservice/internal/config"
+	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 	"os"
 	"path/filepath"
@@ -34,7 +36,7 @@ type DerivativeRecord struct {
 }
 
 type DerivativeRepository interface {
-	UpsertDerivative(ctx context.Context, record *DerivativeRecord) (*DerivativeRecord, error)
+	UpsertDerivative(ctx context.Context, record *repo.Derivative) (*repo.Derivative, error)
 }
 
 type ThumbnailHandler struct {
@@ -74,11 +76,14 @@ func (h *ThumbnailHandler) downloadSource(ctx context.Context, key, targetPath s
 	}
 	defer func() { _ = out.Close() }()
 
-	// Ограничиваем считывание потока константой maxSourceSizeBytes
-	limitedReader := io.LimitReader(res, maxSourceSizeBytes)
-
-	if _, err := io.Copy(out, limitedReader); err != nil {
+	limitedReader := io.LimitReader(res, maxSourceSizeBytes+1)
+	data, err := io.Copy(out, limitedReader)
+	if err != nil {
 		return fmt.Errorf("error copy file: %w", err)
+	}
+
+	if data > maxSourceSizeBytes {
+		return errors.New("file size exceeds maximum allowed limit")
 	}
 
 	return nil
@@ -120,7 +125,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	}
 
 	// Изолированная директория под конкретный таск исключает гонки при ретраях
-	tempDir, err := os.MkdirTemp("", "thumb_*")
+	tempDir, err := os.MkdirTemp(h.cfg.ProcessingTempDir, "thumb_*")
 	if err != nil {
 		h.logError("failed to create temp dir", media.ID, err)
 		return nil, fmt.Errorf("error create dir: %w", err)
@@ -141,7 +146,7 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		sec = h.cfg.ThumbSecond
 	}
 
-	actualOutputPath, err := GenerateThumbnail(ctx, sourcePath, outputPath, media.Kind, sec)
+	actualOutputPath, err := GenerateThumbnail(ctx, tempDir, sourcePath, outputPath, media.Kind, sec)
 	if err != nil {
 		h.logError("failed to generate thumbnail via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error call ffmpeg: %w", err)
@@ -189,18 +194,20 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 		}
 	}
 
-	record := &DerivativeRecord{
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	record := &repo.Derivative{
 		MediaID:    media.ID,
-		Variant:    storage.VariantThumb,
-		MIME:       mime,
+		Variant:    string(storage.VariantThumb),
+		Mime:       mime,
 		SizeBytes:  info.Size(),
 		StorageKey: key,
-		Metadata:   metadata,
+		Metadata:   rawMetadata,
 	}
 
 	// UpsertDerivative обновляет или создает запись о производной.
-	// На стороне репозитория UPSERT должен выполняться по уникальному индексу (media_id, variant):
-	// ON CONFLICT (media_id, variant) DO UPDATE SET ...
 	res, err := h.repo.UpsertDerivative(ctx, record)
 	if err != nil {
 		h.logError("failed to save derivative in db", media.ID, err)
@@ -209,5 +216,13 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 
 	dbCommited = true
 
-	return res, nil
+	return &DerivativeRecord{
+		ID:         res.ID,
+		MediaID:    res.MediaID,
+		Variant:    storage.Variant(res.Variant),
+		MIME:       res.Mime,
+		SizeBytes:  res.SizeBytes,
+		StorageKey: res.StorageKey,
+		Metadata:   metadata,
+	}, nil
 }

@@ -3,3 +3,12 @@ coverage.out
 .env
 *.test
 tmp/
+
+# Media processing artifacts
+internal/processing/*.mp4
+internal/processing/*.gif
+internal/processing/*.bin
+internal/processing/*.png
+internal/processing/*.jpeg
+internal/processing/*.jpg
+internal/processing/*.m3u8

@@ -15,14 +15,19 @@ import (
 func TestReaper_TTL_DeletesExpiredOnly(t *testing.T) {
 	expired1 := uuid.New()
 	expired2 := uuid.New()
+	seen := map[uuid.UUID]bool{}
 
 	deleted := map[uuid.UUID]bool{}
 	mr := &svcStubMediaRepo{
 		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			if seen[expired1] && seen[expired2] {
+				return nil, nil // все страницы вычерпаны
+			}
 			return []uuid.UUID{expired1, expired2}, nil
 		},
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-			return &repo.Media{ID: id, OwnerID: uuid.New()}, true, nil
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			seen[id] = true
+			return &repo.Media{ID: id, OwnerID: uuid.New()}, repo.ClaimTaken, nil
 		},
 		hardDeleteFunc: func(ctx context.Context, id uuid.UUID) error {
 			deleted[id] = true
@@ -44,9 +49,9 @@ func TestReaper_EmptySelection_NoOp(t *testing.T) {
 		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
 			return nil, nil
 		},
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 			calledMarkDeleting = true
-			return nil, false, nil
+			return nil, repo.ClaimNone, nil
 		},
 	}
 	svc := newTestSvc(mr, &svcStubStorage{})
@@ -60,13 +65,18 @@ func TestReaper_OneItemFails_RestStillReaped(t *testing.T) {
 	ok := uuid.New()
 	failing := uuid.New()
 	deleted := map[uuid.UUID]bool{}
+	page := 0
 
 	mr := &svcStubMediaRepo{
 		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			page++
+			if page > 1 {
+				return nil, nil
+			}
 			return []uuid.UUID{failing, ok}, nil
 		},
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-			return &repo.Media{ID: id, OwnerID: uuid.New()}, true, nil
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			return &repo.Media{ID: id, OwnerID: uuid.New()}, repo.ClaimTaken, nil
 		},
 		hardDeleteFunc: func(ctx context.Context, id uuid.UUID) error {
 			if id == failing {
@@ -89,6 +99,19 @@ func TestReaper_DefaultBatchSizeAppliedWhenNonPositive(t *testing.T) {
 	assert.Equal(t, defaultReapBatchSize, r.batchSize)
 }
 
+// TestReaper_DefaultIntervalAppliedWhenNonPositive — регрессия из ревью:
+// time.NewTicker паникует на interval<=0, если конструктор вызван напрямую
+// в обход конфига/валидатора.
+func TestReaper_DefaultIntervalAppliedWhenNonPositive(t *testing.T) {
+	svc := newTestSvc(&svcStubMediaRepo{}, &svcStubStorage{})
+	r := NewReaperWithConfig(svc, ReaperConfig{}, svcTestLogger())
+	assert.Equal(t, defaultReapInterval, r.cfg.Interval)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // сразу отменяем — Run должен выйти по ctx.Done(), не запаниковав на тикере
+	require.NotPanics(t, func() { r.Run(ctx) })
+}
+
 func TestReaper_DryRun_DoesNotDelete(t *testing.T) {
 	expired := uuid.New()
 	markDeletingCalled := false
@@ -97,9 +120,9 @@ func TestReaper_DryRun_DoesNotDelete(t *testing.T) {
 		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
 			return []uuid.UUID{expired}, nil
 		},
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 			markDeletingCalled = true
-			return &repo.Media{ID: id}, true, nil
+			return &repo.Media{ID: id}, repo.ClaimTaken, nil
 		},
 	}
 	svc := newTestSvc(mr, &svcStubStorage{})
@@ -108,4 +131,44 @@ func TestReaper_DryRun_DoesNotDelete(t *testing.T) {
 	r.runOnce(context.Background())
 
 	assert.False(t, markDeletingCalled, "dry-run must not touch any record, only report what it would delete")
+}
+
+// TestReaper_SkipsAlreadyClaimedRecord_NoDoubleCleanup — прямая регрессия из
+// второго раунда ревью PR #13/#17: MarkDeleting может вернуть
+// ClaimAlreadyDeleting, когда запись параллельно забрала другая реплика
+// reaper'а (или это её собственный, но чужой по смыслу claim). Reaper
+// обязан ПРОПУСТИТЬ такую запись (resumeStuck=false), а не повторно гонять
+// DeletePrefix/HardDelete — иначе дедупликация между репликами теряется.
+func TestReaper_SkipsAlreadyClaimedRecord_NoDoubleCleanup(t *testing.T) {
+	claimedByOther := uuid.New()
+
+	deletePrefixCalled := false
+	hardDeleteCalled := false
+
+	mr := &svcStubMediaRepo{
+		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			return []uuid.UUID{claimedByOther}, nil
+		},
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			// Имитируем: другая реплика уже выиграла claim секунду назад.
+			return &repo.Media{ID: id, OwnerID: uuid.New()}, repo.ClaimAlreadyDeleting, nil
+		},
+		hardDeleteFunc: func(ctx context.Context, id uuid.UUID) error {
+			hardDeleteCalled = true
+			return nil
+		},
+	}
+	st := &svcStubStorage{
+		deletePrefixFunc: func(ctx context.Context, prefix string) error {
+			deletePrefixCalled = true
+			return nil
+		},
+	}
+	svc := newTestSvc(mr, st)
+	r := NewReaper(svc, 0, 100, svcTestLogger())
+
+	r.runOnce(context.Background())
+
+	assert.False(t, deletePrefixCalled, "reaper must not clean up storage for a claim it doesn't own")
+	assert.False(t, hardDeleteCalled, "reaper must not hard-delete a row it doesn't own the claim for")
 }

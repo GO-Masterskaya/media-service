@@ -26,7 +26,7 @@ import (
 func newTestServerWithStrict(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface, strict bool) *MediaServer {
 	discardLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 	svc := media.NewService(mediaRepo, derivRepo, st, 15*time.Minute, discardLog)
-	return NewMediaServer(svc, strict, 100)
+	return NewMediaServer(svc, strict)
 }
 
 func newTestServer(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *MediaServer {
@@ -46,6 +46,14 @@ func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, er
 	return m.media, m.mediaErr
 }
 
+func (m *mockMediaRepo) GetByOwnerIdempotency(_ context.Context, _ uuid.UUID, _ string) (*repo.Media, error) {
+	return nil, repo.ErrNotFound
+}
+
+func (m *mockMediaRepo) InsertWithJobs(_ context.Context, media repo.Media, _ []string) (*repo.Media, error) {
+	return &media, nil
+}
+
 func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
 }
@@ -58,8 +66,8 @@ func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (m *mockMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-	return nil, false, nil
+func (m *mockMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+	return nil, repo.ClaimNone, nil
 }
 
 func (m *mockMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
@@ -68,6 +76,14 @@ func (m *mockMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.U
 
 func (m *mockMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	return nil, nil
+}
+
+func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+
+func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
 }
 
 type mockDerivRepo struct {
@@ -137,13 +153,14 @@ func TestMapDownloadError(t *testing.T) {
 		{name: "access denied", in: media.ErrAccessDenied, wantCode: codes.PermissionDenied},
 		{name: "invalid argument", in: media.ErrInvalidArgument, wantCode: codes.InvalidArgument},
 		{name: "failed precondition", in: media.ErrFailedPrecondition, wantCode: codes.FailedPrecondition},
+		{name: "already exists", in: media.ErrAlreadyExists, wantCode: codes.AlreadyExists},
 		{name: "deadline exceeded", in: context.DeadlineExceeded, wantCode: codes.DeadlineExceeded},
 		{name: "internal", in: errors.New("boom"), wantCode: codes.Internal},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mapDownloadError(tt.in)
+			err := mapMediaError(tt.in)
 			assert.Equal(t, tt.wantCode, status.Code(err))
 		})
 	}

@@ -11,81 +11,138 @@ import (
 )
 
 func TestGenerateThumbnailVideo(t *testing.T) {
-	oldRoot := outputRoot
-	outputRoot = t.TempDir()
-	defer func() { outputRoot = oldRoot }()
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "thumb.jpg")
 
 	ctx := context.Background()
-	_, err := GenerateThumbnail(ctx, "testdata/video.mp4", "thumb.jpg", KindVideo, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 0)
 	require.NoError(t, err)
 
-	stat, err := os.Stat(filepath.Join(outputRoot, "thumb.jpg"))
+	stat, err := os.Stat(outputPath)
 	require.NoError(t, err)
 	assert.Greater(t, stat.Size(), int64(0))
 }
 
 func TestGenerateThumbnailAudio(t *testing.T) {
-	oldRoot := outputRoot
-	outputRoot = t.TempDir()
-	defer func() { outputRoot = oldRoot }()
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "waveform.png")
 
 	ctx := context.Background()
-	_, err := GenerateThumbnail(ctx, "testdata/audio.mp3", "waveform.png", KindAudio, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/audio.mp3", outputPath, KindAudio, 0)
 	require.NoError(t, err)
 
-	stat, err := os.Stat(filepath.Join(outputRoot, "waveform.png"))
+	stat, err := os.Stat(outputPath)
 	require.NoError(t, err)
 	assert.Greater(t, stat.Size(), int64(0))
 }
 
 func TestGenerateThumbnailImage(t *testing.T) {
-	oldRoot := outputRoot
-	outputRoot = t.TempDir()
-	defer func() { outputRoot = oldRoot }()
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "thumb.jpg")
 
 	ctx := context.Background()
-	_, err := GenerateThumbnail(ctx, "testdata/image.png", "thumb.jpg", KindImage, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/image.png", outputPath, KindImage, 0)
 	require.NoError(t, err)
 
-	stat, err := os.Stat(filepath.Join(outputRoot, "thumb.jpg"))
+	stat, err := os.Stat(outputPath)
 	require.NoError(t, err)
 	assert.Greater(t, stat.Size(), int64(0))
 }
 
 func TestTranscodeVideo(t *testing.T) {
-	oldRoot := outputRoot
-	outputRoot = t.TempDir()
-	defer func() { outputRoot = oldRoot }()
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "output.mp4")
 
 	ctx := context.Background()
-	err := Transcode(ctx, "testdata/video.mp4", "output.mp4", KindVideo)
+	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo)
 	require.NoError(t, err)
 
-	stat, err := os.Stat(filepath.Join(outputRoot, "output.mp4"))
+	stat, err := os.Stat(outputPath)
 	require.NoError(t, err)
 	assert.Greater(t, stat.Size(), int64(0))
 }
 
 func TestGenerateThumbnailCancel(t *testing.T) {
-	oldRoot := outputRoot
-	outputRoot = t.TempDir()
-	defer func() { outputRoot = oldRoot }()
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "thumb.jpg")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := GenerateThumbnail(ctx, "testdata/video.mp4", "thumb.jpg", KindVideo, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 0)
 	require.Error(t, err)
 }
 
 func TestTranscodeCancel(t *testing.T) {
-	oldRoot := outputRoot
-	outputRoot = t.TempDir()
-	defer func() { outputRoot = oldRoot }()
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "out.mp4")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := Transcode(ctx, "testdata/video.mp4", "out.mp4", KindVideo)
+	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo)
 	require.Error(t, err)
+}
+
+func TestResolveSafePath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	test := []struct {
+		name       string
+		outputRoot string
+		outputPath string
+		wantErr    bool
+	}{
+		{
+			name:       "valid relative path",
+			outputRoot: tmpDir,
+			outputPath: "output.mp4",
+			wantErr:    false,
+		},
+		{
+			name:       "valid relative path with ..data prefix",
+			outputRoot: tmpDir,
+			outputPath: "..data/output.mp4",
+			wantErr:    false,
+		},
+		{
+			name:       "valid path inside subfolder",
+			outputRoot: tmpDir,
+			outputPath: "sub/dir/output.mp4",
+			wantErr:    false,
+		},
+		{
+			name:       "path travelsal with ../..",
+			outputRoot: tmpDir,
+			outputPath: "../../etc/passswd",
+			wantErr:    true,
+		},
+		{
+			name:       "absolute path outside root",
+			outputRoot: tmpDir,
+			outputPath: "/etc/passwd",
+			wantErr:    true,
+		},
+		{
+			name:       "absolute path inside root",
+			outputRoot: "/tmp/processing",
+			outputPath: "/tmp/processing/sub/dir/out.mp4",
+			wantErr:    false,
+		},
+		{
+			name:       "root is symlink",
+			outputRoot: "/var/tmp",
+			outputPath: "/var/tmp/out.mp4",
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range test {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveSafePath(tt.outputRoot, tt.outputPath)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveSavePath() error = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
+	}
 }

@@ -31,6 +31,12 @@ func (s *recStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Med
 	}
 	return nil, repo.ErrNotFound
 }
+func (s *recStubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return nil, repo.ErrNotFound
+}
+func (s *recStubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, nil
+}
 func (s *recStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	if s.err != nil {
 		return nil, s.err
@@ -39,8 +45,8 @@ func (s *recStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time
 }
 func (s *recStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error { return nil }
 
-func (s *recStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-	return nil, false, nil
+func (s *recStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+	return nil, repo.ClaimNone, nil
 }
 
 func (s *recStubMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
@@ -56,6 +62,13 @@ func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 		return nil, s.err
 	}
 	return s.exists, nil
+}
+
+func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
 }
 
 type recStubStorage struct {

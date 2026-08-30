@@ -16,52 +16,37 @@ func newTestSvc(mr *svcStubMediaRepo, st *svcStubStorage) *Service {
 	return newTestService(mr, &svcStubDerivRepo{}, st)
 }
 
-// --- DeleteMedia: владение ---
+// --- deleteByID: базовый claim и идемпотентность ---
+// Service.DeleteMedia больше нет (issue #18/#50 занял это имя своей
+// attachment-семантикой) — deleteByID теперь приватный конвейер, вызываемый
+// только DeleteByOwner и Reaper. Тестируем его напрямую.
 
-func TestDeleteMedia_Own_Success(t *testing.T) {
+func TestDeleteByID_ClaimTaken_Success(t *testing.T) {
 	owner := uuid.New()
 	mediaID := uuid.New()
 	mr := &svcStubMediaRepo{
 		media:             &repo.Media{ID: mediaID, OwnerID: owner, StorageKey: "orig"},
-		markDeletingFound: true,
+		markDeletingClaim: repo.ClaimTaken,
 	}
 	st := &svcStubStorage{}
 	svc := newTestSvc(mr, st)
 
-	err := svc.DeleteMedia(context.Background(), owner, mediaID)
+	err := svc.deleteByID(context.Background(), mediaID, true)
 	require.NoError(t, err)
 }
 
-func TestDeleteMedia_SomeoneElses_PermissionDenied(t *testing.T) {
-	owner := uuid.New()
-	stranger := uuid.New()
+func TestDeleteByID_ClaimNone_IsIdempotentSuccess(t *testing.T) {
 	mediaID := uuid.New()
-	mr := &svcStubMediaRepo{
-		media:             &repo.Media{ID: mediaID, OwnerID: owner, StorageKey: "orig"},
-		markDeletingFound: true, // если бы дошло досюда — это была бы дыра
-	}
+	mr := &svcStubMediaRepo{markDeletingClaim: repo.ClaimNone} // записи нет
 	svc := newTestSvc(mr, &svcStubStorage{})
 
-	err := svc.DeleteMedia(context.Background(), stranger, mediaID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "PermissionDenied")
-}
-
-// --- Повтор удаления ---
-
-func TestDeleteMedia_RepeatOnAlreadyGone_IsIdempotentSuccess(t *testing.T) {
-	owner := uuid.New()
-	mediaID := uuid.New()
-	mr := &svcStubMediaRepo{err: repo.ErrNotFound} // GetByID больше не находит запись
-	svc := newTestSvc(mr, &svcStubStorage{})
-
-	err := svc.DeleteMedia(context.Background(), owner, mediaID)
+	err := svc.deleteByID(context.Background(), mediaID, true)
 	require.NoError(t, err)
 }
 
-// --- Ретрай зависшей deleting-записи (регрессия из ревью PR #13/#17) ---
+// --- Ретрай зависшей deleting-записи (issue из первого раунда ревью) ---
 
-func TestDeleteMedia_RetryStuckDeletingRecord_CompletesCleanup(t *testing.T) {
+func TestDeleteByID_ResumeStuckTrue_CompletesCleanup(t *testing.T) {
 	owner := uuid.New()
 	mediaID := uuid.New()
 	stuck := &repo.Media{ID: mediaID, OwnerID: owner, Status: repo.MediaStatusDeleting, StorageKey: "orig"}
@@ -70,13 +55,12 @@ func TestDeleteMedia_RetryStuckDeletingRecord_CompletesCleanup(t *testing.T) {
 	hardDeleteCalled := false
 
 	mr := &svcStubMediaRepo{
-		media: stuck, // GetByID (проверка владельца) видит зависшую запись
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-			// Имитируем ПРАВИЛЬНОЕ поведение репозитория: запись уже была
-			// deleting, но found=true, потому что она реально существует —
-			// а не found=false, как было в баге из ревью (когда повтор молча
-			// "успевал" без факта удаления).
-			return stuck, true, nil
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			// Запись уже была deleting -> ClaimAlreadyDeleting, а не ClaimTaken.
+			// С resumeStuck=true очистка всё равно должна довестись до конца
+			// (это и есть фикс из первого раунда ревью), в отличие от Reaper,
+			// который вызывает deleteByID с resumeStuck=false (см. reaper_test.go).
+			return stuck, repo.ClaimAlreadyDeleting, nil
 		},
 		hardDeleteFunc: func(ctx context.Context, id uuid.UUID) error {
 			hardDeleteCalled = true
@@ -91,10 +75,32 @@ func TestDeleteMedia_RetryStuckDeletingRecord_CompletesCleanup(t *testing.T) {
 	}
 	svc := newTestSvc(mr, st)
 
-	err := svc.DeleteMedia(context.Background(), owner, mediaID)
+	err := svc.deleteByID(context.Background(), mediaID, true)
 	require.NoError(t, err)
-	assert.True(t, deletePrefixCalled, "retry on a stuck deleting record must actually attempt storage cleanup")
-	assert.True(t, hardDeleteCalled, "retry on a stuck deleting record must actually attempt row deletion")
+	assert.True(t, deletePrefixCalled, "resumeStuck=true retry must actually attempt storage cleanup")
+	assert.True(t, hardDeleteCalled, "resumeStuck=true retry must actually attempt row deletion")
+}
+
+func TestDeleteByID_ResumeStuckFalse_SkipsAlreadyClaimed(t *testing.T) {
+	mediaID := uuid.New()
+	deletePrefixCalled := false
+
+	mr := &svcStubMediaRepo{
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			return &repo.Media{ID: id, OwnerID: uuid.New()}, repo.ClaimAlreadyDeleting, nil
+		},
+	}
+	st := &svcStubStorage{
+		deletePrefixFunc: func(ctx context.Context, prefix string) error {
+			deletePrefixCalled = true
+			return nil
+		},
+	}
+	svc := newTestSvc(mr, st)
+
+	err := svc.deleteByID(context.Background(), mediaID, false)
+	require.NoError(t, err)
+	assert.False(t, deletePrefixCalled, "resumeStuck=false must skip a claim it doesn't own")
 }
 
 // --- DeleteByOwner: батчи, изоляция по owner, частичные сбои ---
@@ -104,8 +110,8 @@ func TestDeleteByOwner_DeterministicCount(t *testing.T) {
 	ids := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
 	calls := 0
 	mr := &svcStubMediaRepo{
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-			return &repo.Media{ID: id, OwnerID: owner}, true, nil
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			return &repo.Media{ID: id, OwnerID: owner}, repo.ClaimTaken, nil
 		},
 		listDeletableByOwner: func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
 			calls++
@@ -129,8 +135,8 @@ func TestDeleteByOwner_PartialFailure_ContinuesAndReportsPartialCount(t *testing
 	calls := 0
 
 	mr := &svcStubMediaRepo{
-		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
-			return &repo.Media{ID: id, OwnerID: owner}, true, nil
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			return &repo.Media{ID: id, OwnerID: owner}, repo.ClaimTaken, nil
 		},
 		hardDeleteFunc: func(ctx context.Context, id uuid.UUID) error {
 			if id == failing {

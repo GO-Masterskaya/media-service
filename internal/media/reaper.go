@@ -13,6 +13,11 @@ import (
 // defaultReapBatchSize используется, если вызывающий код передал batchSize<=0.
 const defaultReapBatchSize = 100
 
+// defaultReapInterval используется, если вызывающий код передал Interval<=0.
+// Актуально при прямом вызове NewReaperWithConfig в обход конфига/валидатора
+// (time.NewTicker паникует на неположительном интервале) — см. ревью PR #13/#17.
+const defaultReapInterval = time.Minute
+
 var (
 	reaperMetricsOnce sync.Once
 	reapScanned       prometheus.Counter
@@ -79,9 +84,15 @@ func NewReaper(svc *Service, interval time.Duration, batchSize int, log *slog.Lo
 }
 
 // NewReaperWithConfig — полная форма конструктора, с поддержкой DryRun.
+// Interval<=0 и BatchSize<=0 подменяются дефолтами — конструктор безопасен
+// при прямом вызове в обход конфига/валидатора (см. ревью PR #13/#17: голый
+// time.NewTicker(0) в Run иначе паникует).
 func NewReaperWithConfig(svc *Service, cfg ReaperConfig, log *slog.Logger) *Reaper {
 	if log == nil {
 		log = slog.Default()
+	}
+	if cfg.Interval <= 0 {
+		cfg.Interval = defaultReapInterval
 	}
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = defaultReapBatchSize
@@ -147,18 +158,14 @@ func (r *Reaper) Shutdown(ctx context.Context) error {
 	}
 }
 
-// runOnce — один проход: одна страница истёкших media. Публичный для тестов
-// (не привязан к тикеру).
+// runOnce — один тик: вычерпывает ВСЕ страницы истёкших media, а не только
+// одну (см. ревью PR #13/#17 — при интервале в минуту и одной странице за
+// тик накопленный backlog никогда не разгребается: потолок BatchSize
+// удалений в минуту независимо от объёма просроченных записей). Продолжает,
+// пока очередная страница полная (== BatchSize); последняя неполная/пустая
+// страница завершает проход. Публичный для тестов (не привязан к тикеру).
 func (r *Reaper) runOnce(ctx context.Context) {
-	ids, err := r.svc.mediaRepo.ListExpiredIDs(ctx, r.cfg.BatchSize)
-	if err != nil {
-		r.log.Error("reaper: list expired failed", slog.Any("error", err))
-		r.failedCounter.Inc()
-		return
-	}
-	r.scannedCounter.Add(float64(len(ids)))
-
-	for _, id := range ids {
+	for {
 		select {
 		case <-ctx.Done():
 			r.log.Info("reaper: interrupted by shutdown")
@@ -166,20 +173,48 @@ func (r *Reaper) runOnce(ctx context.Context) {
 		default:
 		}
 
-		if r.cfg.DryRun {
-			r.log.Info("dry-run: would delete expired media", slog.String("media_id", id.String()))
-			continue
+		ids, err := r.svc.mediaRepo.ListExpiredIDs(ctx, r.cfg.BatchSize)
+		if err != nil {
+			r.log.Error("reaper: list expired failed", slog.Any("error", err))
+			r.failedCounter.Inc()
+			return
+		}
+		if len(ids) == 0 {
+			return
+		}
+		r.scannedCounter.Add(float64(len(ids)))
+
+		for _, id := range ids {
+			select {
+			case <-ctx.Done():
+				r.log.Info("reaper: interrupted by shutdown")
+				return
+			default:
+			}
+
+			if r.cfg.DryRun {
+				r.log.Info("dry-run: would delete expired media", slog.String("media_id", id.String()))
+				continue
+			}
+
+			// resumeStuck=false: claim этого тика получает ровно одна
+			// реплика reaper'а. Если MarkDeleting вернул ClaimAlreadyDeleting
+			// (кто-то другой уже взял эту запись — другая реплика прямо
+			// сейчас, или это зависшая с прошлой прерванной попытки), эта
+			// реплика её ПРОПУСКАЕТ, а не доводит очистку сама — иначе две
+			// реплики параллельно вызовут DeletePrefix+HardDelete на одной
+			// записи, и дедупликация между репликами исчезнет (см. ревью).
+			// Зависшие записи — зона ответственности фоновой сверки (#24).
+			if err := r.svc.deleteByID(ctx, id, false); err != nil {
+				r.log.Error("reaper: delete failed", slog.Any("error", err), slog.String("media_id", id.String()))
+				r.failedCounter.Inc()
+				continue
+			}
+			r.deletedCounter.Inc()
 		}
 
-		// MarkDeleting внутри deleteByID — атомарный claim (UPDATE ... WHERE
-		// status <> 'deleting'). Он же гарантирует, что при нескольких
-		// параллельных reaper-инстансах (несколько реплик сервиса) одну и ту
-		// же запись фактически удалит только один из них.
-		if err := r.svc.deleteByID(ctx, id); err != nil {
-			r.log.Error("reaper: delete failed", slog.Any("error", err), slog.String("media_id", id.String()))
-			r.failedCounter.Inc()
-			continue
+		if len(ids) < r.cfg.BatchSize {
+			return // последняя (неполная) страница
 		}
-		r.deletedCounter.Inc()
 	}
 }

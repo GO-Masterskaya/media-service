@@ -26,14 +26,14 @@ type svcStubMediaRepo struct {
 	err   error
 
 	// --- delete/TTL (issues #13, #17) ---
-	markDeletingFound bool
+	markDeletingClaim repo.ClaimState
 	markDeletingErr   error
 	hardDeleteErr     error
 
-	// markDeletingFunc, если задан, заменяет статичное markDeletingFound —
+	// markDeletingFunc, если задан, заменяет статичное markDeletingClaim —
 	// нужен для сценариев вроде "ретрай зависшей deleting-записи", где
 	// поведение должно зависеть от текущего состояния, а не быть константой.
-	markDeletingFunc func(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error)
+	markDeletingFunc func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error)
 
 	// hardDeleteFunc, если задан, заменяет статичный hardDeleteErr — нужен
 	// для сценариев вроде "одна запись в batch не удаляется, остальные да".
@@ -46,6 +46,12 @@ type svcStubMediaRepo struct {
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
 }
+func (s *svcStubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return s.media, s.err
+}
+func (s *svcStubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, s.err
+}
 func (s *svcStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
@@ -53,17 +59,17 @@ func (s *svcStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return nil, nil
 }
 
-func (s *svcStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+func (s *svcStubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 	if s.markDeletingFunc != nil {
 		return s.markDeletingFunc(ctx, id)
 	}
 	if s.markDeletingErr != nil {
-		return nil, false, s.markDeletingErr
+		return nil, repo.ClaimNone, s.markDeletingErr
 	}
-	if !s.markDeletingFound {
-		return nil, false, nil
+	if s.markDeletingClaim == repo.ClaimNone {
+		return nil, repo.ClaimNone, nil
 	}
-	return s.media, true, nil
+	return s.media, s.markDeletingClaim, nil
 }
 
 func (s *svcStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
@@ -87,6 +93,13 @@ func (s *svcStubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uui
 	return nil, nil
 }
 
+func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type svcStubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error
@@ -102,6 +115,16 @@ func (s *svcStubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo
 
 func (s *svcStubStorage) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
 	return &d, s.err
+}
+
+func (s *svcStubDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.deriv != nil {
+		return s.deriv, nil
+	}
+	return d, nil
 }
 
 type svcStubStorage struct {

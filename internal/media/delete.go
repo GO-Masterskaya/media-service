@@ -7,8 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
@@ -18,22 +16,42 @@ import (
 const defaultDeleteBatchSize = 100
 
 // deleteByID — низкоуровневая идемпотентная hard-delete команда (issue #13).
-// Шаги: атомарно пометить deleting -> удалить объекты MinIO по префиксу
+// Шаги: атомарно claim'ить deleting -> удалить объекты MinIO по префиксу
 // {owner_id}/{media_id}/ -> удалить строку (derivatives уходят каскадом FK).
+//
+// resumeStuck определяет поведение при repo.ClaimAlreadyDeleting (запись уже
+// в status=deleting — из чужого claim'а ИЛИ из прошлой прерванной попытки,
+// на уровне одного запроса это неразличимо, см. MediaRepo.MarkDeleting):
+//   - true  — довести очистку до конца самому. Подходит для явного,
+//     единичного, инициированного пользователем повтора (DeleteMedia,
+//     DeleteByOwner): если это ЕГО собственная зависшая запись, повтор
+//     должен реально дочистить, а не молча вернуть "успех" без изменений.
+//   - false — пропустить, ничего не трогать. Обязательно для периодических
+//     фоновых обходов (Reaper): несколько реплик сервиса могут одновременно
+//     наткнуться на один и тот же истёкший id. Если бы reaper тоже доводил
+//     ClaimAlreadyDeleting до конца, любая реплика, не выигравшая исходный
+//     claim, всё равно повторила бы DeletePrefix+HardDelete — гонка и потеря
+//     дедупликации между репликами. С resumeStuck=false claim этого тика
+//     получает ровно одна реплика; отставшая просто выходит. Зависшие
+//     (осиротевшие) deleting-записи — зона ответственности фоновой сверки
+//     (#24, ListDeleting), а не reaper'а.
 //
 // БЕЗ проверки владельца: вызывающий код обязан сам гарантировать право на
 // удаление (single-delete API проверяет владельца до вызова; DeleteByOwner и
 // TTL reaper — уже owner-/TTL-scoped запросом, которым получен id).
-//
-// Общая точка входа для DeleteMedia, DeleteByOwner и Reaper — так удовлетворяем
-// требование issue #17 "удалять истёкшие media через ту же доменную команду".
-func (s *Service) deleteByID(ctx context.Context, mediaID uuid.UUID) error {
-	m, found, err := s.mediaRepo.MarkDeleting(ctx, mediaID)
+func (s *Service) deleteByID(ctx context.Context, mediaID uuid.UUID, resumeStuck bool) error {
+	m, claim, err := s.mediaRepo.MarkDeleting(ctx, mediaID)
 	if err != nil {
 		return fmt.Errorf("mark deleting: %w", err)
 	}
-	if !found {
-		return nil // идемпотентность: записи не было или уже удалена
+	switch claim {
+	case repo.ClaimNone:
+		return nil // идемпотентность: записи не было
+	case repo.ClaimAlreadyDeleting:
+		if !resumeStuck {
+			return nil // не наш claim — не трогаем (см. doc-комментарий выше)
+		}
+		// иначе — доводим очистку до конца ниже, как и для ClaimTaken.
 	}
 
 	prefix, err := storage.MediaPrefix(m.OwnerID, m.ID)
@@ -56,36 +74,19 @@ func (s *Service) deleteByID(ctx context.Context, mediaID uuid.UUID) error {
 	return nil
 }
 
-// DeleteMedia — доменная команда для gRPC DeleteMedia. Проверяет владельца
-// тем же паттерном, что и GetDownloadURL (fetch + сравнение OwnerID), затем
-// делегирует в deleteByID.
-//
-// Ошибки: PermissionDenied — caller не владелец; Internal — ошибка БД/хранилища.
-// Отсутствие media НЕ ошибка (idempotent success), как и требуют критерии
-// приёмки issue #13.
-func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) error {
-	m, err := s.mediaRepo.GetByID(ctx, mediaID)
-	if err != nil {
-		if errors.Is(err, repo.ErrNotFound) {
-			return nil // повторный delete отсутствующего media — успех
-		}
-		s.log.Error("get media failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
-		return status.Error(codes.Internal, "internal error")
-	}
-
-	if m.OwnerID != callerID {
-		return status.Error(codes.PermissionDenied, "access denied")
-	}
-
-	if err := s.deleteByID(ctx, mediaID); err != nil {
-		s.log.Error("delete media failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
-		return status.Error(codes.Internal, "internal error")
-	}
-	return nil
-}
+// PurgeMedia больше не выставлена как отдельный публичный метод: конфликт
+// имени Service.DeleteMedia с семантикой "снять привязку, удалить при
+// usages_count==0" из issue #18/#50 разрешён в пользу той версии (см.
+// внизу service.go) — она уже стала публичным gRPC DeleteMedia и вызывается
+// из Kafka-detach хендлера. Наш безусловный hard-delete-по-владельцу остаётся
+// полностью внутренним конвейером (deleteByID выше), используемым только
+// DeleteByOwner и Reaper — оба и так вызывают deleteByID напрямую, без
+// отдельной публичной обёртки.
 
 // DeleteByOwner удаляет батчами всё media данного owner, используя ту же
-// deleteByID-команду. batchSize<=0 -> defaultDeleteBatchSize.
+// deleteByID-команду (resumeStuck=true — как и DeleteMedia, это явный
+// единичный вызов, а не периодический фоновый обход). batchSize<=0 ->
+// defaultDeleteBatchSize.
 //
 // Возвращает количество ФАКТИЧЕСКИ удалённых записей в этом вызове
 // (детерминированно отражает эффект вызова; повтор на том же owner вернёт
@@ -113,7 +114,7 @@ func (s *Service) DeleteByOwner(ctx context.Context, ownerID uuid.UUID, batchSiz
 
 		progressed := 0
 		for _, id := range ids {
-			if err := s.deleteByID(ctx, id); err != nil {
+			if err := s.deleteByID(ctx, id, true); err != nil {
 				s.log.Error("delete by owner: item failed",
 					slog.Any("error", err),
 					slog.String("owner_id", ownerID.String()),

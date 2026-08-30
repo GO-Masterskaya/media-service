@@ -19,18 +19,12 @@ type MediaServer struct {
 	mediav1.UnimplementedMediaServiceServer
 	svc              *media.Service
 	strictOwnerCheck bool
-	// deleteBatchSize: временно не используется — DeleteByOwner отключен
-	// до #5 (см. комментарий над DeleteByOwner ниже). Поле и конструктор
-	// сохранены как есть, чтобы не перекраивать сигнатуру повторно, когда
-	// RPC включится обратно.
-	deleteBatchSize int
 }
 
-func NewMediaServer(svc *media.Service, strictOwnerCheck bool, deleteBatchSize int) *MediaServer {
+func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
 	return &MediaServer{
 		svc:              svc,
 		strictOwnerCheck: strictOwnerCheck,
-		deleteBatchSize:  deleteBatchSize,
 	}
 }
 
@@ -87,10 +81,7 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 
 	url, err := s.svc.GetDownloadURL(ctx, callerID, mediaID, variant)
 	if err != nil {
-		if errors.Is(err, media.ErrAccessDenied) {
-			return nil, status.Error(codes.PermissionDenied, err.Error())
-		}
-		return nil, err
+		return nil, mapMediaError(err)
 	}
 
 	return &mediav1.GetDownloadURLResponse{
@@ -99,8 +90,13 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 	}, nil
 }
 
-// DeleteMedia — issue #13. Владелец берётся из доверенной metadata (см.
-// resolveCaller) и сверяется с owner_id media внутри media.Service.
+// DeleteMedia — issue #18/#50 (см. main): снимает привязку media→callerID и,
+// если usages_count после этого дошёл до нуля, чистит файлы и запись.
+// Это НЕ безусловный hard-delete по владельцу — та семантика, которую issue
+// #13/#17 изначально предлагал на это же имя, во избежание дублирования
+// метода Service.DeleteMedia переехала во внутренний конвейер deleteByID
+// (используется только DeleteByOwner/Reaper, наружу не выставлен) — см.
+// обсуждение конфликта PR #13/#17 vs #50.
 func (s *MediaServer) DeleteMedia(ctx context.Context, req *mediav1.DeleteMediaRequest) (*mediav1.DeleteMediaResponse, error) {
 	if req.MediaId == "" {
 		return nil, status.Error(codes.InvalidArgument, "media_id is required")
@@ -116,7 +112,7 @@ func (s *MediaServer) DeleteMedia(ctx context.Context, req *mediav1.DeleteMediaR
 	}
 
 	if err := s.svc.DeleteMedia(ctx, callerID, mediaID); err != nil {
-		return nil, err
+		return nil, mapMediaError(err)
 	}
 	return &mediav1.DeleteMediaResponse{Deleted: true}, nil
 }
@@ -136,6 +132,30 @@ func (s *MediaServer) DeleteMedia(ctx context.Context, req *mediav1.DeleteMediaR
 // настоящая проверка токена (#5). До тех пор — Unimplemented.
 func (s *MediaServer) DeleteByOwner(ctx context.Context, req *mediav1.DeleteByOwnerRequest) (*mediav1.DeleteByOwnerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "DeleteByOwner is disabled until request-level auth validation ships (#5): x-owner-id is currently caller-supplied and unverified, unsafe for irreversible bulk delete")
+}
+
+// mapMediaError — доменные ошибки media.* → gRPC status (Upload/Download/…).
+func mapMediaError(err error) error {
+	switch {
+	case errors.Is(err, media.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, media.ErrAccessDenied):
+		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, media.ErrInvalidArgument):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, media.ErrFailedPrecondition):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, media.ErrAlreadyExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	default:
+		// GetDownloadURL уже может вернуть готовый status.Error.
+		if _, ok := status.FromError(err); ok {
+			return err
+		}
+		return status.Error(codes.Internal, err.Error())
+	}
 }
 
 // resolveCaller — единая точка решения strict/non-strict.

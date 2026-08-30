@@ -27,7 +27,7 @@ type stubMediaRepo struct {
 	err   error
 
 	// --- delete (issue #13) ---
-	markDeletingFound bool
+	markDeletingClaim repo.ClaimState
 	markDeletingErr   error
 	hardDeleteErr     error
 
@@ -39,6 +39,14 @@ func (s *stubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media,
 	return s.media, s.err
 }
 
+func (s *stubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return s.media, s.err
+}
+
+func (s *stubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, s.err
+}
+
 func (s *stubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
@@ -47,14 +55,14 @@ func (s *stubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[u
 	return nil, nil
 }
 
-func (s *stubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, bool, error) {
+func (s *stubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 	if s.markDeletingErr != nil {
-		return nil, false, s.markDeletingErr
+		return nil, repo.ClaimNone, s.markDeletingErr
 	}
-	if !s.markDeletingFound {
-		return nil, false, nil
+	if s.markDeletingClaim == repo.ClaimNone {
+		return nil, repo.ClaimNone, nil
 	}
-	return s.media, true, nil
+	return s.media, s.markDeletingClaim, nil
 }
 
 func (s *stubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
@@ -75,6 +83,13 @@ func (s *stubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.U
 	return nil, nil
 }
 
+func (s *stubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *stubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type stubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error
@@ -86,6 +101,16 @@ func (s *stubDerivRepo) GetByMediaAndVariant(ctx context.Context, mediaID uuid.U
 
 func (s *stubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
 	return &d, s.err
+}
+
+func (s *stubDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.deriv != nil {
+		return s.deriv, nil
+	}
+	return d, nil
 }
 
 type stubStorage struct {
@@ -147,7 +172,7 @@ func TestGetDownloadURL_Success(t *testing.T) {
 	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/presign", ExpiresAt: time.Now().Add(15 * time.Minute)}}
 
 	svc := media.NewService(mr, &stubDerivRepo{}, sr, 15*time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	resp, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",
@@ -161,7 +186,7 @@ func TestGetDownloadURL_Success(t *testing.T) {
 
 func TestGetDownloadURL_MissingMediaID(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		Variant: "original",
@@ -172,7 +197,7 @@ func TestGetDownloadURL_MissingMediaID(t *testing.T) {
 
 func TestGetDownloadURL_InvalidMediaID(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "not-a-uuid",
@@ -184,7 +209,7 @@ func TestGetDownloadURL_InvalidMediaID(t *testing.T) {
 
 func TestGetDownloadURL_InvalidVariant(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",
@@ -196,7 +221,7 @@ func TestGetDownloadURL_InvalidVariant(t *testing.T) {
 
 func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, true, 100) // <-- strict=true
+	server := NewMediaServer(svc, true) // <-- strict=true
 
 	// Нет metadata вообще
 	_, err := server.GetDownloadURL(context.Background(), &mediav1.GetDownloadURLRequest{
@@ -210,7 +235,7 @@ func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
 func TestGetDownloadURL_WrongOwner(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
 	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	otherOwner := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	_, err := server.GetDownloadURL(ctxWithOwner(otherOwner), &mediav1.GetDownloadURLRequest{
@@ -224,7 +249,7 @@ func TestGetDownloadURL_WrongOwner(t *testing.T) {
 func TestGetDownloadURL_ServiceError(t *testing.T) {
 	mr := &stubMediaRepo{err: repo.ErrNotFound}
 	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",
@@ -240,7 +265,7 @@ func TestGetDownloadURL_ServiceError(t *testing.T) {
 // случайно "вернуть" без соответствующей проверки авторизации.
 func TestDeleteByOwner_Disabled(t *testing.T) {
 	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false, 100)
+	server := NewMediaServer(svc, false)
 
 	_, err := server.DeleteByOwner(ctxWithOwner(ownerID().String()), &mediav1.DeleteByOwnerRequest{
 		OwnerId: ownerID().String(),
