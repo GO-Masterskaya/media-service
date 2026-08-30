@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -23,12 +24,48 @@ type ProcessedEventSuite struct {
 }
 
 func TestProcessedEventIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	suite.Run(t, new(ProcessedEventSuite))
 }
 
 func (s *ProcessedEventSuite) SetupSuite() {
 	s.ctx = context.Background()
 
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		if !dockerAvailable() {
+			s.T().Skip("Docker not available; set TEST_POSTGRES_DSN to run integration tests with external Postgres")
+		}
+		dsn = s.startPostgres()
+	}
+
+	require.NoError(s.T(), RunMigrations(dsn))
+
+	var err error
+	s.pool, err = pgxpool.New(s.ctx, dsn)
+	require.NoError(s.T(), err)
+
+	s.repo = NewPgProcessedEventRepo(s.pool)
+}
+
+func (s *ProcessedEventSuite) TearDownSuite() {
+	if s.pool != nil {
+		s.pool.Close()
+	}
+	if s.container != nil {
+		require.NoError(s.T(), s.container.Terminate(s.ctx))
+	}
+}
+
+func (s *ProcessedEventSuite) SetupTest() {
+	_, err := s.pool.Exec(s.ctx, `TRUNCATE processed_events`)
+	require.NoError(s.T(), err)
+}
+
+// startPostgres — вынесено в метод suite, чтобы использовать s.ctx и s.T().
+func (s *ProcessedEventSuite) startPostgres() string {
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},
@@ -53,28 +90,7 @@ func (s *ProcessedEventSuite) SetupSuite() {
 	port, err := s.container.MappedPort(s.ctx, "5432")
 	require.NoError(s.T(), err)
 
-	dsn := fmt.Sprintf("postgres://media:media@%s:%s/media?sslmode=disable", host, port.Port())
-
-	require.NoError(s.T(), RunMigrations(dsn))
-
-	s.pool, err = pgxpool.New(s.ctx, dsn)
-	require.NoError(s.T(), err)
-
-	s.repo = NewPgProcessedEventRepo(s.pool)
-}
-
-func (s *ProcessedEventSuite) TearDownSuite() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	if s.container != nil {
-		require.NoError(s.T(), s.container.Terminate(s.ctx))
-	}
-}
-
-func (s *ProcessedEventSuite) SetupTest() {
-	_, err := s.pool.Exec(s.ctx, `TRUNCATE processed_events`)
-	require.NoError(s.T(), err)
+	return fmt.Sprintf("postgres://media:media@%s:%s/media?sslmode=disable", host, port.Port())
 }
 
 // TestFreshClaim - новый event_id: claim успешен, статус processing.
@@ -87,6 +103,26 @@ func (s *ProcessedEventSuite) TestFreshClaim() {
 	require.True(t, claimed)
 	require.Equal(t, EventStatusProcessing, ev.Status)
 	require.Equal(t, "worker-a", ev.Owner)
+}
+
+// TestClaim_SameOwnerRenewal — тот же owner может продлевать свой живой lease.
+// Это защищает от ситуации, когда инстанс получает повторную доставку события
+// и должен обновить lease_expires_at, не теряя claim.
+func (s *ProcessedEventSuite) TestClaim_SameOwnerRenewal() {
+	t := s.T()
+	eventID := uuid.New()
+
+	_, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", 50*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	// Тот же worker-a с тем же fingerprint: lease продлевается
+	ev, claimed, err := s.repo.Claim(s.ctx, eventID, "fp-1", "worker-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.Equal(t, "worker-a", ev.Owner)
+	// Lease должен был продлиться
+	require.True(t, ev.LeaseExpiresAt.After(time.Now().Add(30*time.Second)))
 }
 
 // TestConcurrentClaim - второй consumer того же event_id с живым lease не

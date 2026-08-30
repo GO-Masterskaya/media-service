@@ -27,11 +27,13 @@ type ProcessedEvent struct {
 	EventID        uuid.UUID
 	Fingerprint    string
 	Status         EventStatus
-	Result         []byte // сырой jsonb, nil пока status=processing
+	Result         []byte
 	Owner          string
 	LeaseExpiresAt time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	RetryCount     int
+	LastErrorAt    *time.Time
 }
 
 // ProcessedEventRepo защищает побочный эффект (side-effect) обработчика Kafka-событий с помощью
@@ -84,6 +86,9 @@ type ProcessedEventRepo interface {
 	// limit ограничивает размер одной пачки, чтобы не держать долгую
 	// блокировку. Вызов из периодической задачи — вайринг в #18/#39.
 	DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error)
+	// BumpAttempt атомарно инкрементирует счётчик попыток в result jsonb.
+	// Возвращает новое значение. Требует status='processing' и совпадения owner.
+	BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error)
 }
 
 type PgProcessedEventRepo struct {
@@ -111,16 +116,18 @@ func (r *PgProcessedEventRepo) Claim(ctx context.Context, eventID uuid.UUID, fin
 	// выполнило side effect. fingerprint в SET не меняется, поэтому RETURNING
 	// вернул бы старый и ErrFingerprintConflict не сработал бы вообще.
 	const upsert = `
-		INSERT INTO processed_events (event_id, fingerprint, status, owner, lease_expires_at, created_at, updated_at)
-		VALUES ($1, $2, 'processing', $3, now() + ($4 * interval '1 second'), now(), now())
-		ON CONFLICT (event_id) DO UPDATE
-		SET owner = EXCLUDED.owner,
-		    lease_expires_at = EXCLUDED.lease_expires_at,
-		    updated_at = now()
+		INSERT INTO processed_events (event_id, fingerprint, status, owner, lease_expires_at, created_at, updated_at, retry_count, last_error_at)
+		VALUES ($1, $2, 'processing', $3, now() + make_interval(secs => $4), now(), now(), 0, NULL)
+		ON CONFLICT (event_id) DO UPDATE SET
+		owner = EXCLUDED.owner,
+		fingerprint = EXCLUDED.fingerprint,
+		lease_expires_at = NOW() + make_interval(secs => $4),
+		updated_at = NOW()
 		WHERE processed_events.status = 'processing'
-		  AND processed_events.lease_expires_at < now()
+		AND (processed_events.lease_expires_at < NOW()
+		OR processed_events.owner = EXCLUDED.owner)
 		  AND processed_events.fingerprint = EXCLUDED.fingerprint
-		RETURNING event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at`
+		RETURNING event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at, retry_count, last_error_at`
 
 	row := r.pool.QueryRow(ctx, upsert, eventID, fingerprint, owner, lease.Seconds())
 	event, err := scanProcessedEvent(row)
@@ -217,7 +224,7 @@ func (r *PgProcessedEventRepo) DeleteTerminalOlderThan(ctx context.Context, olde
 
 func (r *PgProcessedEventRepo) getByID(ctx context.Context, eventID uuid.UUID) (*ProcessedEvent, error) {
 	const q = `
-		SELECT event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at
+		SELECT event_id, fingerprint, status, result, owner, lease_expires_at, created_at, updated_at, retry_count, last_error_at
 		FROM processed_events
 		WHERE event_id = $1`
 
@@ -242,8 +249,29 @@ func scanProcessedEvent(row pgx.Row) (*ProcessedEvent, error) {
 		&event.LeaseExpiresAt,
 		&event.CreatedAt,
 		&event.UpdatedAt,
+		&event.RetryCount,
+		&event.LastErrorAt,
 	); err != nil {
 		return nil, err
 	}
 	return &event, nil
+}
+
+func (r *PgProcessedEventRepo) BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error) {
+	const q = `
+		UPDATE processed_events
+		SET retry_count = retry_count + 1,
+		    last_error_at = NOW(),
+ 		    updated_at = now()
+ 		WHERE event_id = $1 AND owner = $2 AND status = 'processing'
+		RETURNING retry_count`
+	var attempts int
+	err := r.pool.QueryRow(ctx, q, eventID, owner).Scan(&attempts)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrClaimLost
+		}
+		return 0, fmt.Errorf("repo: bump attempt: %w", err)
+	}
+	return attempts, nil
 }

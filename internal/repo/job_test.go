@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -401,6 +402,9 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 	ctx := context.Background()
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
+		if !dockerAvailable() {
+			t.Skip("Docker not available; set TEST_POSTGRES_DSN to run integration tests with external Postgres")
+		}
 		dsn = startPostgres(t, ctx)
 	}
 
@@ -415,6 +419,13 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	return pool
+}
+
+// dockerAvailable проверяет, отвечает ли docker daemon.
+func dockerAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "docker", "info").Run() == nil
 }
 
 func startPostgres(t *testing.T, ctx context.Context) string {

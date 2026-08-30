@@ -45,6 +45,13 @@ func (s *svcStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return nil, nil
 }
 
+func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type svcStubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error

@@ -49,6 +49,13 @@ func (s *stubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[u
 	return nil, nil
 }
 
+func (s *stubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *stubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type stubDerivRepo struct {
 	deriv *repo.Derivative
 	err   error

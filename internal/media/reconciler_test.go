@@ -51,6 +51,13 @@ func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return s.exists, nil
 }
 
+func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type recStubStorage struct {
 	objects []storage.ObjectInfo
 	deleted []string
