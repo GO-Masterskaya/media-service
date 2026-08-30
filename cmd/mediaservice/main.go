@@ -173,7 +173,7 @@ func main() {
 
 	// +++ ADDED: 4.7 gRPC server + registration
 	grpcServer := grpc.NewServer()
-	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck, cfg.DeleteBatchSize))
+	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
 
 	// +++ ADDED: TTL reaper (#17, ревью PR #13/#17: dry-run/kill-switch/метрики
 	// по образцу reconciler). Graceful shutdown — через reaper.Shutdown ниже.
