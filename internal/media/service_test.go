@@ -29,6 +29,12 @@ type svcStubMediaRepo struct {
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
 }
+func (s *svcStubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return s.media, s.err
+}
+func (s *svcStubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, s.err
+}
 func (s *svcStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
@@ -37,6 +43,13 @@ func (s *svcStubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 }
 func (s *svcStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
+}
+
+func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
 }
 
 type svcStubDerivRepo struct {
@@ -54,6 +67,16 @@ func (s *svcStubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo
 
 func (s *svcStubStorage) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
 	return &d, s.err
+}
+
+func (s *svcStubDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.deriv != nil {
+		return s.deriv, nil
+	}
+	return d, nil
 }
 
 type svcStubStorage struct {

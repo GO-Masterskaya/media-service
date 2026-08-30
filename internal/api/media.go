@@ -81,16 +81,37 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 
 	url, err := s.svc.GetDownloadURL(ctx, callerID, mediaID, variant)
 	if err != nil {
-		if errors.Is(err, media.ErrAccessDenied) {
-			return nil, status.Error(codes.PermissionDenied, err.Error())
-		}
-		return nil, err
+		return nil, mapMediaError(err)
 	}
 
 	return &mediav1.GetDownloadURLResponse{
 		Url:       url.URL,
 		ExpiresAt: timestamppb.New(url.ExpiresAt),
 	}, nil
+}
+
+// mapMediaError — доменные ошибки media.* → gRPC status (Upload/Download/…).
+func mapMediaError(err error) error {
+	switch {
+	case errors.Is(err, media.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, media.ErrAccessDenied):
+		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, media.ErrInvalidArgument):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, media.ErrFailedPrecondition):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, media.ErrAlreadyExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	default:
+		// GetDownloadURL уже может вернуть готовый status.Error.
+		if _, ok := status.FromError(err); ok {
+			return err
+		}
+		return status.Error(codes.Internal, err.Error())
+	}
 }
 
 // resolveCaller — единая точка решения strict/non-strict.

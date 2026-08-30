@@ -2,9 +2,11 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -339,6 +341,7 @@ func TestJobRepo(t *testing.T) {
 			Mime:       "image/jpeg",
 			SizeBytes:  10,
 			StorageKey: "k/thumb.jpg",
+			Metadata:   json.RawMessage([]byte{100, 100}),
 		}
 		first, err := derivs.Insert(ctx, in)
 		if err != nil {
@@ -372,6 +375,7 @@ func TestJobRepo(t *testing.T) {
 					Mime:       "video/mp4",
 					SizeBytes:  20,
 					StorageKey: "k/r720.mp4",
+					Metadata:   json.RawMessage([]byte{100, 100, 10}),
 				})
 				if err != nil {
 					t.Errorf("insert: %v", err)
@@ -398,6 +402,9 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 	ctx := context.Background()
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
+		if !dockerAvailable() {
+			t.Skip("Docker not available; set TEST_POSTGRES_DSN to run integration tests with external Postgres")
+		}
 		dsn = startPostgres(t, ctx)
 	}
 
@@ -412,6 +419,13 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	return pool
+}
+
+// dockerAvailable проверяет, отвечает ли docker daemon.
+func dockerAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "docker", "info").Run() == nil
 }
 
 func startPostgres(t *testing.T, ctx context.Context) string {

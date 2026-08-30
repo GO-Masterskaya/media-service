@@ -31,6 +31,14 @@ func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, er
 	return m.media, m.mediaErr
 }
 
+func (m *mockMediaRepo) GetByOwnerIdempotency(_ context.Context, _ uuid.UUID, _ string) (*repo.Media, error) {
+	return nil, repo.ErrNotFound
+}
+
+func (m *mockMediaRepo) InsertWithJobs(_ context.Context, media repo.Media, _ []string) (*repo.Media, error) {
+	return &media, nil
+}
+
 func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
 }
@@ -41,6 +49,13 @@ func (s *mockMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, l
 
 func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
+}
+
+func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
 }
 
 type mockDerivRepo struct {
@@ -54,6 +69,16 @@ func (m *mockDerivRepo) GetByMediaAndVariant(_ context.Context, _ uuid.UUID, _ s
 
 func (m *mockDerivRepo) Insert(_ context.Context, d repo.Derivative) (*repo.Derivative, error) {
 	return &d, nil
+}
+
+func (m *mockDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if m.derivErr != nil {
+		return nil, m.derivErr
+	}
+	if m.deriv != nil {
+		return m.deriv, nil
+	}
+	return d, nil
 }
 
 type mockStorage struct {

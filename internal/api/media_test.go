@@ -31,6 +31,14 @@ func (s *stubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media,
 	return s.media, s.err
 }
 
+func (s *stubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
+	return s.media, s.err
+}
+
+func (s *stubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
+	return &m, s.err
+}
+
 func (s *stubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
@@ -39,6 +47,13 @@ func (s *stubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 }
 func (s *stubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
+}
+
+func (s *stubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *stubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
 }
 
 type stubDerivRepo struct {
@@ -52,6 +67,16 @@ func (s *stubDerivRepo) GetByMediaAndVariant(ctx context.Context, mediaID uuid.U
 
 func (s *stubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
 	return &d, s.err
+}
+
+func (s *stubDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.deriv != nil {
+		return s.deriv, nil
+	}
+	return d, nil
 }
 
 type stubStorage struct {

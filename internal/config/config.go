@@ -33,6 +33,7 @@ type Config struct {
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
 	Rendition         int           `env:"RENDITION"             env-default:"720"`
 	ThumbSecond       int           `env:"THUMB_SECOND"          env-default:"1"`
+	ProcessingTempDir string        `env:"PROCESSING_TEMP_DIR" env-default:"/tmp/processing"`
 
 	// Storage / TTL
 	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
@@ -66,6 +67,7 @@ type Config struct {
 	KafkaTopic    string   `env:"KAFKA_TOPIC"           env-default:"media.events"`
 	KafkaDLQTopic string   `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
 	KafkaGroup    string   `env:"KAFKA_GROUP"           env-default:"media-service"`
+
 	// StrictOwnerCheck включает строгую проверку владельца.
 	// При true требуется валидный auth interceptor (TODO #5).
 	// Пока используется как feature-flag для deploy-модели за gateway.
@@ -75,6 +77,10 @@ type Config struct {
 	ReconcilerGracePeriod time.Duration `env:"RECONCILER_GRACE_PERIOD" env-default:"1h"` // 1h для orphan safety
 	ReconcilerBatchSize   int           `env:"RECONCILER_BATCH_SIZE"   env-default:"100"`
 	ReconcilerDryRun      bool          `env:"RECONCILER_DRY_RUN"      env-default:"false"`
+
+	RetentionInterval  time.Duration `env:"RETENTION_INTERVAL" env-default:"1h"`
+	RetentionOlderThan time.Duration `env:"RETENTION_OLDER_THAN" env-default:"720h"` // 30 days
+	RetentionBatchSize int           `env:"RETENTION_BATCH_SIZE" env-default:"1000"`
 }
 
 // Load читает .env (если есть), накладывает переменные окружения на дефолтные значения и валидирует.
@@ -128,7 +134,9 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
 	fmt.Fprintf(&b, "KafkaGroup:%q", c.KafkaGroup)
-	fmt.Fprintf(&b, "StrictOwnerCheck:%v, ", c.StrictOwnerCheck)
+	fmt.Fprintf(&b, "RetentionInterval:%s, ", c.RetentionInterval)
+	fmt.Fprintf(&b, "RetentionOlderThan:%s, ", c.RetentionOlderThan)
+	fmt.Fprintf(&b, "RetentionBatchSize:%d, ", c.RetentionBatchSize)
 	b.WriteString("}")
 	return b.String()
 }

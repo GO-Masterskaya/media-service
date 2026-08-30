@@ -15,6 +15,8 @@ import (
 
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
+
+	"sync/atomic"
 )
 
 var (
@@ -65,14 +67,24 @@ type Reconciler struct {
 	failedCounter  *prometheus.CounterVec
 	orphanCounter  prometheus.Counter
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	wg       sync.WaitGroup
+	tickRunning atomic.Bool
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	wg          sync.WaitGroup
 }
 
 func NewReconciler(mediaRepo repo.MediaRepo, storage storage.Interface, cfg ReconcilerConfig, log *slog.Logger) *Reconciler {
 	if log == nil {
 		log = slog.Default()
+	}
+	if cfg.GracePeriod <= 0 {
+		cfg.GracePeriod = 1 * time.Hour
+	}
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 100
+	}
+	if cfg.Interval <= 0 {
+		cfg.Interval = 1 * time.Hour
 	}
 	initReconcilerMetrics()
 
@@ -140,6 +152,12 @@ func (r *Reconciler) Shutdown(ctx context.Context) error {
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) {
+	if !r.tickRunning.CompareAndSwap(false, true) {
+		r.log.Warn("reconciler tick skipped: previous tick still running")
+		return
+	}
+	defer r.tickRunning.Store(false)
+
 	r.log.Info("reconciler tick started", slog.Bool("dry_run", r.cfg.DryRun))
 	r.reconcileDeleting(ctx)
 	r.reconcileOrphans(ctx)
@@ -250,7 +268,15 @@ func (r *Reconciler) reconcileOrphans(ctx context.Context) {
 		if !ok {
 			return nil
 		}
-		//grace от старта загрузки, не от LastModified
+		// Если UploadStartedAt не заполнен — невозможно определить grace period,
+		// пропускаем, чтобы не удалить in-flight объект.
+		if obj.UploadStartedAt.IsZero() {
+			r.log.Warn("orphan check: UploadStartedAt is zero, skipping",
+				slog.String("key", obj.Key),
+			)
+			return nil
+		}
+		// grace от старта загрузки, не от LastModified
 		if time.Since(obj.UploadStartedAt) < r.cfg.GracePeriod {
 			return nil // защита in-flight
 		}

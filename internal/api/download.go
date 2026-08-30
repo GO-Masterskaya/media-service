@@ -5,14 +5,12 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"mediaservice/internal/media"
 	mediav1 "mediaservice/proto/media/v1"
 )
 
@@ -62,20 +60,7 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 	return nil
 }
 
-// mapDownloadError возвращает представление доменной ошибки в gRPC статусе
+// mapDownloadError возвращает представление доменной ошибки в gRPC статусе.
 func mapDownloadError(err error) error {
-	switch {
-	case errors.Is(err, media.ErrNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, media.ErrAccessDenied):
-		return status.Error(codes.PermissionDenied, err.Error())
-	case errors.Is(err, media.ErrInvalidArgument):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, media.ErrFailedPrecondition):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, context.DeadlineExceeded):
-		return status.Error(codes.DeadlineExceeded, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
-	}
+	return mapMediaError(err)
 }
