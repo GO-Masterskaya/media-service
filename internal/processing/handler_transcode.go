@@ -2,6 +2,7 @@ package processing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -74,7 +75,7 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		return nil, err
 	}
 
-	workDir, err := os.MkdirTemp("", "transcode-*")
+	workDir, err := os.MkdirTemp(h.cfg.ProcessingTempDir, "transcode-*")
 	if err != nil {
 		h.logError("failed to create temp dir", media.ID, err)
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -111,7 +112,7 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 	ext, mime, variant := h.resolveTranscodeFormat(media.Kind)
 	outputPath := filepath.Join(workDir, fmt.Sprintf("transcode_%s.%s", media.ID, ext))
 
-	actualOutputPath, err := Transcode(ctx, inputPath, outputPath, media.Kind)
+	actualOutputPath, err := Transcode(ctx, workDir, inputPath, outputPath, media.Kind)
 	if err != nil {
 		h.logError("failed to transcode media via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error transcoding: %w", err)
@@ -154,12 +155,18 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		if infoProbe.Width > 0 && infoProbe.Height > 0 {
 			metadata["width"] = infoProbe.Width
 			metadata["height"] = infoProbe.Height
+
 		}
 		if infoProbe.Duration > 0 {
 			metadata["duration"] = infoProbe.Duration
 		}
 	} else if err != nil && h.log != nil {
 		h.log.Warn("failed to probe transcoded file metadata", "media_id", media.ID, "error", err)
+	}
+
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
 	record := &repo.Derivative{
@@ -169,6 +176,7 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 		Mime:       mime,
 		SizeBytes:  info.Size(),
 		StorageKey: key,
+		Metadata:   rawMetadata,
 	}
 
 	resRecord, err := h.repo.UpsertDerivative(ctx, record)

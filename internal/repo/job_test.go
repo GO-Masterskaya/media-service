@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -340,6 +341,7 @@ func TestJobRepo(t *testing.T) {
 			Mime:       "image/jpeg",
 			SizeBytes:  10,
 			StorageKey: "k/thumb.jpg",
+			Metadata:   json.RawMessage([]byte{100, 100}),
 		}
 		first, err := derivs.Insert(ctx, in)
 		if err != nil {
@@ -373,6 +375,7 @@ func TestJobRepo(t *testing.T) {
 					Mime:       "video/mp4",
 					SizeBytes:  20,
 					StorageKey: "k/r720.mp4",
+					Metadata:   json.RawMessage([]byte{100, 100, 10}),
 				})
 				if err != nil {
 					t.Errorf("insert: %v", err)
