@@ -3,6 +3,8 @@ coverage.out
 .env
 *.test
 tmp/
+.DS_Store
+/mediaservice
 
 # Media processing artifacts
 internal/processing/*.mp4
