@@ -84,6 +84,14 @@ func (r *persistMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return map[uuid.UUID]struct{}{}, nil
 }
 
+func (s *persistMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+
+func (s *persistMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type countingStorage struct {
 	mu             sync.Mutex
 	puts           int
@@ -602,4 +610,12 @@ func (r *raceAfterPutRepo) ListDeleting(ctx context.Context, olderThan time.Time
 func (r *raceAfterPutRepo) HardDelete(ctx context.Context, id uuid.UUID) error { return nil }
 func (r *raceAfterPutRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
+}
+
+func (s *raceAfterPutRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+
+func (s *raceAfterPutRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
 }

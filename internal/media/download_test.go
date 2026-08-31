@@ -51,6 +51,13 @@ func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
+	return nil
+}
+func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
+	return 0, nil
+}
+
 type mockDerivRepo struct {
 	deriv    *repo.Derivative
 	derivErr error

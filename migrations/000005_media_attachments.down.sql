@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS media_attachments CASCADE;
+
+ALTER TABLE media DROP COLUMN IF EXISTS usages_count;
