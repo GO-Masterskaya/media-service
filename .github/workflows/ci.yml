@@ -10,15 +10,40 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: latest
+          github_token: ${{ github.token }}
+
+      - name: Install protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: buf lint
+        run: buf lint
+
+      - name: buf breaking
+        run: buf breaking --against '.git#branch=main'
+
+      - name: Ensure generated code is up to date
+        run: |
+          rm -f proto/media/v1/*.pb.go proto/media/v1/*_grpc.pb.go
+          buf generate
+          git diff --exit-code proto/media/v1/
+
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      
+
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \

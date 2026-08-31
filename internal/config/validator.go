@@ -10,6 +10,9 @@ func (c *Config) validate() error {
 	if c.GRPCAddr == "" {
 		return fmt.Errorf("GRPC_ADDR is required")
 	}
+	if c.HTTPAddr == "" {
+		return fmt.Errorf("HTTP_ADDR is required")
+	}
 	if c.MaxUploadBytes <= 0 {
 		return fmt.Errorf("MAX_UPLOAD_BYTES must be > 0, got %d", c.MaxUploadBytes)
 	}

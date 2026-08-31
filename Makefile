@@ -4,6 +4,9 @@ BIN     := bin/mediaservice
 PKG     := ./...
 MAIN    := ./cmd/mediaservice
 
+GOLANGCI_LINT_VERSION := v2.1.6
+GOLANGCI_LINT         := $(shell go env GOPATH)/bin/golangci-lint
+
 .PHONY: help
 help: ## Показать доступные команды
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -16,7 +19,9 @@ build: ## Собрать бинарь в bin/
 .PHONY: lint
 lint: ## Прогнать линтер и go vet
 	go vet $(PKG)
-	golangci-lint run
+	@$(GOLANGCI_LINT) --version 2>/dev/null | grep -q "$(GOLANGCI_LINT_VERSION)" || \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	$(GOLANGCI_LINT) run
 
 .PHONY: test
 test: ## Прогнать тесты с race-детектором
@@ -40,7 +45,7 @@ proto: ## Сгенерировать Go stubs из proto (идемпотентн
 	@which buf > /dev/null || (echo "ERROR: buf не установлен. См. README.md#proto-toolchain" && exit 1)
 	@which protoc-gen-go > /dev/null || (echo "ERROR: protoc-gen-go не установлен. Запусти: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest" && exit 1)
 	@which protoc-gen-go-grpc > /dev/null || (echo "ERROR: protoc-gen-go-grpc не установлен. Запусти: go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest" && exit 1)
-	rm -f proto/media/v1/*.pb.go
+	rm -f proto/media/v1/*.pb.go proto/media/v1/*_grpc.pb.go
 	buf generate
 
 .PHONY: proto-lint
