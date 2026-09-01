@@ -104,6 +104,15 @@ func (c *Config) validate() error {
 		if c.KafkaGroup == "" {
 			return fmt.Errorf("KAFKA_GROUP is required when KAFKA_ENABLED=true")
 		}
+		if c.RetentionInterval <= 0 {
+			return fmt.Errorf("RETENTION_INTERVAL must be > 0, got %s", c.RetentionInterval)
+		}
+		if c.RetentionOlderThan <= 0 {
+			return fmt.Errorf("RETENTION_OLDER_THAN must be > 0, got %s", c.RetentionOlderThan)
+		}
+		if c.RetentionBatchSize <= 0 {
+			return fmt.Errorf("RETENTION_BATCH_SIZE must be > 0, got %d", c.RetentionBatchSize)
+		}
 	}
 	return nil
 }
