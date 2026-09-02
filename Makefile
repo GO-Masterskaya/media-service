@@ -5,7 +5,6 @@ PKG     := ./...
 MAIN    := ./cmd/mediaservice
 
 GOLANGCI_LINT_VERSION := v2.1.6
-GOLANGCI_LINT         := $(shell go env GOPATH)/bin/golangci-lint
 
 .PHONY: help
 help: ## Показать доступные команды
@@ -19,9 +18,12 @@ build: ## Собрать бинарь в bin/
 .PHONY: lint
 lint: ## Прогнать линтер и go vet
 	go vet $(PKG)
-	@$(GOLANGCI_LINT) --version 2>/dev/null | grep -q "$(GOLANGCI_LINT_VERSION)" || \
-		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	$(GOLANGCI_LINT) run
+	@LINT=$$(command -v golangci-lint 2>/dev/null || echo "$$(go env GOPATH)/bin/golangci-lint"); \
+	if ! $$LINT --version 2>/dev/null | grep -q "$(GOLANGCI_LINT_VERSION)"; then \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
+		LINT="$$(go env GOPATH)/bin/golangci-lint"; \
+	fi; \
+	$$LINT run
 
 .PHONY: test
 test: ## Прогнать тесты с race-детектором
