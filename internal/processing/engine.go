@@ -19,9 +19,10 @@ const (
 type Config struct {
 	WorkerConcurrency int
 	PollInterval      time.Duration
-	JobTimeout        time.Duration // таймаут на выполнение одной задачи
-	LeaseDuration     time.Duration // длительность lease при claim; heartbeat тикает каждые LeaseDuration/3
-	MaxAttempts       int           // максимум попыток перед terminal failed (для retry логики)
+	JobTimeout        time.Duration
+	LeaseDuration     time.Duration
+	MaxAttempts       int
+	Backoff           BackoffConfig
 }
 
 // Engine представляет собой ядро движка обработки задач.
@@ -60,6 +61,12 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = 3
 	}
+	if cfg.Backoff.Base <= 0 {
+		cfg.Backoff.Base = 30 * time.Second
+	}
+	if cfg.Backoff.Max <= 0 {
+		cfg.Backoff.Max = 10 * time.Minute
+	}
 	if metrics == nil {
 		metrics = NewMetrics(nil)
 	}
@@ -87,6 +94,18 @@ func (e *Engine) Start(parentCtx context.Context) error {
 		return nil
 	}
 
+	// Startup recovery: stale running jobs с протухшим lease → queued.
+	recCtx, recCancel := context.WithTimeout(parentCtx, 30*time.Second)
+	recovered, recErr := e.repo.RecoverStaleJobs(recCtx)
+	recCancel()
+	if recErr != nil {
+		return fmt.Errorf("startup recovery: %w", recErr)
+	}
+	if recovered > 0 {
+		e.metrics.JobsRecoveredTotal.Add(float64(recovered))
+		slog.Info("startup recovery completed", "count", recovered)
+	}
+
 	ctx, cancel := context.WithCancel(parentCtx)
 	e.cancel = cancel
 	e.started = true
@@ -112,17 +131,36 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	return nil
 }
 
-// Stop останавливает работу воркеров.
-// Воркеры перестают клеймить новые задачи, дорабатывают текущие
-// (в пределах JobTimeout) и финализируют результаты.
+// Stop останавливает движок без дедлайна (для тестов).
 func (e *Engine) Stop() {
+	_ = e.Shutdown(context.Background())
+}
+
+// Shutdown останавливает воркеры и reaper, дожидаясь завершения in-flight jobs
+// в пределах ctx. Идемпотентен.
+func (e *Engine) Shutdown(ctx context.Context) error {
+	var shutdownErr error
 	e.once.Do(func() {
 		if e.cancel != nil {
 			e.cancel()
 		}
-		e.wg.Wait()
-		slog.Info("processing engine stopped")
+		done := make(chan struct{})
+		go func() {
+			e.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			e.metrics.ShutdownGracefulTotal.Inc()
+			slog.Info("processing engine stopped gracefully")
+		case <-ctx.Done():
+			shutdownErr = fmt.Errorf("processing engine shutdown timeout: %w", ctx.Err())
+			e.metrics.ShutdownTimeoutTotal.Inc()
+			slog.Warn("processing engine shutdown timed out", "error", shutdownErr)
+		}
 	})
+	return shutdownErr
 }
 
 // reaperLoop периодически подбирает running-задачи с протухшим lease.
@@ -143,15 +181,16 @@ func (e *Engine) reaperLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reaped, err := e.repo.ReapExpiredLeases(ctx, e.cfg.MaxAttempts)
+			reaped, err := e.repo.RecoverStaleJobs(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				slog.Error("reaper: failed to reap expired leases", "error", err)
+				slog.Error("reaper: failed to recover stale jobs", "error", err)
 				continue
 			}
 			if reaped > 0 {
+				e.metrics.JobsRecoveredTotal.Add(float64(reaped))
 				slog.Info("reaper: recovered expired leases", "count", reaped)
 			}
 		}
@@ -212,17 +251,18 @@ func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 // processJob выполняет хендлер с recover() и обновляет статус задачи.
 //
 // jobCtx привязан к ctx движка (ТЗ §3.6): при shutdown хендлер получает
-// отмену и задача возвращается в queued через ReleaseJob.
+// отмену и задача возвращается в queued через ReleaseJobOnShutdown.
 //
-// Retry: при ошибке handler, если attempts < MaxAttempts → ReleaseJob
-// (возврат в queued для повторной попытки); иначе → FailJob (terminal).
-//
-// Heartbeat-горутина продлевает lease каждые LeaseDuration/3.
-// При потере lease heartbeat отменяет jobCtx — хендлер получит ctx.Err().
-// Финализация (MarkDone/FailJob/ReleaseJob) выполняется на неотменяемом контексте.
+// Retry: retryable failure → ReleaseJobForRetry с backoff;
+// permanent failure или max attempts → FailJob.
 func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 	e.metrics.InFlightWorkers.Inc()
 	defer e.metrics.InFlightWorkers.Dec()
+
+	startedAt := time.Now()
+	defer func() {
+		e.metrics.ProcessingDuration.Observe(time.Since(startedAt).Seconds())
+	}()
 
 	handler, err := e.registry.Get(job.Type)
 	if err != nil {
@@ -262,17 +302,33 @@ func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 	defer finCancel()
 
 	if handlerErr != nil {
-		// Определяем причину ошибки: shutdown движка или ошибка handler.
 		if engineCtx.Err() != nil {
-			// Движок остановлен — возвращаем задачу в queued, не считаем ошибкой.
 			slog.Info("job interrupted by shutdown, releasing back to queue",
 				"worker_id", workerID,
 				"job_id", job.ID.String(),
 				"job_type", job.Type,
 			)
-			if releaseErr := e.repo.ReleaseJob(finCtx, job.ID.String()); releaseErr != nil {
+			if releaseErr := e.repo.ReleaseJobOnShutdown(finCtx, job.ID.String()); releaseErr != nil {
 				slog.Error("failed to release job on shutdown", "job_id", job.ID.String(), "error", releaseErr)
+			} else {
+				e.metrics.ShutdownJobsReleasedTotal.Inc()
 			}
+			return
+		}
+
+		handlerErr = ClassifyHandlerError(handlerErr)
+
+		if IsPermanent(handlerErr) {
+			slog.Error("job permanent failure",
+				"worker_id", workerID,
+				"job_id", job.ID.String(),
+				"job_type", job.Type,
+				"error", handlerErr,
+			)
+			if failErr := e.repo.FailJob(finCtx, job.ID.String(), handlerErr.Error()); failErr != nil {
+				slog.Error("failed to mark job as failed", "job_id", job.ID.String(), "error", failErr)
+			}
+			e.metrics.JobsFailedTotal.Inc()
 			return
 		}
 
@@ -285,15 +341,15 @@ func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 			"error", handlerErr,
 		)
 
-		// Retry: если попытки не исчерпаны — возвращаем в queued (с инкрементом attempts и backoff в Release).
-		// Иначе — terminal failed.
-		if job.Attempts+1 < e.cfg.MaxAttempts {
-			if releaseErr := e.repo.ReleaseJob(finCtx, job.ID.String()); releaseErr != nil {
+		nextAttempt := job.Attempts + 1
+		if nextAttempt < e.cfg.MaxAttempts {
+			if releaseErr := e.repo.ReleaseJobForRetry(finCtx, job.ID.String(), nextAttempt); releaseErr != nil {
 				slog.Error("failed to release job for retry", "job_id", job.ID.String(), "error", releaseErr)
 			} else {
+				e.metrics.JobsRetriedTotal.Inc()
 				slog.Info("job released for retry",
 					"job_id", job.ID.String(),
-					"attempt", job.Attempts+1,
+					"attempt", nextAttempt,
 					"max_attempts", e.cfg.MaxAttempts,
 				)
 			}

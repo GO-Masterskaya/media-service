@@ -317,7 +317,7 @@ func TestJobRepo(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := jobs.Release(ctx, job.ID, "worker-1"); err != nil {
+		if err := jobs.ReleaseForRetry(ctx, job.ID, "worker-1", DefaultJobBackoff().NextRunAfter(1)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -365,6 +365,33 @@ func TestJobRepo(t *testing.T) {
 		}
 	})
 
+	t.Run("release on shutdown keeps attempts", func(t *testing.T) {
+		resetDB(t, pool)
+		mediaID := seedMedia(t, pool)
+		seedJob(t, pool, mediaID, "thumbnail", "queued")
+		job, err := jobs.ClaimNext(ctx, "worker-1", DefaultJobLease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := jobs.ReleaseForShutdown(ctx, job.ID, "worker-1"); err != nil {
+			t.Fatal(err)
+		}
+
+		var status string
+		var attempts int
+		err = pool.QueryRow(ctx, `SELECT status, attempts FROM processing_jobs WHERE id = $1`, job.ID).
+			Scan(&status, &attempts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "queued" {
+			t.Fatalf("status %s, want queued", status)
+		}
+		if attempts != 0 {
+			t.Fatalf("attempts %d, want 0 (shutdown must not increment)", attempts)
+		}
+	})
+
 	t.Run("reap expired leases requeues and fails with media update", func(t *testing.T) {
 		resetDB(t, pool)
 		mediaID1 := seedMedia(t, pool)
@@ -390,7 +417,7 @@ func TestJobRepo(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		reaped, err := jobs.ReapExpiredLeases(ctx, 3)
+		reaped, err := jobs.ReapExpiredLeases(ctx, 3, DefaultJobBackoff())
 		if err != nil {
 			t.Fatalf("reap: %v", err)
 		}
