@@ -12,7 +12,7 @@ import (
 	"syscall"
 
 	"github.com/google/uuid"
-
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 
 	"mediaservice/internal/api"
@@ -86,9 +86,6 @@ func main() {
 
 	transcodeHandler := processing.NewTranscodeHandler(sto, derivRepo, cfg, slog.Default())
 	thumbnailHandler := processing.NewThumbnailHandler(sto, derivRepo, cfg, slog.Default())
-
-	_ = transcodeHandler
-	_ = thumbnailHandler
 
 	mediaSvc := media.NewService(mediaRepo, derivRepo, sto, cfg.PresignTTL, slog.Default())
 
@@ -203,7 +200,59 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("all components started successfully")
+	// 5.1 Processing Engine
+	jobRepo := repo.NewPgJobRepo(pool)
+	ownerID := uuid.NewString() // уникальный ID этого экземпляра сервиса
+	repoAdapter := processing.NewRepoAdapter(jobRepo, ownerID, cfg.JobLease, cfg.MaxJobAttempts)
+
+	procRegistry := processing.NewRegistry()
+	// Регистрация обработчиков: адаптируем ProcessThumbnail/ProcessTranscode к Handler.Handle(ctx, Job).
+	// Загружаем MediaRecord из БД по job.MediaID для получения актуального SourceKey, OwnerID и Kind.
+	procRegistry.Register("thumbnail", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		m, err := mediaRepo.GetByID(ctx, job.MediaID)
+		if err != nil {
+			return fmt.Errorf("fetch media for thumbnail: %w", err)
+		}
+		_, err = thumbnailHandler.ProcessThumbnail(ctx, processing.MediaRecord{
+			ID:        m.ID,
+			OwnerID:   m.OwnerID,
+			Kind:      processing.Kind(m.Kind),
+			SourceKey: m.StorageKey,
+		})
+		return err
+	}))
+	procRegistry.Register("transcode", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		m, err := mediaRepo.GetByID(ctx, job.MediaID)
+		if err != nil {
+			return fmt.Errorf("fetch media for transcode: %w", err)
+		}
+		_, err = transcodeHandler.ProcessTranscode(ctx, processing.MediaRecord{
+			ID:        m.ID,
+			OwnerID:   m.OwnerID,
+			Kind:      processing.Kind(m.Kind),
+			SourceKey: m.StorageKey,
+		})
+		return err
+	}))
+
+	procMetrics := processing.NewMetrics(prometheus.DefaultRegisterer)
+
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: cfg.WorkerConcurrency,
+		PollInterval:      cfg.PollInterval,
+		JobTimeout:        cfg.JobTimeout,
+		LeaseDuration:     cfg.JobLease,
+		MaxAttempts:       cfg.MaxJobAttempts,
+	}, repoAdapter, procRegistry, procMetrics)
+
+	if err := engine.Start(ctx); err != nil {
+		slog.Error("start processing engine", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("all components started successfully",
+		"engine_owner", ownerID,
+	)
 
 	// 6. Ждём сигнала завершения.
 	<-ctx.Done()
@@ -264,7 +313,8 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// engine.Shutdown(shutdownCtx)
+			engine.Stop()
+			slog.Info("processing engine stopped")
 		}()
 
 		wg.Add(1)

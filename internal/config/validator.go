@@ -22,6 +22,18 @@ func (c *Config) validate() error {
 	if c.QueueBuffer <= 0 {
 		return fmt.Errorf("QUEUE_BUFFER must be > 0, got %d", c.QueueBuffer)
 	}
+	if c.JobTimeout <= 0 {
+		return fmt.Errorf("JOB_TIMEOUT must be > 0, got %s", c.JobTimeout)
+	}
+	if c.JobLease <= 0 {
+		return fmt.Errorf("JOB_LEASE must be > 0, got %s", c.JobLease)
+	}
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("POLL_INTERVAL must be > 0, got %s", c.PollInterval)
+	}
+	if c.MaxJobAttempts <= 0 {
+		return fmt.Errorf("JOB_MAX_ATTEMPTS must be > 0, got %d", c.MaxJobAttempts)
+	}
 	if c.FFMPEGTimeout <= 0 {
 		return fmt.Errorf("FFMPEG_TIMEOUT must be > 0, got %s", c.FFMPEGTimeout)
 	}
