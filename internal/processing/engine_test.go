@@ -20,14 +20,14 @@ import (
 // MockJobRepository — потокобезопасный мок репозитория для unit-тестов.
 // Реализует pull-on-demand интерфейс (ClaimOne вместо ClaimQueued).
 type MockJobRepository struct {
-	mu              sync.Mutex
-	queuedJobs      []processing.Job
-	runningJobs     map[string]processing.Job
-	doneJobs        map[string]bool   // jobID -> true
-	failedJobs      map[string]string // jobID -> reason
-	released        map[string]bool   // jobID -> true (retry)
-	shutdownReleased map[string]bool  // jobID -> true
-	leaseExtensions int               // количество вызовов ExtendLease
+	mu               sync.Mutex
+	queuedJobs       []processing.Job
+	runningJobs      map[string]processing.Job
+	doneJobs         map[string]bool   // jobID -> true
+	failedJobs       map[string]string // jobID -> reason
+	released         map[string]bool   // jobID -> true (retry)
+	shutdownReleased map[string]bool   // jobID -> true
+	leaseExtensions  int               // количество вызовов ExtendLease
 }
 
 func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
@@ -77,7 +77,7 @@ func (m *MockJobRepository) FailJob(_ context.Context, jobID string, reason stri
 	return nil
 }
 
-func (m *MockJobRepository) ReleaseJobForRetry(_ context.Context, jobID string, _ int) error {
+func (m *MockJobRepository) ReleaseJobForRetry(_ context.Context, jobID string, _ int, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.released[jobID] = true

@@ -38,7 +38,7 @@ type JobRepo interface {
 	ClaimNext(ctx context.Context, owner string, leaseDuration time.Duration) (*Job, error)
 	MarkDone(ctx context.Context, jobID uuid.UUID, owner string) error
 	MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reason string) error
-	ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time) error
+	ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error
 	ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error
 	ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error
 	ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig) (int64, error)
@@ -141,8 +141,8 @@ func (r *PgJobRepo) MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reas
 	return r.complete(ctx, jobID, owner, JobStatusFailed, reason)
 }
 
-func (r *PgJobRepo) ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time) error {
-	return r.release(ctx, jobID, owner, runAfter, true, "")
+func (r *PgJobRepo) ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error {
+	return r.release(ctx, jobID, owner, runAfter, true, reason)
 }
 
 func (r *PgJobRepo) ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error {
@@ -158,14 +158,13 @@ func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, 
 
 	var from JobStatus
 	var lockedBy *string
-	var leaseUntil *time.Time
 	var mediaID uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT media_id, status, locked_by, lease_until
+		SELECT media_id, status, locked_by
 		FROM processing_jobs
 		WHERE id = $1
 		FOR UPDATE
-	`, jobID).Scan(&mediaID, &from, &lockedBy, &leaseUntil)
+	`, jobID).Scan(&mediaID, &from, &lockedBy)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
@@ -179,7 +178,9 @@ func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, 
 	if from != JobStatusRunning {
 		return ErrInvalidTransition
 	}
-	if lockedBy == nil || *lockedBy != owner || leaseUntil == nil || !leaseUntil.After(time.Now()) {
+	// Owner может release даже при протухшем lease (retry/shutdown),
+	// иначе задача зависает в running до reaper.
+	if lockedBy == nil || *lockedBy != owner {
 		return ErrLeaseMismatch
 	}
 
@@ -455,15 +456,15 @@ func CanTransition(from, to string) bool {
 
 // ReapExpiredLeases возвращает running-задачи с протухшим lease обратно в queued
 // (с инкрементом attempts и exponential backoff через run_after).
-// Задачи, превысившие maxAttempts, переводятся в failed и пересчитывают статус media.
-// Возвращает количество обработанных задач.
+// Задачи, у которых следующая попытка исчерпала бы MaxAttempts, → failed.
+// Использует FOR UPDATE SKIP LOCKED + LIMIT, чтобы несколько реперов не блокировали друг друга.
 func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	if backoff.Base <= 0 {
-		backoff = DefaultJobBackoff()
-	}
+	backoff = backoff.Normalize()
+
+	const reapBatchLimit = 100
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -476,18 +477,20 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, back
 		FROM processing_jobs
 		WHERE status = 'running'
 		  AND lease_until < now()
-		FOR UPDATE
+		ORDER BY lease_until
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1
 	`
-	rows, err := tx.Query(ctx, selectQ)
+	rows, err := tx.Query(ctx, selectQ, reapBatchLimit)
 	if err != nil {
 		return 0, fmt.Errorf("reap expired leases select: %w", err)
 	}
 	defer rows.Close()
 
 	type staleJob struct {
-		id      uuid.UUID
+		id       uuid.UUID
 		attempts int
-		mediaID uuid.UUID
+		mediaID  uuid.UUID
 	}
 	var stale []staleJob
 	for rows.Next() {
@@ -506,7 +509,8 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, back
 	mediaFailed := make(map[uuid.UUID]struct{})
 
 	for _, j := range stale {
-		if j.attempts >= maxAttempts {
+		// Как у worker: nextAttempt = attempts+1; если nextAttempt >= max → fail.
+		if j.attempts+1 >= maxAttempts {
 			tag, err := tx.Exec(ctx, `
 				UPDATE processing_jobs
 				SET status = 'failed',
@@ -534,6 +538,7 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, back
 			    lease_until = NULL,
 			    locked_at = NULL,
 			    attempts = attempts + 1,
+			    last_error = 'lease expired',
 			    run_after = $2
 			WHERE id = $1
 		`, j.id, runAfter)

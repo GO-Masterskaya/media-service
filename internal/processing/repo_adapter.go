@@ -33,12 +33,7 @@ func NewRepoAdapter(
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	if backoff.Base <= 0 {
-		backoff.Base = 30 * time.Second
-	}
-	if backoff.Max <= 0 {
-		backoff.Max = 10 * time.Minute
-	}
+	backoff = backoff.normalize()
 	return &RepoAdapter{
 		jobRepo:       jobRepo,
 		ownerID:       ownerID,
@@ -105,17 +100,17 @@ func (a *RepoAdapter) FailJob(ctx context.Context, jobID string, reason string) 
 	return nil
 }
 
-func (a *RepoAdapter) ReleaseJobForRetry(ctx context.Context, jobID string, attemptsAfterIncrement int) error {
+func (a *RepoAdapter) ReleaseJobForRetry(ctx context.Context, jobID string, attemptsAfterIncrement int, reason string) error {
 	id, err := uuid.Parse(jobID)
 	if err != nil {
 		return fmt.Errorf("parse job id: %w", err)
 	}
-	return a.releaseForRetry(ctx, id, attemptsAfterIncrement)
+	return a.releaseForRetry(ctx, id, attemptsAfterIncrement, reason)
 }
 
-func (a *RepoAdapter) releaseForRetry(ctx context.Context, id uuid.UUID, attemptsAfterIncrement int) error {
+func (a *RepoAdapter) releaseForRetry(ctx context.Context, id uuid.UUID, attemptsAfterIncrement int, reason string) error {
 	runAfter := a.backoff.nextRunAfter(attemptsAfterIncrement)
-	err := a.jobRepo.ReleaseForRetry(ctx, id, a.ownerID, runAfter)
+	err := a.jobRepo.ReleaseForRetry(ctx, id, a.ownerID, runAfter, reason)
 	if err != nil {
 		if errors.Is(err, repo.ErrLeaseMismatch) || errors.Is(err, repo.ErrNotFound) {
 			return fmt.Errorf("release job %s (non-critical): %w", id, err)

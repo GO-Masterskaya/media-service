@@ -247,11 +247,6 @@ func main() {
 		JobTimeout:        cfg.JobTimeout,
 		LeaseDuration:     cfg.JobLease,
 		MaxAttempts:       cfg.MaxJobAttempts,
-		Backoff: processing.BackoffConfig{
-			Base:   cfg.JobBackoffBase,
-			Max:    cfg.JobBackoffMax,
-			Jitter: cfg.JobBackoffJitter,
-		},
 	}, repoAdapter, procRegistry, procMetrics)
 
 	if err := engine.Start(ctx); err != nil {
@@ -343,6 +338,10 @@ func main() {
 		}()
 
 		wg.Wait()
+
+		// После timeout Shutdown воркеры могут ещё работать — ждём их
+		// до закрытия pool, иначе пул закроется под живыми горутинами.
+		engine.Wait()
 
 		// 8.3 DLQ publisher закрываем после consumer'а, чтобы handler'и
 		// могли ещё отправить poison-сообщения во время shutdown.

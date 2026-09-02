@@ -42,7 +42,7 @@ func TestRepoAdapterMarkDoneInvalidUUID(t *testing.T) {
 // Тест проверяет валидацию UUID в ReleaseJobForRetry адаптера
 func TestRepoAdapterReleaseJobInvalidUUID(t *testing.T) {
 	adapter := processing.NewRepoAdapter(nil, "worker-test", 30*time.Second, 3, testBackoff())
-	err := adapter.ReleaseJobForRetry(context.Background(), "invalid-uuid", 1)
+	err := adapter.ReleaseJobForRetry(context.Background(), "invalid-uuid", 1, "reason")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "parse job id")
 }

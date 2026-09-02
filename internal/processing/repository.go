@@ -19,11 +19,16 @@ func (c BackoffConfig) toRepo() repo.JobBackoffConfig {
 		Base:   c.Base,
 		Max:    c.Max,
 		Jitter: c.Jitter,
-	}
+	}.Normalize()
 }
 
 func (c BackoffConfig) nextRunAfter(attemptsAfterIncrement int) time.Time {
 	return c.toRepo().NextRunAfter(attemptsAfterIncrement)
+}
+
+func (c BackoffConfig) normalize() BackoffConfig {
+	n := c.toRepo()
+	return BackoffConfig{Base: n.Base, Max: n.Max, Jitter: n.Jitter}
 }
 
 // JobRepository определяет интерфейс взаимодействия с базой данных (задача #25).
@@ -45,7 +50,8 @@ type JobRepository interface {
 
 	// ReleaseJobForRetry возвращает задачу в queued с backoff и инкрементом attempts.
 	// attemptsAfterIncrement — значение attempts после инкремента (job.Attempts+1).
-	ReleaseJobForRetry(ctx context.Context, jobID string, attemptsAfterIncrement int) error
+	// reason сохраняется в last_error.
+	ReleaseJobForRetry(ctx context.Context, jobID string, attemptsAfterIncrement int, reason string) error
 
 	// ReleaseJobOnShutdown возвращает задачу в queued без инкремента attempts.
 	// Используется при graceful shutdown для незавершённых jobs.

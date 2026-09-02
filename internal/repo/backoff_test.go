@@ -39,3 +39,21 @@ func TestJobBackoffConfig_JitterWithinBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestJobBackoffConfig_JitterNeverExceedsMax(t *testing.T) {
+	cfg := JobBackoffConfig{Base: 5 * time.Minute, Max: 5 * time.Minute, Jitter: 0.5}
+	for range 100 {
+		got := cfg.Delay(1)
+		if got > cfg.Max {
+			t.Fatalf("delay %s exceeds max %s", got, cfg.Max)
+		}
+	}
+}
+
+func TestJobBackoffConfig_NormalizeBaseAboveMax(t *testing.T) {
+	cfg := JobBackoffConfig{Base: 20 * time.Minute, Max: 5 * time.Minute, Jitter: 0}
+	got := cfg.Delay(1)
+	if got != 5*time.Minute {
+		t.Fatalf("Delay = %s, want %s (base clamped to max)", got, 5*time.Minute)
+	}
+}

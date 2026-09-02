@@ -8,7 +8,7 @@ import (
 // JobBackoffConfig задаёт exponential backoff с jitter для run_after.
 type JobBackoffConfig struct {
 	Base   time.Duration // начальная задержка (после 1-й неудачи)
-	Max    time.Duration // потолок задержки
+	Max    time.Duration // потолок задержки (после jitter не превышается)
 	Jitter float64       // доля jitter [0..1], например 0.2 = ±20%
 }
 
@@ -21,34 +21,56 @@ func DefaultJobBackoff() JobBackoffConfig {
 	}
 }
 
-// Delay возвращает задержку до следующей попытки.
+// Normalize возвращает копию с безопасными границами Base/Max/Jitter.
+func (c JobBackoffConfig) Normalize() JobBackoffConfig {
+	if c.Base <= 0 {
+		c.Base = 30 * time.Second
+	}
+	if c.Max <= 0 {
+		c.Max = 10 * time.Minute
+	}
+	if c.Base > c.Max {
+		c.Base = c.Max
+	}
+	if c.Jitter < 0 {
+		c.Jitter = 0
+	}
+	if c.Jitter > 1 {
+		c.Jitter = 1
+	}
+	return c
+}
+
+// Delay возвращает задержку до следующей попытки (≤ Max).
 // attemptsAfterIncrement — значение attempts после инкремента (1 = первая повторная попытка).
 func (c JobBackoffConfig) Delay(attemptsAfterIncrement int) time.Duration {
+	c = c.Normalize()
 	if attemptsAfterIncrement <= 0 {
 		attemptsAfterIncrement = 1
 	}
-	base := c.Base
-	if base <= 0 {
-		base = 30 * time.Second
-	}
-	max := c.Max
-	if max <= 0 {
-		max = 10 * time.Minute
-	}
 
-	delay := base
+	delay := c.Base
 	for i := 1; i < attemptsAfterIncrement; i++ {
-		if delay >= max {
-			return applyJitter(max, c.Jitter)
+		if delay >= c.Max {
+			delay = c.Max
+			break
 		}
 		next := delay * 2
-		if next > max {
-			delay = max
+		if next > c.Max {
+			delay = c.Max
 		} else {
 			delay = next
 		}
 	}
-	return applyJitter(delay, c.Jitter)
+
+	delay = applyJitter(delay, c.Jitter)
+	if delay > c.Max {
+		delay = c.Max
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	return delay
 }
 
 // NextRunAfter вычисляет run_after для attempts после инкремента.
@@ -57,13 +79,13 @@ func (c JobBackoffConfig) NextRunAfter(attemptsAfterIncrement int) time.Time {
 }
 
 func applyJitter(d time.Duration, jitter float64) time.Duration {
-	if jitter <= 0 {
+	if jitter <= 0 || d <= 0 {
 		return d
 	}
 	if jitter > 1 {
 		jitter = 1
 	}
-	// uniform in [d*(1-jitter), d*(1+jitter)]
+	// uniform in [d*(1-jitter), d*(1+jitter)], затем вызывающий клампит к Max.
 	factor := 1 - jitter + rand.Float64()*(2*jitter)
 	return time.Duration(float64(d) * factor)
 }

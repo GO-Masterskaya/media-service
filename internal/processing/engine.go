@@ -22,7 +22,6 @@ type Config struct {
 	JobTimeout        time.Duration
 	LeaseDuration     time.Duration
 	MaxAttempts       int
-	Backoff           BackoffConfig
 }
 
 // Engine представляет собой ядро движка обработки задач.
@@ -37,11 +36,13 @@ type Engine struct {
 	registry *Registry
 	metrics  *Metrics
 
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	once    sync.Once
-	started bool
-	mu      sync.Mutex
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	once        sync.Once
+	started     bool
+	mu          sync.Mutex
+	shutdownErr error
+	workersDone chan struct{}
 }
 
 // NewEngine создаёт и инициализирует новый Engine.
@@ -60,12 +61,6 @@ func NewEngine(cfg Config, repo JobRepository, registry *Registry, metrics *Metr
 	}
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = 3
-	}
-	if cfg.Backoff.Base <= 0 {
-		cfg.Backoff.Base = 30 * time.Second
-	}
-	if cfg.Backoff.Max <= 0 {
-		cfg.Backoff.Max = 10 * time.Minute
 	}
 	if metrics == nil {
 		metrics = NewMetrics(nil)
@@ -108,7 +103,9 @@ func (e *Engine) Start(parentCtx context.Context) error {
 
 	ctx, cancel := context.WithCancel(parentCtx)
 	e.cancel = cancel
+	e.workersDone = make(chan struct{})
 	e.started = true
+	e.shutdownErr = nil
 
 	for i := 0; i < e.cfg.WorkerConcurrency; i++ {
 		e.wg.Add(1)
@@ -136,15 +133,35 @@ func (e *Engine) Stop() {
 	_ = e.Shutdown(context.Background())
 }
 
+// Wait блокирует до завершения всех worker/reaper горутин.
+// Безопасно вызывать после Shutdown (в т.ч. после timeout) перед закрытием pool.
+func (e *Engine) Wait() {
+	e.mu.Lock()
+	done := e.workersDone
+	e.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
 // Shutdown останавливает воркеры и reaper, дожидаясь завершения in-flight jobs
-// в пределах ctx. Идемпотентен.
+// в пределах ctx. Идемпотентен: повторный вызов возвращает тот же результат.
 func (e *Engine) Shutdown(ctx context.Context) error {
-	var shutdownErr error
 	e.once.Do(func() {
 		if e.cancel != nil {
 			e.cancel()
 		}
-		done := make(chan struct{})
+
+		e.mu.Lock()
+		if e.workersDone == nil {
+			e.workersDone = make(chan struct{})
+			close(e.workersDone)
+			e.mu.Unlock()
+			return
+		}
+		done := e.workersDone
+		e.mu.Unlock()
+
 		go func() {
 			e.wg.Wait()
 			close(done)
@@ -155,12 +172,18 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 			e.metrics.ShutdownGracefulTotal.Inc()
 			slog.Info("processing engine stopped gracefully")
 		case <-ctx.Done():
-			shutdownErr = fmt.Errorf("processing engine shutdown timeout: %w", ctx.Err())
+			err := fmt.Errorf("processing engine shutdown timeout: %w", ctx.Err())
+			e.mu.Lock()
+			e.shutdownErr = err
+			e.mu.Unlock()
 			e.metrics.ShutdownTimeoutTotal.Inc()
-			slog.Warn("processing engine shutdown timed out", "error", shutdownErr)
+			slog.Warn("processing engine shutdown timed out", "error", err)
 		}
 	})
-	return shutdownErr
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.shutdownErr
 }
 
 // reaperLoop периодически подбирает running-задачи с протухшим lease.
@@ -343,7 +366,7 @@ func (e *Engine) processJob(engineCtx context.Context, job *Job, workerID int) {
 
 		nextAttempt := job.Attempts + 1
 		if nextAttempt < e.cfg.MaxAttempts {
-			if releaseErr := e.repo.ReleaseJobForRetry(finCtx, job.ID.String(), nextAttempt); releaseErr != nil {
+			if releaseErr := e.repo.ReleaseJobForRetry(finCtx, job.ID.String(), nextAttempt, handlerErr.Error()); releaseErr != nil {
 				slog.Error("failed to release job for retry", "job_id", job.ID.String(), "error", releaseErr)
 			} else {
 				e.metrics.JobsRetriedTotal.Inc()
