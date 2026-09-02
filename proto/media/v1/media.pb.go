@@ -1125,7 +1125,7 @@ var File_proto_media_v1_media_proto protoreflect.FileDescriptor
 
 const file_proto_media_v1_media_proto_rawDesc = "" +
 	"\n" +
-	"\x1aproto/media/v1/media.proto\x12\bmedia.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!proto/buf/validate/validate.proto\"^\n" +
+	"\x1aproto/media/v1/media.proto\x12\bmedia.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bbuf/validate/validate.proto\"^\n" +
 	"\rUploadRequest\x12*\n" +
 	"\x04init\x18\x01 \x01(\v2\x14.media.v1.UploadInitH\x00R\x04init\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +

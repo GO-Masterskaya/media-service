@@ -11,12 +11,14 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
 
 	"mediaservice/internal/api"
 	"mediaservice/internal/config"
@@ -172,17 +174,32 @@ func main() {
 	}
 
 	// 9. gRPC server с цепочкой interceptors
+	maxRecvBytes := int(cfg.MaxUploadBytes)
+	if maxRecvBytes <= 0 {
+		maxRecvBytes = 4 << 20
+	}
 	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxRecvBytes),
+		grpc.MaxConcurrentStreams(uint32(cfg.MaxConcurrentStreams)),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 15 * time.Minute,
+			Time:              5 * time.Minute,
+			Timeout:           20 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             30 * time.Second,
+			PermitWithoutStream: true,
+		}),
 		grpc.ChainUnaryInterceptor(
 			api.RecoveryInterceptor(),
 			api.CorrelationIDInterceptor(),
-			api.TokenInterceptor(),
+			api.TokenInterceptor(cfg.GRPCAuthToken),
 			api.ValidationInterceptor(validator),
 		),
 		grpc.ChainStreamInterceptor(
 			api.RecoveryStreamInterceptor(),
 			api.CorrelationIDStreamInterceptor(),
-			api.TokenStreamInterceptor(),
+			api.TokenStreamInterceptor(cfg.GRPCAuthToken),
 			api.ValidationStreamInterceptor(validator),
 		),
 	)
@@ -206,7 +223,11 @@ func main() {
 
 	// HTTP health server
 	healthMux := api.HTTPHealthHandlers(pool)
-	httpSrv := &http.Server{Addr: cfg.HTTPAddr, Handler: healthMux}
+	httpSrv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           healthMux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() {
 		slog.Info("http health server listening", "addr", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

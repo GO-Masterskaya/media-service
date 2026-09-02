@@ -35,10 +35,12 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 		return err
 	}
 
-	slog.Info("download started", slog.String("mediaID", req.MediaId), slog.String("variant", req.Variant))
+	slog.Info("download started", logAttrs(ctx, "media_id", req.MediaId, "variant", req.Variant)...)
 	// счетчик отображающий размер отправленных байт для логирования
 	var bytesSent int64
-	defer slog.Info("download finished", slog.String("mediaID", req.MediaId), slog.Int64("bytesSent", bytesSent))
+	defer func() {
+		slog.Info("download finished", logAttrs(ctx, "media_id", req.MediaId, "bytes_sent", bytesSent)...)
+	}()
 
 	err = s.svc.DownloadStream(ctx, callerID, mediaID, req.Variant, func(chunk []byte) error {
 		bytesSent += int64(len(chunk))

@@ -222,10 +222,22 @@ func TestGetDownloadURL_StorageError(t *testing.T) {
 	requireGRPCCode(t, err, codes.Internal)
 }
 
+func TestGetDownloadURL_Preview_Success(t *testing.T) {
+	mr := &svcStubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
+	dr := &svcStubDerivRepo{deriv: derivFor("preview")}
+	sr := &svcStubStorage{url: &storage.PresignedURL{URL: "http://minio/preview", ExpiresAt: time.Now().Add(15 * time.Minute)}}
+
+	svc := NewService(mr, dr, sr, 15*time.Minute, svcTestLogger())
+	url, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantPreview)
+
+	require.NoError(t, err)
+	assert.Equal(t, "http://minio/preview", url.URL)
+}
+
 func TestGetDownloadURL_UnsupportedVariant(t *testing.T) {
 	mr := &svcStubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
 	svc := NewService(mr, &svcStubDerivRepo{}, &svcStubStorage{}, time.Minute, svcTestLogger())
 
-	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.VariantPreview)
+	_, err := svc.GetDownloadURL(context.Background(), ownerID(), mr.media.ID, storage.Variant("bogus"))
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }

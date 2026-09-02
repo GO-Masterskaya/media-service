@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
+	"strings"
 
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
@@ -26,6 +28,38 @@ func extractToken(ctx context.Context) string {
 		return vals[0]
 	}
 	return ""
+}
+
+func tokenMatches(header, expected string) bool {
+	if expected == "" || header == "" {
+		return false
+	}
+	token := strings.TrimSpace(header)
+	const prefix = "Bearer "
+	if strings.HasPrefix(token, prefix) {
+		token = strings.TrimSpace(token[len(prefix):])
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+}
+
+func isHealthMethod(fullMethod string) bool {
+	return strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/")
+}
+
+// CorrelationIDFromContext возвращает correlation id, установленный interceptor'ом.
+func CorrelationIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(correlationIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// logAttrs добавляет correlation_id к slog-атрибутам, если он есть в context.
+func logAttrs(ctx context.Context, attrs ...any) []any {
+	if cid := CorrelationIDFromContext(ctx); cid != "" {
+		attrs = append([]any{"correlation_id", cid}, attrs...)
+	}
+	return attrs
 }
 
 // ctxStream заменяет Context() у ServerStream.

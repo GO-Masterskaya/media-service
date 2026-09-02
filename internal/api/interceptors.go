@@ -71,19 +71,32 @@ func CorrelationIDStreamInterceptor() grpc.StreamServerInterceptor {
 	}
 }
 
-// TokenInterceptor читает authorization из metadata, кладёт в context, не валидирует.
-func TokenInterceptor() grpc.UnaryServerInterceptor {
+// TokenInterceptor проверяет authorization против ожидаемого GRPC_AUTH_TOKEN.
+// Health RPC пропускаются без проверки — для k8s/load-balancer probes.
+func TokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if isHealthMethod(info.FullMethod) {
+			return handler(ctx, req)
+		}
 		token := extractToken(ctx)
+		if !tokenMatches(token, expectedToken) {
+			return nil, status.Error(codes.Unauthenticated, "invalid or missing authorization token")
+		}
 		ctx = context.WithValue(ctx, apiTokenKey{}, token)
 		return handler(ctx, req)
 	}
 }
 
 // TokenStreamInterceptor — для streaming RPC.
-func TokenStreamInterceptor() grpc.StreamServerInterceptor {
+func TokenStreamInterceptor(expectedToken string) grpc.StreamServerInterceptor {
 	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if isHealthMethod(info.FullMethod) {
+			return handler(srv, stream)
+		}
 		token := extractToken(stream.Context())
+		if !tokenMatches(token, expectedToken) {
+			return status.Error(codes.Unauthenticated, "invalid or missing authorization token")
+		}
 		ctx := context.WithValue(stream.Context(), apiTokenKey{}, token)
 		wrapped := &ctxStream{ServerStream: stream, ctx: ctx}
 		return handler(srv, wrapped)

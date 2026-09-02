@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -34,8 +35,8 @@ func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
 //
 // По ТЗ v1 сервис не валидирует токен — он доверяет вызывающему (gateway/mesh).
 // x-owner-id должен инжектиться доверенным посредником; прямой доступ клиента
-// к gRPC media-service исключён архитектурно. Полноценная валидация auth —
-// TODO (#5, флаг GRPC_AUTH_VALIDATE).
+// к gRPC media-service исключён архитектурно. Bearer/static token проверяется
+// в TokenInterceptor (#5); здесь только owner identity из metadata.
 func callerIDFromMetadata(ctx context.Context) (uuid.UUID, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -67,13 +68,6 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		variant = storage.VariantOriginal
 	}
 
-	switch variant {
-	case storage.VariantOriginal, storage.VariantThumb, storage.VariantR720:
-		// ok
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "invalid variant: %s", req.Variant)
-	}
-
 	callerID, err := s.resolveCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -81,6 +75,7 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 
 	url, err := s.svc.GetDownloadURL(ctx, callerID, mediaID, variant)
 	if err != nil {
+		slog.Error("get download url failed", logAttrs(ctx, "media_id", req.MediaId, "error", err)...)
 		return nil, mapMediaError(err)
 	}
 
