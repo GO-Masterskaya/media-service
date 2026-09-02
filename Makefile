@@ -51,8 +51,15 @@ proto: ## Сгенерировать Go stubs из proto (идемпотентн
 .PHONY: proto-lint
 proto-lint: ## Проверить proto на lint и breaking changes
 	@which buf > /dev/null || (echo "ERROR: buf не установлен." && exit 1)
+	buf dep update
 	buf lint
-	buf breaking --against '.git#branch=main'
+	@BASE=$$(git merge-base HEAD main 2>/dev/null || echo main); \
+	WT=$$(mktemp -d); \
+	git worktree add -q $$WT $$BASE; \
+	if [ ! -f $$WT/buf.lock ] && [ -f buf.lock ]; then cp buf.lock $$WT/buf.lock; fi; \
+	(cd $$WT && buf dep update); \
+	buf breaking --against $$WT; \
+	git worktree remove -f $$WT
 
 .PHONY: up
 up: ## Поднять инфраструктуру и сервис

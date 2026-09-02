@@ -21,7 +21,8 @@ jobs:
       - name: Install buf
         uses: bufbuild/buf-action@v1
         with:
-          version: latest
+          version: "1.72.0"
+          setup_only: true
           github_token: ${{ github.token }}
 
       - name: Install protoc plugins
@@ -29,14 +30,31 @@ jobs:
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
+      - name: buf dep update
+        run: buf dep update
+
       - name: buf lint
         run: buf lint
 
+      - name: Fetch base branch
+        run: git fetch origin "${{ github.base_ref }}:${{ github.base_ref }}"
+
       - name: buf breaking
-        run: buf breaking --against '.git#branch=main'
+        run: |
+          set -euo pipefail
+          BASE="${{ github.base_ref }}"
+          WT="${RUNNER_TEMP}/buf-against-${BASE}"
+          git worktree add "$WT" "$BASE"
+          if [ ! -f "$WT/buf.lock" ] && [ -f buf.lock ]; then
+            cp buf.lock "$WT/buf.lock"
+          fi
+          (cd "$WT" && buf dep update)
+          buf breaking --against "$WT"
+          git worktree remove --force "$WT"
 
       - name: Ensure generated code is up to date
         run: |
+          buf dep update
           rm -f proto/media/v1/*.pb.go proto/media/v1/*_grpc.pb.go
           buf generate
           git diff --exit-code proto/media/v1/
