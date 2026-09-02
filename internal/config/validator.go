@@ -13,6 +13,9 @@ func (c *Config) validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("HTTP_ADDR is required")
 	}
+	if c.GRPCAuthEnabled && c.GRPCAuthToken == "" {
+		return fmt.Errorf("GRPC_AUTH_TOKEN is required when GRPC_AUTH_ENABLED=true")
+	}
 	if c.MaxUploadBytes <= 0 {
 		return fmt.Errorf("MAX_UPLOAD_BYTES must be > 0, got %d", c.MaxUploadBytes)
 	}

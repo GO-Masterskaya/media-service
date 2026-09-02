@@ -26,9 +26,9 @@ message UploadRequest {
 
 message UploadInit {
   string owner_id = 1 [(buf.validate.field).string.uuid = true];
-  string filename = 2 [(buf.validate.field).string.min_len = 1];
+  string filename = 2;
   string mime = 3 [(buf.validate.field).string.min_len = 1];
-  uint64 expected_size = 4 [(buf.validate.field).uint64.gt = 0];
+  uint64 expected_size = 4;
   string idempotency_key = 5 [(buf.validate.field).string.min_len = 1];
   ProcessingOptions processing = 6;
   google.protobuf.Duration ttl = 7;
@@ -85,7 +85,8 @@ message GetMediaRequest {
 
 message ListMediaByOwnerRequest {
   string owner_id = 1 [(buf.validate.field).string.uuid = true];
-  uint32 page_size = 2 [(buf.validate.field).uint32 = {gt: 0, lte: 1000}];
+  // 0 = server default; buf breaking не ловит gt:0 как contract break.
+  uint32 page_size = 2 [(buf.validate.field).uint32.lte = 1000];
   string page_token = 3;
 }
 
@@ -96,7 +97,8 @@ message ListMediaByOwnerResponse {
 
 message GetDownloadURLRequest {
   string media_id = 1 [(buf.validate.field).string.uuid = true];
-  string variant = 2 [(buf.validate.field).string = {in: ["original", "thumb", "r_720", "r_360", "preview"]}];
+  // Пустая строка допустима: handler подставляет original.
+  string variant = 2;
 }
 
 message GetDownloadURLResponse {
@@ -106,7 +108,8 @@ message GetDownloadURLResponse {
 
 message DownloadStreamRequest {
   string media_id = 1 [(buf.validate.field).string.uuid = true];
-  string variant = 2 [(buf.validate.field).string = {in: ["original", "thumb", "r_720", "r_360", "preview"]}];
+  // Пустая строка допустима: handler подставляет original.
+  string variant = 2;
 }
 
 message DownloadChunk {

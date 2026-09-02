@@ -18,7 +18,7 @@ func TestTokenInterceptor(t *testing.T) {
 	t.Parallel()
 
 	const token = "test-secret"
-	ic := TokenInterceptor(token)
+	ic := TokenInterceptor(true, token)
 	okHandler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
 
 	t.Run("valid bearer token", func(t *testing.T) {
@@ -59,6 +59,14 @@ func TestTokenInterceptor(t *testing.T) {
 		_, err := ic(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/grpc.health.v1.Health/Check"}, okHandler)
 		if err != nil {
 			t.Fatalf("health check should bypass auth: %v", err)
+		}
+	})
+
+	t.Run("disabled skips auth", func(t *testing.T) {
+		disabled := TokenInterceptor(false, token)
+		_, err := disabled(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/media.v1.MediaService/GetMedia"}, okHandler)
+		if err != nil {
+			t.Fatalf("disabled auth should allow request: %v", err)
 		}
 	})
 }
@@ -137,6 +145,26 @@ func TestValidationInterceptor(t *testing.T) {
 		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("allows empty variant", func(t *testing.T) {
+		req := &mediav1.GetDownloadURLRequest{MediaId: uuid.NewString(), Variant: ""}
+		_, err := ic(context.Background(), req, &grpc.UnaryServerInfo{FullMethod: "/media.v1.MediaService/GetDownloadURL"},
+			func(context.Context, any) (any, error) { return "ok", nil },
+		)
+		if err != nil {
+			t.Fatalf("empty variant must be allowed: %v", err)
+		}
+	})
+
+	t.Run("allows zero page_size", func(t *testing.T) {
+		req := &mediav1.ListMediaByOwnerRequest{OwnerId: uuid.NewString(), PageSize: 0}
+		_, err := ic(context.Background(), req, &grpc.UnaryServerInfo{FullMethod: "/media.v1.MediaService/ListMediaByOwner"},
+			func(context.Context, any) (any, error) { return "ok", nil },
+		)
+		if err != nil {
+			t.Fatalf("zero page_size must be allowed: %v", err)
 		}
 	})
 }

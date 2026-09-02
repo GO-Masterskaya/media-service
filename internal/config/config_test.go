@@ -15,6 +15,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.GRPCAddr != ":9090" {
 		t.Errorf("GRPCAddr: want :9090, got %s", cfg.GRPCAddr)
 	}
+	if cfg.HTTPAddr != ":8080" {
+		t.Errorf("HTTPAddr: want :8080, got %s", cfg.HTTPAddr)
+	}
+	if !cfg.GRPCAuthEnabled {
+		t.Error("GRPCAuthEnabled: want true by default")
+	}
 	if cfg.ShutdownTimeout != 30*time.Second {
 		t.Errorf("ShutdownTimeout: want 30s, got %s", cfg.ShutdownTimeout)
 	}
@@ -26,6 +32,18 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.WorkerConcurrency != 2 {
 		t.Errorf("WorkerConcurrency: want 2, got %d", cfg.WorkerConcurrency)
+	}
+}
+
+func TestLoadAuthTokenRequiredWhenEnabled(t *testing.T) {
+	t.Setenv("GRPC_AUTH_ENABLED", "true")
+	t.Setenv("GRPC_AUTH_TOKEN", "")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected validation error for empty GRPC_AUTH_TOKEN")
+	}
+	if !strings.Contains(err.Error(), "GRPC_AUTH_TOKEN") {
+		t.Errorf("error should mention GRPC_AUTH_TOKEN, got: %v", err)
 	}
 }
 

@@ -26,7 +26,7 @@ func TestHealthServer_SetServingStatus(t *testing.T) {
 func TestHTTPHealthHandlers_Livez(t *testing.T) {
 	t.Parallel()
 
-	mux := HTTPHealthHandlers(nil)
+	mux := HTTPHealthHandlers(nil, NewHealthServer(nil))
 	req := httptest.NewRequest(http.MethodGet, "/livez", nil)
 	rec := httptest.NewRecorder()
 
@@ -37,5 +37,26 @@ func TestHTTPHealthHandlers_Livez(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != `{"status":"ok"}` {
 		t.Fatalf("got body %q", body)
+	}
+}
+
+func TestHTTPHealthHandlers_ReadyzRespectsDrain(t *testing.T) {
+	t.Parallel()
+
+	health := NewHealthServer(nil)
+	mux := HTTPHealthHandlers(nil, health)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 while serving", rec.Code)
+	}
+
+	health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got status %d, want 503 after drain", rec.Code)
 	}
 }

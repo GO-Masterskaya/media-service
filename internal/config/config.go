@@ -19,9 +19,10 @@ import (
 // Дефолты заданы через тег env-default; env переопределяет их.
 type Config struct {
 	// gRPC
-	GRPCAddr      string `env:"GRPC_ADDR"          env-default:":9090"`
-	HTTPAddr      string `env:"HTTP_ADDR"          env-default:":8080"`
-	GRPCAuthToken string `env:"GRPC_AUTH_TOKEN"    env-default:"change-me"`
+	GRPCAddr        string `env:"GRPC_ADDR"           env-default:":9090"`
+	HTTPAddr        string `env:"HTTP_ADDR"           env-default:":8080"`
+	GRPCAuthEnabled bool   `env:"GRPC_AUTH_ENABLED"   env-default:"true"`
+	GRPCAuthToken   string `env:"GRPC_AUTH_TOKEN"     env-default:"change-me"`
 
 	// Upload
 	MaxUploadBytes int64    `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
@@ -51,6 +52,8 @@ type Config struct {
 	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
 
 	// Limits
+	// MAX_CONCURRENT_STREAMS — прикладной лимит одновременных upload/download
+	// стримов per-caller (#21). Не путать с grpc.MaxConcurrentStreams (HTTP/2).
 	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
 	MaxConcurrentStreams int `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
 
@@ -113,6 +116,7 @@ func (c *Config) String() string {
 	b.WriteString("Config{")
 	fmt.Fprintf(&b, "GRPCAddr:%q, ", c.GRPCAddr)
 	fmt.Fprintf(&b, "HTTPAddr:%q, ", c.HTTPAddr)
+	fmt.Fprintf(&b, "GRPCAuthEnabled:%v, ", c.GRPCAuthEnabled)
 	fmt.Fprintf(&b, "MaxUploadBytes:%d, ", c.MaxUploadBytes)
 	fmt.Fprintf(&b, "MIMEAllowlist:%v, ", c.MIMEAllowlist)
 	fmt.Fprintf(&b, "WorkerConcurrency:%d, ", c.WorkerConcurrency)

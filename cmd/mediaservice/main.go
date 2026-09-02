@@ -173,14 +173,11 @@ func main() {
 		)
 	}
 
-	// 9. gRPC server с цепочкой interceptors
-	maxRecvBytes := int(cfg.MaxUploadBytes)
-	if maxRecvBytes <= 0 {
-		maxRecvBytes = 4 << 20
-	}
+	// 9. gRPC server с цепочкой interceptors.
+	// MaxRecvMsgSize — лимит одного protobuf-сообщения (чанк), не всего upload.
+	const maxRecvMsgSize = 16 << 20 // 16 MiB
 	grpcServer := grpc.NewServer(
-		grpc.MaxRecvMsgSize(maxRecvBytes),
-		grpc.MaxConcurrentStreams(uint32(cfg.MaxConcurrentStreams)),
+		grpc.MaxRecvMsgSize(maxRecvMsgSize),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 15 * time.Minute,
 			Time:              5 * time.Minute,
@@ -193,13 +190,13 @@ func main() {
 		grpc.ChainUnaryInterceptor(
 			api.RecoveryInterceptor(),
 			api.CorrelationIDInterceptor(),
-			api.TokenInterceptor(cfg.GRPCAuthToken),
+			api.TokenInterceptor(cfg.GRPCAuthEnabled, cfg.GRPCAuthToken),
 			api.ValidationInterceptor(validator),
 		),
 		grpc.ChainStreamInterceptor(
 			api.RecoveryStreamInterceptor(),
 			api.CorrelationIDStreamInterceptor(),
-			api.TokenStreamInterceptor(cfg.GRPCAuthToken),
+			api.TokenStreamInterceptor(cfg.GRPCAuthEnabled, cfg.GRPCAuthToken),
 			api.ValidationStreamInterceptor(validator),
 		),
 	)
@@ -213,16 +210,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Ошибки Serve/ListenAndServe не вызывают os.Exit из горутин —
+	// отменяем root ctx и идём в единый shutdown path.
+	fatalErr := make(chan error, 2)
+
 	go func() {
 		slog.Info("grpc server listening", "addr", cfg.GRPCAddr)
 		if err := grpcServer.Serve(grpcLis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			slog.Error("grpc serve", "error", err)
-			os.Exit(1)
+			fatalErr <- fmt.Errorf("grpc serve: %w", err)
 		}
 	}()
 
-	// HTTP health server
-	healthMux := api.HTTPHealthHandlers(pool)
+	// HTTP health server (readyz разделяет drain-флаг с gRPC health).
+	healthMux := api.HTTPHealthHandlers(pool, healthServer)
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           healthMux,
@@ -231,8 +231,7 @@ func main() {
 	go func() {
 		slog.Info("http health server listening", "addr", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("http health server", "error", err)
-			os.Exit(1)
+			fatalErr <- fmt.Errorf("http health server: %w", err)
 		}
 	}()
 
@@ -299,9 +298,15 @@ func main() {
 
 	slog.Info("all components started successfully", "engine_owner", ownerID)
 
-	// 11. Ждём сигнала завершения.
-	<-ctx.Done()
-	slog.Info("shutdown signal received")
+	// 11. Ждём сигнала завершения или фатальной ошибки Serve.
+	var serveFatal error
+	select {
+	case <-ctx.Done():
+		slog.Info("shutdown signal received")
+	case serveFatal = <-fatalErr:
+		slog.Error("server failed", "error", serveFatal)
+		stop()
+	}
 
 	// 12. Graceful shutdown с дедлайном из config.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -311,8 +316,20 @@ func main() {
 	go func() {
 		defer close(shutdownDone)
 
+		// Сначала NOT_SERVING (gRPC + /readyz), затем окно для LB, потом drain.
 		healthServer.SetServingStatus("media.v1.MediaService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+
+		drainWindow := 2 * time.Second
+		if cfg.ShutdownTimeout < 4*time.Second {
+			drainWindow = cfg.ShutdownTimeout / 2
+		}
+		timer := time.NewTimer(drainWindow)
+		select {
+		case <-timer.C:
+		case <-shutdownCtx.Done():
+			timer.Stop()
+		}
 
 		grpcStopped := make(chan struct{})
 		go func() {
@@ -320,16 +337,17 @@ func main() {
 			close(grpcStopped)
 		}()
 
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("http shutdown", "error", err)
-		}
-
 		select {
 		case <-grpcStopped:
 			slog.Info("grpc server stopped gracefully")
 		case <-shutdownCtx.Done():
 			slog.Warn("grpc graceful stop timeout, forcing stop")
 			grpcServer.Stop()
+		}
+
+		// HTTP гасим после gRPC drain, чтобы /readyz оставался доступен в окне LB.
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("http shutdown", "error", err)
 		}
 
 		var wg sync.WaitGroup
@@ -392,6 +410,10 @@ func main() {
 
 	select {
 	case <-shutdownDone:
+		if serveFatal != nil {
+			slog.Error("media service stopped after server failure", "error", serveFatal)
+			os.Exit(1)
+		}
 		slog.Info("media service stopped gracefully")
 	case <-shutdownCtx.Done():
 		if shutdownCtx.Err() == context.DeadlineExceeded {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 
 	"buf.build/go/protovalidate"
 	"google.golang.org/grpc"
@@ -20,7 +21,11 @@ func RecoveryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("panic recovered", "method", info.FullMethod, "panic", r)
+				slog.Error("panic recovered",
+					"method", info.FullMethod,
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
 				err = status.Error(codes.Internal, "internal error")
 			}
 		}()
@@ -33,7 +38,11 @@ func RecoveryStreamInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("panic recovered", "method", info.FullMethod, "panic", r)
+				slog.Error("panic recovered",
+					"method", info.FullMethod,
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
 				err = status.Error(codes.Internal, "internal error")
 			}
 		}()
@@ -42,7 +51,6 @@ func RecoveryStreamInterceptor() grpc.StreamServerInterceptor {
 }
 
 // CorrelationIDInterceptor извлекает x-correlation-id из metadata или генерирует новый UUID.
-// Кладёт значение в context, прокидывает в ответные заголовки и логирует старт/финиш RPC.
 func CorrelationIDInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		cid := extractOrGenerateCID(ctx)
@@ -71,11 +79,11 @@ func CorrelationIDStreamInterceptor() grpc.StreamServerInterceptor {
 	}
 }
 
-// TokenInterceptor проверяет authorization против ожидаемого GRPC_AUTH_TOKEN.
-// Health RPC пропускаются без проверки — для k8s/load-balancer probes.
-func TokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
+// TokenInterceptor проверяет authorization против ожидаемого токена, если enabled.
+// Health RPC пропускаются без проверки. При enabled=false — no-op.
+func TokenInterceptor(enabled bool, expectedToken string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if isHealthMethod(info.FullMethod) {
+		if !enabled || isHealthMethod(info.FullMethod) {
 			return handler(ctx, req)
 		}
 		token := extractToken(ctx)
@@ -88,9 +96,9 @@ func TokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
 }
 
 // TokenStreamInterceptor — для streaming RPC.
-func TokenStreamInterceptor(expectedToken string) grpc.StreamServerInterceptor {
+func TokenStreamInterceptor(enabled bool, expectedToken string) grpc.StreamServerInterceptor {
 	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if isHealthMethod(info.FullMethod) {
+		if !enabled || isHealthMethod(info.FullMethod) {
 			return handler(srv, stream)
 		}
 		token := extractToken(stream.Context())

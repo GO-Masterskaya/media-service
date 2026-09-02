@@ -634,10 +634,11 @@ func (x *GetMediaRequest) GetMediaId() string {
 }
 
 type ListMediaByOwnerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	PageSize      uint32                 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
-	PageToken     string                 `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	// 0 = server default; buf breaking не ловит gt:0 как contract break.
+	PageSize      uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -746,9 +747,10 @@ func (x *ListMediaByOwnerResponse) GetNextPageToken() string {
 }
 
 type GetDownloadURLRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MediaId       string                 `protobuf:"bytes,1,opt,name=media_id,json=mediaId,proto3" json:"media_id,omitempty"`
-	Variant       string                 `protobuf:"bytes,2,opt,name=variant,proto3" json:"variant,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	MediaId string                 `protobuf:"bytes,1,opt,name=media_id,json=mediaId,proto3" json:"media_id,omitempty"`
+	// Пустая строка допустима: handler подставляет original.
+	Variant       string `protobuf:"bytes,2,opt,name=variant,proto3" json:"variant,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -850,9 +852,10 @@ func (x *GetDownloadURLResponse) GetExpiresAt() *timestamppb.Timestamp {
 }
 
 type DownloadStreamRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MediaId       string                 `protobuf:"bytes,1,opt,name=media_id,json=mediaId,proto3" json:"media_id,omitempty"`
-	Variant       string                 `protobuf:"bytes,2,opt,name=variant,proto3" json:"variant,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	MediaId string                 `protobuf:"bytes,1,opt,name=media_id,json=mediaId,proto3" json:"media_id,omitempty"`
+	// Пустая строка допустима: handler подставляет original.
+	Variant       string `protobuf:"bytes,2,opt,name=variant,proto3" json:"variant,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1129,13 +1132,13 @@ const file_proto_media_v1_media_proto_rawDesc = "" +
 	"\rUploadRequest\x12*\n" +
 	"\x04init\x18\x01 \x01(\v2\x14.media.v1.UploadInitH\x00R\x04init\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
-	"\apayload\"\xbd\x02\n" +
+	"\apayload\"\xab\x02\n" +
 	"\n" +
 	"UploadInit\x12#\n" +
-	"\bowner_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\aownerId\x12#\n" +
-	"\bfilename\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\bfilename\x12\x1b\n" +
-	"\x04mime\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x04mime\x12,\n" +
-	"\rexpected_size\x18\x04 \x01(\x04B\a\xbaH\x042\x02 \x00R\fexpectedSize\x120\n" +
+	"\bowner_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\aownerId\x12\x1a\n" +
+	"\bfilename\x18\x02 \x01(\tR\bfilename\x12\x1b\n" +
+	"\x04mime\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x04mime\x12#\n" +
+	"\rexpected_size\x18\x04 \x01(\x04R\fexpectedSize\x120\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x0eidempotencyKey\x12;\n" +
 	"\n" +
 	"processing\x18\x06 \x01(\v2\x1b.media.v1.ProcessingOptionsR\n" +
@@ -1168,26 +1171,25 @@ const file_proto_media_v1_media_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\"6\n" +
 	"\x0fGetMediaRequest\x12#\n" +
-	"\bmedia_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\amediaId\"\x86\x01\n" +
+	"\bmedia_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\amediaId\"\x84\x01\n" +
 	"\x17ListMediaByOwnerRequest\x12#\n" +
-	"\bowner_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\aownerId\x12'\n" +
-	"\tpage_size\x18\x02 \x01(\rB\n" +
-	"\xbaH\a*\x05\x18\xe8\a \x00R\bpageSize\x12\x1d\n" +
+	"\bowner_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\aownerId\x12%\n" +
+	"\tpage_size\x18\x02 \x01(\rB\b\xbaH\x05*\x03\x18\xe8\aR\bpageSize\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x03 \x01(\tR\tpageToken\"i\n" +
 	"\x18ListMediaByOwnerResponse\x12%\n" +
 	"\x05items\x18\x01 \x03(\v2\x0f.media.v1.MediaR\x05items\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x85\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"V\n" +
 	"\x15GetDownloadURLRequest\x12#\n" +
-	"\bmedia_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\amediaId\x12G\n" +
-	"\avariant\x18\x02 \x01(\tB-\xbaH*r(R\boriginalR\x05thumbR\x05r_720R\x05r_360R\apreviewR\avariant\"e\n" +
+	"\bmedia_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\amediaId\x12\x18\n" +
+	"\avariant\x18\x02 \x01(\tR\avariant\"e\n" +
 	"\x16GetDownloadURLResponse\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x129\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\x85\x01\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"V\n" +
 	"\x15DownloadStreamRequest\x12#\n" +
-	"\bmedia_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\amediaId\x12G\n" +
-	"\avariant\x18\x02 \x01(\tB-\xbaH*r(R\boriginalR\x05thumbR\x05r_720R\x05r_360R\apreviewR\avariant\"#\n" +
+	"\bmedia_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\amediaId\x12\x18\n" +
+	"\avariant\x18\x02 \x01(\tR\avariant\"#\n" +
 	"\rDownloadChunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\"9\n" +
 	"\x12DeleteMediaRequest\x12#\n" +
