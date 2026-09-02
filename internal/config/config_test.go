@@ -132,3 +132,95 @@ func TestConfigLogValue(t *testing.T) {
 		t.Errorf("unexpected value: %s", val.String())
 	}
 }
+func TestValidate_RetentionKafkaEnabled(t *testing.T) {
+	base := Config{
+		GRPCAddr:               ":9090",
+		MaxUploadBytes:         1,
+		MIMEAllowlist:          []string{"image/*"},
+		WorkerConcurrency:      1,
+		QueueBuffer:            1,
+		JobTimeout:             time.Second,
+		JobLease:               time.Second,
+		PollInterval:           time.Second,
+		MaxJobAttempts:         1,
+		FFMPEGTimeout:          time.Second,
+		ShutdownTimeout:        time.Second,
+		Rendition:              720,
+		ThumbSecond:            1,
+		PresignTTL:             time.Second,
+		TTLReapInterval:        time.Second,
+		RateLimitRPS:           50,
+		MaxConcurrentStreams:   8,
+		UploadTempDir:          "/tmp",
+		UploadReserveBytes:     0,
+		UploadStaleGrace:       time.Hour,
+		UploadCleanupInterval:  time.Hour,
+		PostgresDSN:            "postgres://u:p@h:5432/db",
+		PostgresConnectTimeout: time.Second,
+		PostgresQueryTimeout:   time.Second,
+		MinIOEndpoint:          "minio:9000",
+		MinIOAccessKey:         "k",
+		MinIOSecretKey:         "s",
+		MinIOBucket:            "b",
+		KafkaEnabled:           true,
+		KafkaBrokers:           []string{"kafka:9092"},
+		KafkaTopic:             "t",
+		KafkaDLQTopic:          "d",
+		KafkaGroup:             "g",
+		RetentionInterval:      time.Hour,
+		RetentionOlderThan:     168 * time.Hour,
+		RetentionBatchSize:     1000,
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:   "valid retention",
+			mutate: func(c *Config) {},
+		},
+		{
+			name: "older_than too small",
+			mutate: func(c *Config) {
+				c.RetentionOlderThan = time.Second
+			},
+			wantErr: "RETENTION_OLDER_THAN must be >= 24h",
+		},
+		{
+			name: "interval zero",
+			mutate: func(c *Config) {
+				c.RetentionInterval = 0
+			},
+			wantErr: "RETENTION_INTERVAL must be > 0",
+		},
+		{
+			name: "batch zero",
+			mutate: func(c *Config) {
+				c.RetentionBatchSize = 0
+			},
+			wantErr: "RETENTION_BATCH_SIZE must be > 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			tt.mutate(&cfg)
+			err := cfg.validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}

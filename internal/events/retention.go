@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 
 	"mediaservice/internal/repo"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type ProcessedEventCleaner interface {
@@ -32,12 +34,42 @@ type processedEventCleaner struct {
 	wg       sync.WaitGroup
 
 	tickRunning atomic.Bool
+	metrics     *cleanerMetrics
+}
+
+type cleanerMetrics struct {
+	runsTotal    prometheus.Counter
+	deletedTotal prometheus.Counter
+	errorsTotal  prometheus.Counter
+}
+
+func newCleanerMetrics(reg prometheus.Registerer) *cleanerMetrics {
+	if reg == nil {
+		reg = prometheus.DefaultRegisterer
+	}
+	m := &cleanerMetrics{
+		runsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "media", Subsystem: "retention", Name: "cleaner_runs_total",
+			Help: "Total number of retention cleaner runs.",
+		}),
+		deletedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "media", Subsystem: "retention", Name: "cleaner_deleted_total",
+			Help: "Total number of processed_event records deleted by retention cleaner.",
+		}),
+		errorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "media", Subsystem: "retention", Name: "cleaner_errors_total",
+			Help: "Total number of retention cleaner errors.",
+		}),
+	}
+	reg.MustRegister(m.runsTotal, m.deletedTotal, m.errorsTotal)
+	return m
 }
 
 func NewProcessedEventCleaner(
 	repo repo.ProcessedEventRepo,
 	cfg RetentionConfig,
 	log *slog.Logger,
+	reg prometheus.Registerer,
 ) ProcessedEventCleaner {
 	if log == nil {
 		log = slog.Default()
@@ -51,11 +83,18 @@ func NewProcessedEventCleaner(
 	if cfg.BatchLimit <= 0 {
 		cfg.BatchLimit = 1000
 	}
+	const kafkaRetentionHint = 7 * 24 * time.Hour // typical Kafka retention
+	if cfg.OlderThan < kafkaRetentionHint {
+		log.Warn("RETENTION_OLDER_THAN is less than typical Kafka topic retention (7d); "+
+			"if Kafka redelivers after record deletion, side-effect will execute again",
+			"older_than", cfg.OlderThan)
+	}
 	return &processedEventCleaner{
-		repo:   repo,
-		cfg:    cfg,
-		log:    log,
-		stopCh: make(chan struct{}),
+		repo:    repo,
+		cfg:     cfg,
+		log:     log,
+		stopCh:  make(chan struct{}),
+		metrics: newCleanerMetrics(reg),
 	}
 }
 
@@ -85,6 +124,10 @@ func (c *processedEventCleaner) Start(ctx context.Context) {
 			c.wg.Add(1)
 			go func() {
 				defer c.wg.Done()
+				if !c.tickRunning.CompareAndSwap(false, true) {
+					c.log.Warn("retention initial tick skipped: previous tick still running")
+					return
+				}
 				defer c.tickRunning.Store(false)
 				c.runOnce(ctx)
 			}()
@@ -113,6 +156,7 @@ func (c *processedEventCleaner) Shutdown(ctx context.Context) error {
 }
 
 func (c *processedEventCleaner) runOnce(ctx context.Context) {
+	c.metrics.runsTotal.Inc()
 	cutoff := time.Now().UTC().Add(-c.cfg.OlderThan)
 	var totalDeleted int64
 
@@ -141,7 +185,7 @@ func (c *processedEventCleaner) runOnce(ctx context.Context) {
 			break
 		}
 	}
-
+	c.metrics.deletedTotal.Add(float64(totalDeleted))
 	if totalDeleted > 0 {
 		c.log.Info("retention cleanup completed",
 			slog.Int64("deleted", totalDeleted),

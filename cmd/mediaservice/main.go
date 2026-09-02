@@ -158,6 +158,7 @@ func main() {
 				BatchLimit: cfg.RetentionBatchSize,
 			},
 			slog.Default(),
+			prometheus.DefaultRegisterer,
 		)
 		go cleaner.Start(ctx)
 

@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"mediaservice/internal/repo"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type batchingCleanerRepo struct {
@@ -97,6 +99,7 @@ func TestCleaner_RunOnce_MultipleBatches(t *testing.T) {
 			BatchLimit: 1000,
 		},
 		testLog(),
+		prometheus.NewRegistry(),
 	)
 
 	c.(*processedEventCleaner).runOnce(context.Background())
@@ -118,6 +121,7 @@ func TestCleaner_RunOnce_ZeroRecords(t *testing.T) {
 			BatchLimit: 1000,
 		},
 		testLog(),
+		prometheus.NewRegistry(),
 	)
 
 	c.(*processedEventCleaner).runOnce(context.Background())
@@ -140,6 +144,7 @@ func TestCleaner_RunOnce_ErrorStopsLoop(t *testing.T) {
 			BatchLimit: 1000,
 		},
 		testLog(),
+		prometheus.NewRegistry(),
 	)
 
 	c.(*processedEventCleaner).runOnce(context.Background())
@@ -173,6 +178,7 @@ func TestCleaner_ContextCancel_BetweenBatches(t *testing.T) {
 			BatchLimit: 1000,
 		},
 		testLog(),
+		prometheus.NewRegistry(),
 	)
 
 	c.(*processedEventCleaner).runOnce(ctx)

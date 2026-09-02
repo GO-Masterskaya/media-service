@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 )
 
 // validate проверяет, что все параметры корректны.
@@ -107,8 +108,8 @@ func (c *Config) validate() error {
 		if c.RetentionInterval <= 0 {
 			return fmt.Errorf("RETENTION_INTERVAL must be > 0, got %s", c.RetentionInterval)
 		}
-		if c.RetentionOlderThan <= 0 {
-			return fmt.Errorf("RETENTION_OLDER_THAN must be > 0, got %s", c.RetentionOlderThan)
+		if c.RetentionOlderThan < 24*time.Hour {
+			return fmt.Errorf("RETENTION_OLDER_THAN must be >= 24h, got %s (risk of duplicate side-effect on redelivery)", c.RetentionOlderThan)
 		}
 		if c.RetentionBatchSize <= 0 {
 			return fmt.Errorf("RETENTION_BATCH_SIZE must be > 0, got %d", c.RetentionBatchSize)
