@@ -104,6 +104,12 @@ func (s *Service) DeleteByOwner(ctx context.Context, ownerID uuid.UUID, batchSiz
 
 	deleted := 0
 	for {
+		select {
+		case <-ctx.Done():
+			return deleted, ctx.Err()
+		default:
+		}
+
 		ids, err := s.mediaRepo.ListDeletableByOwner(ctx, ownerID, batchSize)
 		if err != nil {
 			return deleted, fmt.Errorf("list deletable by owner: %w", err)
@@ -114,6 +120,12 @@ func (s *Service) DeleteByOwner(ctx context.Context, ownerID uuid.UUID, batchSiz
 
 		progressed := 0
 		for _, id := range ids {
+			select {
+			case <-ctx.Done():
+				return deleted, ctx.Err()
+			default:
+			}
+
 			if err := s.deleteByID(ctx, id, true); err != nil {
 				s.log.Error("delete by owner: item failed",
 					slog.Any("error", err),

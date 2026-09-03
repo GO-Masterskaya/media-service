@@ -43,9 +43,6 @@ type Config struct {
 	// удалять — рекомендуется на первый выкат reaper'а (ревью PR #13/#17).
 	TTLReapDryRun bool `env:"TTL_REAP_DRY_RUN"      env-default:"false"`
 
-	// Delete
-	DeleteBatchSize int `env:"DELETE_BATCH_SIZE" env-default:"100"`
-
 	// Upload temp storage
 	UploadTempDir         string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
 	UploadReserveBytes    int64         `env:"UPLOAD_RESERVE_BYTES"  env-default:"104857600"` // 100MB
@@ -126,7 +123,6 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
 	fmt.Fprintf(&b, "TTLReapBatchSize:%d, ", c.TTLReapBatchSize)
 	fmt.Fprintf(&b, "TTLReapDryRun:%t, ", c.TTLReapDryRun)
-	fmt.Fprintf(&b, "DeleteBatchSize:%d, ", c.DeleteBatchSize)
 	fmt.Fprintf(&b, "UploadTempDir:%q, ", c.UploadTempDir)
 	fmt.Fprintf(&b, "UploadReserveBytes:%d, ", c.UploadReserveBytes)
 	fmt.Fprintf(&b, "UploadStaleGrace:%s, ", c.UploadStaleGrace)

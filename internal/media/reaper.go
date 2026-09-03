@@ -170,6 +170,9 @@ func (r *Reaper) runOnce(ctx context.Context) {
 		case <-ctx.Done():
 			r.log.Info("reaper: interrupted by shutdown")
 			return
+		case <-r.stopCh:
+			r.log.Info("reaper: interrupted by shutdown")
+			return
 		default:
 		}
 
@@ -184,9 +187,13 @@ func (r *Reaper) runOnce(ctx context.Context) {
 		}
 		r.scannedCounter.Add(float64(len(ids)))
 
+		progressed := 0
 		for _, id := range ids {
 			select {
 			case <-ctx.Done():
+				r.log.Info("reaper: interrupted by shutdown")
+				return
+			case <-r.stopCh:
 				r.log.Info("reaper: interrupted by shutdown")
 				return
 			default:
@@ -211,8 +218,16 @@ func (r *Reaper) runOnce(ctx context.Context) {
 				continue
 			}
 			r.deletedCounter.Inc()
+			progressed++
 		}
 
+		if progressed == 0 {
+			// Ни одна запись за этот проход не сдвинулась — dry-run (никогда
+			// не клеймит) или устойчивая ошибка MarkDeleting/БД. ListExpiredIDs
+			// вернула бы ту же страницу снова — прекращаем, чтобы не уйти в
+			// бесконечный цикл (см. ревью PR #13/#17).
+			return
+		}
 		if len(ids) < r.cfg.BatchSize {
 			return // последняя (неполная) страница
 		}

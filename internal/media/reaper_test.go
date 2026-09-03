@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -131,6 +132,109 @@ func TestReaper_DryRun_DoesNotDelete(t *testing.T) {
 	r.runOnce(context.Background())
 
 	assert.False(t, markDeletingCalled, "dry-run must not touch any record, only report what it would delete")
+}
+
+// TestReaper_DryRun_FullPage_DoesNotLoopForever — прямая регрессия из
+// третьего раунда ревью PR #13/#17: в dry-run ничего не клеймится, поэтому
+// ListExpiredIDs при полной странице возвращала бы её снова и снова —
+// без guard'а на отсутствие прогресса цикл в runOnce был бесконечным.
+func TestReaper_DryRun_FullPage_DoesNotLoopForever(t *testing.T) {
+	callCount := 0
+	mr := &svcStubMediaRepo{
+		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			callCount++
+			ids := make([]uuid.UUID, limit)
+			for i := range ids {
+				ids[i] = uuid.New()
+			}
+			return ids, nil // всегда ПОЛНАЯ страница — состояние не меняется
+		},
+	}
+	svc := newTestSvc(mr, &svcStubStorage{})
+	r := NewReaperWithConfig(svc, ReaperConfig{BatchSize: 5, DryRun: true}, svcTestLogger())
+
+	done := make(chan struct{})
+	go func() {
+		r.runOnce(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.Equal(t, 1, callCount, "dry-run must process exactly one page and stop, not loop on an unchanging page")
+	case <-time.After(2 * time.Second):
+		t.Fatal("runOnce did not return — infinite loop regression (dry-run never claims, page never changes)")
+	}
+}
+
+// TestReaper_PersistentMarkDeletingError_DoesNotLoopForever — тот же класс
+// регрессии: устойчивая ошибка MarkDeleting (например, БД недоступна) тоже
+// не меняет состояние записей, и без guard'а страница вычитывалась бы заново
+// бесконечно.
+func TestReaper_PersistentMarkDeletingError_DoesNotLoopForever(t *testing.T) {
+	callCount := 0
+	mr := &svcStubMediaRepo{
+		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			callCount++
+			ids := make([]uuid.UUID, limit)
+			for i := range ids {
+				ids[i] = uuid.New()
+			}
+			return ids, nil
+		},
+		markDeletingErr: errors.New("db unavailable"),
+	}
+	svc := newTestSvc(mr, &svcStubStorage{})
+	r := NewReaper(svc, 0, 5, svcTestLogger())
+
+	done := make(chan struct{})
+	go func() {
+		r.runOnce(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.Equal(t, 1, callCount, "a page where every MarkDeleting call fails must not be re-fetched forever")
+	case <-time.After(2 * time.Second):
+		t.Fatal("runOnce did not return — infinite loop regression (persistent MarkDeleting failure)")
+	}
+}
+
+// TestReaper_Shutdown_InterruptsRunOnce — регрессия из третьего раунда
+// ревью: runOnce проверял только ctx.Done(), не stopCh, так что Shutdown без
+// одновременной отмены контекста не прерывал текущий проход.
+func TestReaper_Shutdown_InterruptsRunOnce(t *testing.T) {
+	mr := &svcStubMediaRepo{
+		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			ids := make([]uuid.UUID, limit)
+			for i := range ids {
+				ids[i] = uuid.New()
+			}
+			return ids, nil // "бесконечный" backlog — всегда полная страница
+		},
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			return &repo.Media{ID: id, OwnerID: uuid.New()}, repo.ClaimTaken, nil
+		},
+	}
+	svc := newTestSvc(mr, &svcStubStorage{})
+	r := NewReaper(svc, 0, 5, svcTestLogger())
+
+	done := make(chan struct{})
+	go func() {
+		r.runOnce(context.Background()) // ctx НЕ отменяется — только Shutdown
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond) // дать runOnce пройти хотя бы одну страницу
+	require.NoError(t, r.Shutdown(context.Background()))
+
+	select {
+	case <-done:
+		// ок — runOnce прервался по stopCh
+	case <-time.After(2 * time.Second):
+		t.Fatal("runOnce did not stop after Shutdown — stopCh not checked")
+	}
 }
 
 // TestReaper_SkipsAlreadyClaimedRecord_NoDoubleCleanup — прямая регрессия из

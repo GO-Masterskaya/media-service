@@ -172,3 +172,40 @@ func TestDeleteByOwner_EmptySelection_ReturnsZero(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 }
+
+// TestDeleteByOwner_ContextCancelled_StopsPromptly — самостоятельно найденный
+// аналог бага из ревью reaper (progressed/stopCh): у DeleteByOwner не было ни
+// одной проверки ctx.Done() внутри цикла. Не бесконечный цикл (в конце концов
+// все вызовы начали бы падать по отменённому ctx и сработал бы progressed==0),
+// но лишняя, неотзывчивая на отмену работа. Тест фиксирует, что теперь
+// остановка происходит сразу на следующей записи, а не после целой страницы
+// гарантированно проваливающихся вызовов.
+func TestDeleteByOwner_ContextCancelled_StopsPromptly(t *testing.T) {
+	owner := uuid.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	processed := 0
+	mr := &svcStubMediaRepo{
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			processed++
+			if processed == 2 {
+				cancel() // отменяем сразу после второй успешно обработанной записи
+			}
+			return &repo.Media{ID: id, OwnerID: owner}, repo.ClaimTaken, nil
+		},
+		listDeletableByOwner: func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+			ids := make([]uuid.UUID, limit)
+			for i := range ids {
+				ids[i] = uuid.New()
+			}
+			return ids, nil // "бесконечный" backlog — без ctx-check ушли бы вглубь
+		},
+	}
+	svc := newTestSvc(mr, &svcStubStorage{})
+
+	n, err := svc.DeleteByOwner(ctx, owner, 5)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 2, n, "must stop right after the item that triggered cancellation, not process the rest of the page")
+}
