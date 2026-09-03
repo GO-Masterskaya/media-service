@@ -37,17 +37,19 @@ type processedEventCleaner struct {
 	metrics     *cleanerMetrics
 }
 
+var (
+	defaultCleanerMetrics     *cleanerMetrics
+	defaultCleanerMetricsOnce sync.Once
+)
+
 type cleanerMetrics struct {
 	runsTotal    prometheus.Counter
 	deletedTotal prometheus.Counter
 	errorsTotal  prometheus.Counter
 }
 
-func newCleanerMetrics(reg prometheus.Registerer) *cleanerMetrics {
-	if reg == nil {
-		reg = prometheus.DefaultRegisterer
-	}
-	m := &cleanerMetrics{
+func buildCleanerMetrics() *cleanerMetrics {
+	return &cleanerMetrics{
 		runsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "media", Subsystem: "retention", Name: "cleaner_runs_total",
 			Help: "Total number of retention cleaner runs.",
@@ -61,6 +63,21 @@ func newCleanerMetrics(reg prometheus.Registerer) *cleanerMetrics {
 			Help: "Total number of retention cleaner errors.",
 		}),
 	}
+}
+
+func newCleanerMetrics(reg prometheus.Registerer) *cleanerMetrics {
+	if reg == nil {
+		defaultCleanerMetricsOnce.Do(func() {
+			defaultCleanerMetrics = buildCleanerMetrics()
+			prometheus.DefaultRegisterer.MustRegister(
+				defaultCleanerMetrics.runsTotal,
+				defaultCleanerMetrics.deletedTotal,
+				defaultCleanerMetrics.errorsTotal,
+			)
+		})
+		return defaultCleanerMetrics
+	}
+	m := buildCleanerMetrics()
 	reg.MustRegister(m.runsTotal, m.deletedTotal, m.errorsTotal)
 	return m
 }
@@ -105,6 +122,11 @@ func (c *processedEventCleaner) Start(ctx context.Context) {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
+		if !c.tickRunning.CompareAndSwap(false, true) {
+			c.log.Warn("retention initial tick skipped: previous tick still running")
+			return
+		}
+		defer c.tickRunning.Store(false)
 		c.runOnce(ctx)
 	}()
 
