@@ -264,10 +264,12 @@ func main() {
 	slog.Info("shutdown signal received")
 
 	// 7. Graceful shutdown.
-	// budget: ShutdownTimeout на остановку компонентов + ещё ShutdownTimeout на
-	// ожидание воркеров перед pool.Close (чтобы os.Exit не срезал infra close).
+	// overallCtx = 2*ST (компоненты + Wait) + slack, чтобы os.Exit не срезал
+	// pool.Close/sto.Close в момент таймаута Wait. awaitEngineWorkers берёт
+	// остаток overallCtx, а не свежий Background-таймер.
+	const shutdownSlack = 5 * time.Second
 	shutdownTimeout := cfg.ShutdownTimeout
-	overallCtx, overallCancel := context.WithTimeout(context.Background(), 2*shutdownTimeout)
+	overallCtx, overallCancel := context.WithTimeout(context.Background(), 2*shutdownTimeout+shutdownSlack)
 	defer overallCancel()
 
 	shutdownCtx, cancel := context.WithTimeout(overallCtx, shutdownTimeout)
@@ -279,7 +281,7 @@ func main() {
 		defer close(shutdownDone)
 		// 8.1 Перестаём принимать новые соединения.
 		// Merge с #59: здесь же NOT_SERVING → drainWindow → затем этот блок;
-		// overallCtx должен покрывать drain + ShutdownTimeout + Wait budget.
+		// overallCtx должен покрывать drain + 2*ST + slack.
 
 		grpcStopped := make(chan struct{})
 		go func() {
@@ -294,8 +296,7 @@ func main() {
 			grpcServer.Stop()
 		}
 
-		// 8.2 Внутренние компоненты останавливаем параллельно:
-		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.
+		// 8.2 Внутренние компоненты останавливаем параллельно.
 		var wg sync.WaitGroup
 
 		wg.Add(1)
@@ -329,8 +330,11 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			uploadStore.Stop()
-			slog.Info("upload temp store stopped")
+			if err := uploadStore.StopContext(shutdownCtx); err != nil {
+				slog.Warn("upload temp store stop timed out", "error", err)
+			} else {
+				slog.Info("upload temp store stopped")
+			}
 		}()
 
 		wg.Add(1)
@@ -349,18 +353,26 @@ func main() {
 			// kafka.Shutdown(shutdownCtx)
 		}()
 
-		// Дождаться завершения стримов upload/download.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			//код Wait()'a стримов
 		}()
 
-		wg.Wait()
+		componentsDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(componentsDone)
+		}()
+		select {
+		case <-componentsDone:
+		case <-shutdownCtx.Done():
+			slog.Warn("component shutdown wait timed out; proceeding to engine wait / infra close",
+				"error", shutdownCtx.Err())
+		}
 
-		// После timeout Shutdown воркеры могут ещё работать — ждём их
-		// с отдельным бюджетом, затем всегда закрываем pool/storage.
-		awaitEngineWorkers(shutdownTimeout, engine.Wait, func() {
+		// Wait на остатке overallCtx, затем всегда закрываем pool/storage.
+		awaitEngineWorkers(overallCtx, engine.Wait, func() {
 			if dlqPublisher != nil {
 				if err := dlqPublisher.Close(); err != nil {
 					slog.Error("dlq publisher close", "error", err)
@@ -373,7 +385,7 @@ func main() {
 		})
 	}()
 
-	// 9. Дожидаемся остановки компонентов или истечения общего бюджета.
+	// 9. Дожидаемся остановки или истечения общего бюджета (с запасом).
 	select {
 	case <-shutdownDone:
 		slog.Info("media service stopped gracefully")
@@ -385,14 +397,15 @@ func main() {
 	}
 }
 
-// awaitEngineWorkers ждёт воркеров до waitFor, затем всегда вызывает closeInfra.
-// При таймауте Wait логирует и всё равно закрывает pool/storage (best-effort).
-func awaitEngineWorkers(waitFor time.Duration, wait func(context.Context) error, closeInfra func()) {
-	waitCtx, cancel := context.WithTimeout(context.Background(), waitFor)
-	defer cancel()
-	if err := wait(waitCtx); err != nil {
-		slog.Error("processing engine wait timeout; closing pool/storage best-effort while workers may still run",
+// awaitEngineWorkers ждёт воркеров в пределах ctx, затем всегда вызывает closeInfra.
+// При таймауте логирует, что in-flight jobs могут остаться в running до reaper.
+func awaitEngineWorkers(ctx context.Context, wait func(context.Context) error, closeInfra func()) {
+	if err := wait(ctx); err != nil {
+		slog.Error("processing engine wait timeout; closing pool/storage under live workers — "+
+			"in-flight jobs may stay running until lease reaper",
 			"error", err)
+	} else {
+		slog.Info("processing engine workers finished")
 	}
 	closeInfra()
 }

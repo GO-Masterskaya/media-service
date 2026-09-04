@@ -128,9 +128,11 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	return nil
 }
 
-// Stop останавливает движок без дедлайна (для тестов).
+// Stop останавливает движок с ограниченным дедлайном (для тестов / ручного вызова).
 func (e *Engine) Stop() {
-	_ = e.Shutdown(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = e.Shutdown(ctx)
 }
 
 // Wait блокирует до завершения всех worker/reaper горутин или до отмены ctx.

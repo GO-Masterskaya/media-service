@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ilyakaznacheev/cleanenv"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -137,49 +139,22 @@ func TestConfigLogValue(t *testing.T) {
 	}
 }
 
-// validConfigForValidate — явный литерал со всеми полями, которые трогает validate().
-// Sibling PR (#54/#59/#60) с похожим base должны дописывать новые поля сюда же / у себя.
-func validConfigForValidate() Config {
-	return Config{
-		GRPCAddr:               ":9090",
-		MaxUploadBytes:         1,
-		MIMEAllowlist:          []string{"image/*"},
-		WorkerConcurrency:      1,
-		QueueBuffer:            1,
-		JobTimeout:             time.Second,
-		JobLease:               time.Second,
-		PollInterval:           time.Second,
-		MaxJobAttempts:         1,
-		JobBackoffBase:         30 * time.Second,
-		JobBackoffMax:          10 * time.Minute,
-		JobBackoffJitter:       0.2,
-		JobReapBatchSize:       100,
-		FFMPEGTimeout:          time.Second,
-		ShutdownTimeout:        time.Second,
-		Rendition:              720,
-		ThumbSecond:            1,
-		PresignTTL:             time.Second,
-		TTLReapInterval:        time.Second,
-		RateLimitRPS:           50,
-		MaxConcurrentStreams:   8,
-		UploadTempDir:          "/tmp",
-		UploadReserveBytes:     0,
-		UploadStaleGrace:       time.Hour,
-		UploadCleanupInterval:  time.Hour,
-		PostgresDSN:            "postgres://u:p@h:5432/db",
-		PostgresConnectTimeout: time.Second,
-		PostgresQueryTimeout:   time.Second,
-		MinIOEndpoint:          "minio:9000",
-		MinIOAccessKey:         "k",
-		MinIOSecretKey:         "s",
-		MinIOBucket:            "b",
+// configFromDefaults читает Config через cleanenv env-default теги (без .env).
+// Тесты мутируют только проверяемое поле — новые обязательные параметры
+// из validate() не роняют чужие литералы.
+func configFromDefaults(t *testing.T) Config {
+	t.Helper()
+	var cfg Config
+	if err := cleanenv.ReadEnv(&cfg); err != nil {
+		t.Fatalf("cleanenv.ReadEnv defaults: %v", err)
 	}
+	return cfg
 }
 
 func TestValidate_JobReapBatchSize(t *testing.T) {
-	cfg := validConfigForValidate()
+	cfg := configFromDefaults(t)
 	if err := cfg.validate(); err != nil {
-		t.Fatalf("validConfigForValidate must pass validate: %v", err)
+		t.Fatalf("defaults must pass validate: %v", err)
 	}
 
 	cfg.JobReapBatchSize = 0
