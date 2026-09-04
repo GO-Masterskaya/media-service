@@ -27,6 +27,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WorkerConcurrency != 2 {
 		t.Errorf("WorkerConcurrency: want 2, got %d", cfg.WorkerConcurrency)
 	}
+	if cfg.JobReapBatchSize != 100 {
+		t.Errorf("JobReapBatchSize: want 100, got %d", cfg.JobReapBatchSize)
+	}
 }
 
 func TestLoadOverride(t *testing.T) {
@@ -76,6 +79,7 @@ func TestLoadProcessingValidationErrors(t *testing.T) {
 		{"JOB_LEASE", "0s", "JOB_LEASE"},
 		{"POLL_INTERVAL", "0s", "POLL_INTERVAL"},
 		{"JOB_MAX_ATTEMPTS", "0", "JOB_MAX_ATTEMPTS"},
+		{"JOB_REAP_BATCH_SIZE", "0", "JOB_REAP_BATCH_SIZE"},
 	}
 
 	for _, tt := range tests {
@@ -130,5 +134,60 @@ func TestConfigLogValue(t *testing.T) {
 	}
 	if !strings.HasPrefix(val.String(), "Config{") {
 		t.Errorf("unexpected value: %s", val.String())
+	}
+}
+
+// validConfigForValidate — явный литерал со всеми полями, которые трогает validate().
+// Sibling PR (#54/#59/#60) с похожим base должны дописывать новые поля сюда же / у себя.
+func validConfigForValidate() Config {
+	return Config{
+		GRPCAddr:               ":9090",
+		MaxUploadBytes:         1,
+		MIMEAllowlist:          []string{"image/*"},
+		WorkerConcurrency:      1,
+		QueueBuffer:            1,
+		JobTimeout:             time.Second,
+		JobLease:               time.Second,
+		PollInterval:           time.Second,
+		MaxJobAttempts:         1,
+		JobBackoffBase:         30 * time.Second,
+		JobBackoffMax:          10 * time.Minute,
+		JobBackoffJitter:       0.2,
+		JobReapBatchSize:       100,
+		FFMPEGTimeout:          time.Second,
+		ShutdownTimeout:        time.Second,
+		Rendition:              720,
+		ThumbSecond:            1,
+		PresignTTL:             time.Second,
+		TTLReapInterval:        time.Second,
+		RateLimitRPS:           50,
+		MaxConcurrentStreams:   8,
+		UploadTempDir:          "/tmp",
+		UploadReserveBytes:     0,
+		UploadStaleGrace:       time.Hour,
+		UploadCleanupInterval:  time.Hour,
+		PostgresDSN:            "postgres://u:p@h:5432/db",
+		PostgresConnectTimeout: time.Second,
+		PostgresQueryTimeout:   time.Second,
+		MinIOEndpoint:          "minio:9000",
+		MinIOAccessKey:         "k",
+		MinIOSecretKey:         "s",
+		MinIOBucket:            "b",
+	}
+}
+
+func TestValidate_JobReapBatchSize(t *testing.T) {
+	cfg := validConfigForValidate()
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validConfigForValidate must pass validate: %v", err)
+	}
+
+	cfg.JobReapBatchSize = 0
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for JobReapBatchSize=0")
+	}
+	if !strings.Contains(err.Error(), "JOB_REAP_BATCH_SIZE") {
+		t.Errorf("error should mention JOB_REAP_BATCH_SIZE, got: %v", err)
 	}
 }

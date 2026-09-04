@@ -396,6 +396,41 @@ func TestJobRepo(t *testing.T) {
 		}
 	})
 
+	t.Run("release on shutdown preserves last_error", func(t *testing.T) {
+		resetDB(t, pool)
+		mediaID := seedMedia(t, pool)
+		jobID := uuid.New()
+		const priorError = "temporary ffmpeg error"
+		_, err := pool.Exec(ctx, `
+			INSERT INTO processing_jobs (id, media_id, type, status, locked_by, lease_until, attempts, last_error)
+			VALUES ($1, $2, 'thumbnail', 'running', 'worker-1', now() + interval '30 seconds', 1, $3)
+		`, jobID, mediaID, priorError)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := jobs.ReleaseForShutdown(ctx, jobID, "worker-1"); err != nil {
+			t.Fatal(err)
+		}
+
+		var status string
+		var attempts int
+		var lastError *string
+		err = pool.QueryRow(ctx, `SELECT status, attempts, last_error FROM processing_jobs WHERE id = $1`, jobID).
+			Scan(&status, &attempts, &lastError)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "queued" {
+			t.Fatalf("status %s, want queued", status)
+		}
+		if attempts != 1 {
+			t.Fatalf("attempts %d, want 1 (shutdown must not increment)", attempts)
+		}
+		if lastError == nil || *lastError != priorError {
+			t.Fatalf("last_error %v, want %q", lastError, priorError)
+		}
+	})
+
 	t.Run("release allows expired lease for owner", func(t *testing.T) {
 		resetDB(t, pool)
 		mediaID := seedMedia(t, pool)
@@ -445,7 +480,7 @@ func TestJobRepo(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		reaped, err := jobs.ReapExpiredLeases(ctx, 3, DefaultJobBackoff())
+		reaped, err := jobs.ReapExpiredLeases(ctx, 3, DefaultJobBackoff(), 100)
 		if err != nil {
 			t.Fatalf("reap: %v", err)
 		}
@@ -485,6 +520,40 @@ func TestJobRepo(t *testing.T) {
 		}
 		if m2.Status != MediaStatusFailed {
 			t.Fatalf("media2 status=%s, want failed", m2.Status)
+		}
+	})
+
+	t.Run("reap expired leases respects batch size", func(t *testing.T) {
+		resetDB(t, pool)
+		const n = 3
+		ids := make([]uuid.UUID, n)
+		for i := 0; i < n; i++ {
+			mediaID := seedMedia(t, pool)
+			ids[i] = uuid.New()
+			_, err := pool.Exec(ctx, `
+				INSERT INTO processing_jobs (id, media_id, type, status, locked_by, lease_until, attempts)
+				VALUES ($1, $2, 'thumbnail', 'running', 'worker-old', now() - interval '10 seconds', 0)
+			`, ids[i], mediaID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		reaped, err := jobs.ReapExpiredLeases(ctx, 3, DefaultJobBackoff(), 2)
+		if err != nil {
+			t.Fatalf("reap: %v", err)
+		}
+		if reaped != 2 {
+			t.Fatalf("reaped %d, want 2 (batch limit)", reaped)
+		}
+
+		var stillRunning int
+		err = pool.QueryRow(ctx, `SELECT count(*) FROM processing_jobs WHERE status = 'running'`).Scan(&stillRunning)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stillRunning != 1 {
+			t.Fatalf("still running %d, want 1 left for next tick", stillRunning)
 		}
 	})
 
