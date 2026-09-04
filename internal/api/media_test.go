@@ -174,15 +174,35 @@ func TestGetDownloadURL_InvalidMediaID(t *testing.T) {
 }
 
 func TestGetDownloadURL_InvalidVariant(t *testing.T) {
-	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
+	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
 	server := NewMediaServer(svc, false)
 
 	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
 		MediaId: "11111111-1111-1111-1111-111111111111",
-		Variant: "invalid",
+		Variant: "bogus",
 	})
 
 	requireGRPCCode(t, err, codes.InvalidArgument)
+}
+
+func TestGetDownloadURL_PreviewVariant(t *testing.T) {
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
+	dr := &stubDerivRepo{deriv: &repo.Derivative{
+		MediaID:    uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		Variant:    "preview",
+		StorageKey: "key/preview.mp4",
+	}}
+	st := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/preview", ExpiresAt: time.Now().Add(time.Minute)}}
+	svc := media.NewService(mr, dr, st, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
+
+	resp, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
+		MediaId: "11111111-1111-1111-1111-111111111111",
+		Variant: "preview",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "http://minio/preview", resp.Url)
 }
 
 func TestGetDownloadURL_MissingOwnerID(t *testing.T) {

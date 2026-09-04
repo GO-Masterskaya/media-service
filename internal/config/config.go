@@ -19,8 +19,12 @@ import (
 // Дефолты заданы через тег env-default; env переопределяет их.
 type Config struct {
 	// gRPC
-	GRPCAddr      string `env:"GRPC_ADDR"             env-default:":9090"`
-	GRPCAuthToken string `env:"GRPC_AUTH_TOKEN"       env-default:"change-me"`
+	GRPCAddr        string `env:"GRPC_ADDR"           env-default:":9090"`
+	HTTPAddr        string `env:"HTTP_ADDR"           env-default:":8080"`
+	GRPCAuthEnabled bool   `env:"GRPC_AUTH_ENABLED"   env-default:"true"`
+	// No env-default: unset must stay empty so validate fails when auth is enabled
+	// (avoids shipping with a public "change-me" token that looks secure).
+	GRPCAuthToken string `env:"GRPC_AUTH_TOKEN"`
 
 	// Upload
 	MaxUploadBytes int64    `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
@@ -53,6 +57,8 @@ type Config struct {
 	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
 
 	// Limits
+	// MAX_CONCURRENT_STREAMS — прикладной лимит одновременных upload/download
+	// стримов per-caller (#21). Не путать с grpc.MaxConcurrentStreams (HTTP/2).
 	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
 	MaxConcurrentStreams int `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
 
@@ -114,6 +120,8 @@ func (c *Config) String() string {
 	var b strings.Builder
 	b.WriteString("Config{")
 	fmt.Fprintf(&b, "GRPCAddr:%q, ", c.GRPCAddr)
+	fmt.Fprintf(&b, "HTTPAddr:%q, ", c.HTTPAddr)
+	fmt.Fprintf(&b, "GRPCAuthEnabled:%v, ", c.GRPCAuthEnabled)
 	fmt.Fprintf(&b, "MaxUploadBytes:%d, ", c.MaxUploadBytes)
 	fmt.Fprintf(&b, "MIMEAllowlist:%v, ", c.MIMEAllowlist)
 	fmt.Fprintf(&b, "WorkerConcurrency:%d, ", c.WorkerConcurrency)
@@ -147,10 +155,16 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaBrokers:%v, ", c.KafkaBrokers)
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
-	fmt.Fprintf(&b, "KafkaGroup:%q", c.KafkaGroup)
+	fmt.Fprintf(&b, "KafkaGroup:%q, ", c.KafkaGroup)
 	fmt.Fprintf(&b, "RetentionInterval:%s, ", c.RetentionInterval)
 	fmt.Fprintf(&b, "RetentionOlderThan:%s, ", c.RetentionOlderThan)
 	fmt.Fprintf(&b, "RetentionBatchSize:%d, ", c.RetentionBatchSize)
+	fmt.Fprintf(&b, "StrictOwnerCheck:%v, ", c.StrictOwnerCheck)
+	fmt.Fprintf(&b, "ReconcilerInterval:%s, ", c.ReconcilerInterval)
+	fmt.Fprintf(&b, "ReconcilerGracePeriod:%s, ", c.ReconcilerGracePeriod)
+	fmt.Fprintf(&b, "ReconcilerBatchSize:%d, ", c.ReconcilerBatchSize)
+	fmt.Fprintf(&b, "ReconcilerDryRun:%v, ", c.ReconcilerDryRun)
+	fmt.Fprintf(&b, "ProcessingTempDir:%q", c.ProcessingTempDir)
 	b.WriteString("}")
 	return b.String()
 }

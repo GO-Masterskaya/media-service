@@ -6,4 +6,9 @@ breaking:
     - FILE
 lint:
   use:
-    - DEFAULT
+    - STANDARD
+  except:
+    # Frozen gRPC contract (SPEC): proto lives under proto/, enum/RPC names are legacy.
+    - PACKAGE_DIRECTORY_MATCH
+    - RPC_RESPONSE_STANDARD_NAME
+    - ENUM_VALUE_PREFIX

@@ -10,19 +10,66 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      
+      - name: Download Go modules
+        run: go mod download
+
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
             | sh -s -- -b /usr/local/bin v2.1.6
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: "1.72.0"
+          setup_only: true
+          github_token: ${{ github.token }}
+
+      - name: Install protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: buf dep update
+        run: buf dep update
+
+      - name: buf lint
+        run: buf lint
+
+      - name: Fetch base branch
+        run: git fetch origin "${{ github.base_ref }}:${{ github.base_ref }}"
+
+      - name: buf breaking
+        run: |
+          set -euo pipefail
+          BASE="${{ github.base_ref }}"
+          WT="${RUNNER_TEMP}/buf-against-${BASE}"
+          git worktree add "$WT" "$BASE"
+          if [ ! -f "$WT/buf.lock" ] && [ -f buf.lock ]; then
+            cp buf.lock "$WT/buf.lock"
+          fi
+          (cd "$WT" && buf dep update)
+          buf breaking --against "$WT"
+          git worktree remove --force "$WT"
+
+      - name: Ensure generated code is up to date
+        run: |
+          buf dep update
+          rm -f proto/media/v1/*.pb.go proto/media/v1/*_grpc.pb.go
+          buf generate
+          git diff --exit-code proto/media/v1/
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Build
         run: make build
