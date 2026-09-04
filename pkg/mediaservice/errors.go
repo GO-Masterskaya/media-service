@@ -27,3 +27,8 @@ var ErrClosed = errors.New("mediaservice: client is closed")
 // соответствующий сценарий ядра ещё не реализован. Контракт библиотеки
 // зафиксирован заранее (#29), реализация доезжает по мере готовности #9–#13.
 var ErrNotImplemented = errors.New("mediaservice: not implemented yet")
+
+// ErrInternal возвращается при внутренней ошибке сервиса: сбой БД,
+// хранилища или нарушение инварианта в ядре. Детали в тексте ошибки,
+// но полагаться на них не стоит - они не часть контракта.
+var ErrInternal = errors.New("mediaservice: internal error")
