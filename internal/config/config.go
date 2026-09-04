@@ -22,7 +22,9 @@ type Config struct {
 	GRPCAddr        string `env:"GRPC_ADDR"           env-default:":9090"`
 	HTTPAddr        string `env:"HTTP_ADDR"           env-default:":8080"`
 	GRPCAuthEnabled bool   `env:"GRPC_AUTH_ENABLED"   env-default:"true"`
-	GRPCAuthToken   string `env:"GRPC_AUTH_TOKEN"     env-default:"change-me"`
+	// No env-default: unset must stay empty so validate fails when auth is enabled
+	// (avoids shipping with a public "change-me" token that looks secure).
+	GRPCAuthToken string `env:"GRPC_AUTH_TOKEN"`
 
 	// Upload
 	MaxUploadBytes int64    `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
