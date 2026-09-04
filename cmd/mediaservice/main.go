@@ -207,7 +207,7 @@ func main() {
 		Base:   cfg.JobBackoffBase,
 		Max:    cfg.JobBackoffMax,
 		Jitter: cfg.JobBackoffJitter,
-	})
+	}, cfg.JobReapBatchSize)
 
 	procRegistry := processing.NewRegistry()
 	// Регистрация обработчиков: адаптируем ProcessThumbnail/ProcessTranscode к Handler.Handle(ctx, Job).

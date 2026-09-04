@@ -41,7 +41,7 @@ type JobRepo interface {
 	ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error
 	ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error
 	ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error
-	ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig) (int64, error)
+	ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig, batchSize int) (int64, error)
 }
 
 type PgJobRepo struct {
@@ -457,14 +457,16 @@ func CanTransition(from, to string) bool {
 // ReapExpiredLeases возвращает running-задачи с протухшим lease обратно в queued
 // (с инкрементом attempts и exponential backoff через run_after).
 // Задачи, у которых следующая попытка исчерпала бы MaxAttempts, → failed.
-// Использует FOR UPDATE SKIP LOCKED + LIMIT, чтобы несколько реперов не блокировали друг друга.
-func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig) (int64, error) {
+// Использует FOR UPDATE SKIP LOCKED + LIMIT (batchSize), чтобы несколько реперов
+// не блокировали друг друга и один тик не захватывал всю очередь.
+func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig, batchSize int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	if batchSize <= 0 {
+		batchSize = 100
+	}
 	backoff = backoff.Normalize()
-
-	const reapBatchLimit = 100
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -481,7 +483,7 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, back
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1
 	`
-	rows, err := tx.Query(ctx, selectQ, reapBatchLimit)
+	rows, err := tx.Query(ctx, selectQ, batchSize)
 	if err != nil {
 		return 0, fmt.Errorf("reap expired leases select: %w", err)
 	}
