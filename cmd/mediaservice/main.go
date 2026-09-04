@@ -278,9 +278,21 @@ func main() {
 	go func() {
 		defer close(shutdownDone)
 		// 8.1 Перестаём принимать новые соединения.
+		// Merge с #59: здесь же NOT_SERVING → drainWindow → затем этот блок;
+		// overallCtx должен покрывать drain + ShutdownTimeout + Wait budget.
 
-		// закрываем gRPC сервер
-		grpcServer.GracefulStop()
+		grpcStopped := make(chan struct{})
+		go func() {
+			grpcServer.GracefulStop()
+			close(grpcStopped)
+		}()
+		select {
+		case <-grpcStopped:
+			slog.Info("grpc server stopped gracefully")
+		case <-shutdownCtx.Done():
+			slog.Warn("grpc graceful stop timeout, forcing stop")
+			grpcServer.Stop()
+		}
 
 		// 8.2 Внутренние компоненты останавливаем параллельно:
 		// так даже если один зависнет при остановке, другой всё равно получит сигнал на остановку.
