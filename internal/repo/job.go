@@ -145,6 +145,8 @@ func (r *PgJobRepo) ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner 
 	return r.release(ctx, jobID, owner, runAfter, true, reason)
 }
 
+// ReleaseForShutdown возвращает задачу в queued без инкремента attempts
+// и без изменения last_error (диагностика прошлой попытки сохраняется).
 func (r *PgJobRepo) ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error {
 	return r.release(ctx, jobID, owner, time.Now(), false, "")
 }
@@ -197,16 +199,16 @@ func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, 
 			WHERE id = $1
 		`, jobID, reason, runAfter)
 	} else {
+		// Shutdown: не трогаем last_error — пустой reason раньше сбрасывал его через NULLIF.
 		_, err = tx.Exec(ctx, `
 			UPDATE processing_jobs
 			SET status = 'queued',
-			    last_error = NULLIF($2, ''),
 			    locked_by = NULL,
 			    lease_until = NULL,
 			    locked_at = NULL,
-			    run_after = $3
+			    run_after = $2
 			WHERE id = $1
-		`, jobID, reason, runAfter)
+		`, jobID, runAfter)
 	}
 	if err != nil {
 		return fmt.Errorf("release job: %w", err)
