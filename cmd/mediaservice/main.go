@@ -203,7 +203,11 @@ func main() {
 	// 5.1 Processing Engine
 	jobRepo := repo.NewPgJobRepo(pool)
 	ownerID := uuid.NewString() // уникальный ID этого экземпляра сервиса
-	repoAdapter := processing.NewRepoAdapter(jobRepo, ownerID, cfg.JobLease, cfg.MaxJobAttempts)
+	repoAdapter := processing.NewRepoAdapter(jobRepo, ownerID, cfg.JobLease, cfg.MaxJobAttempts, processing.BackoffConfig{
+		Base:   cfg.JobBackoffBase,
+		Max:    cfg.JobBackoffMax,
+		Jitter: cfg.JobBackoffJitter,
+	})
 
 	procRegistry := processing.NewRegistry()
 	// Регистрация обработчиков: адаптируем ProcessThumbnail/ProcessTranscode к Handler.Handle(ctx, Job).
@@ -313,8 +317,11 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			engine.Stop()
-			slog.Info("processing engine stopped")
+			if err := engine.Shutdown(shutdownCtx); err != nil {
+				slog.Error("processing engine shutdown", "error", err)
+			} else {
+				slog.Info("processing engine stopped")
+			}
 		}()
 
 		wg.Add(1)
@@ -331,6 +338,10 @@ func main() {
 		}()
 
 		wg.Wait()
+
+		// После timeout Shutdown воркеры могут ещё работать — ждём их
+		// до закрытия pool, иначе пул закроется под живыми горутинами.
+		engine.Wait()
 
 		// 8.3 DLQ publisher закрываем после consumer'а, чтобы handler'и
 		// могли ещё отправить poison-сообщения во время shutdown.
