@@ -146,10 +146,6 @@ func (c *processedEventCleaner) Start(ctx context.Context) {
 			c.wg.Add(1)
 			go func() {
 				defer c.wg.Done()
-				if !c.tickRunning.CompareAndSwap(false, true) {
-					c.log.Warn("retention initial tick skipped: previous tick still running")
-					return
-				}
 				defer c.tickRunning.Store(false)
 				c.runOnce(ctx)
 			}()
@@ -193,6 +189,7 @@ func (c *processedEventCleaner) runOnce(ctx context.Context) {
 		deleted, err := c.repo.DeleteTerminalOlderThan(ctx, cutoff, c.cfg.BatchLimit)
 		if err != nil {
 			c.log.Error("retention cleanup failed", slog.Any("error", err))
+			c.metrics.errorsTotal.Inc()
 			return
 		}
 

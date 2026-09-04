@@ -3,11 +3,13 @@ package events
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"mediaservice/internal/repo"
 
@@ -249,4 +251,77 @@ func (c *controlledCancellingRepo) BumpAttempt(
 	owner string,
 ) (int, error) {
 	return c.inner.BumpAttempt(ctx, eventID, owner)
+}
+
+// signalRepo отправляет сигнал в канал при каждом вызове DeleteTerminalOlderThan.
+// Позволяет тесту надёжно дождаться конкретного числа вызовов, не опрашивая atomic.
+type signalRepo struct {
+	ch chan struct{}
+}
+
+func (s *signalRepo) Claim(ctx context.Context, eventID uuid.UUID, fingerprint, owner string, lease time.Duration) (*repo.ProcessedEvent, bool, error) {
+	return nil, false, nil
+}
+func (s *signalRepo) MarkDone(ctx context.Context, eventID uuid.UUID, owner string, result []byte) error {
+	return nil
+}
+func (s *signalRepo) MarkDLQ(ctx context.Context, eventID uuid.UUID, owner, reason string) error {
+	return nil
+}
+func (s *signalRepo) DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	s.ch <- struct{}{}
+	return 0, nil
+}
+func (s *signalRepo) BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error) {
+	return 0, nil
+}
+
+type periodicityRepo struct{ calls *atomic.Int32 }
+
+func (p *periodicityRepo) Claim(ctx context.Context, eventID uuid.UUID, fingerprint, owner string, lease time.Duration) (*repo.ProcessedEvent, bool, error) {
+	return nil, false, nil
+}
+func (p *periodicityRepo) MarkDone(ctx context.Context, eventID uuid.UUID, owner string, result []byte) error {
+	return nil
+}
+func (p *periodicityRepo) MarkDLQ(ctx context.Context, eventID uuid.UUID, owner, reason string) error {
+	return nil
+}
+func (p *periodicityRepo) DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
+	p.calls.Add(1)
+	return 0, nil
+}
+func (p *periodicityRepo) BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error) {
+	return 0, nil
+}
+
+func TestCleaner_Start_Periodicity(t *testing.T) {
+	var calls atomic.Int32
+	pr := &periodicityRepo{calls: &calls}
+	c := NewProcessedEventCleaner(
+		pr,
+		RetentionConfig{
+			Interval:   50 * time.Millisecond,
+			OlderThan:  time.Hour,
+			BatchLimit: 1000,
+		},
+		testLog(),
+		prometheus.NewRegistry(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() { c.Start(ctx); close(done) }()
+
+	// 50 мс интервал → за 3 секунды должно быть ~60 тиков, даже если половина пропущена.
+	require.Eventually(t, func() bool {
+		return calls.Load() >= 2
+	}, 3*time.Second, 10*time.Millisecond, "expected startup run + at least one ticker tick")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, c.Shutdown(shutdownCtx))
+	<-done
 }

@@ -2,9 +2,12 @@ package config
 
 import (
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ilyakaznacheev/cleanenv"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -133,44 +136,29 @@ func TestConfigLogValue(t *testing.T) {
 	}
 }
 func TestValidate_RetentionKafkaEnabled(t *testing.T) {
-	base := Config{
-		GRPCAddr:               ":9090",
-		MaxUploadBytes:         1,
-		MIMEAllowlist:          []string{"image/*"},
-		WorkerConcurrency:      1,
-		QueueBuffer:            1,
-		JobTimeout:             time.Second,
-		JobLease:               time.Second,
-		PollInterval:           time.Second,
-		MaxJobAttempts:         1,
-		FFMPEGTimeout:          time.Second,
-		ShutdownTimeout:        time.Second,
-		Rendition:              720,
-		ThumbSecond:            1,
-		PresignTTL:             time.Second,
-		TTLReapInterval:        time.Second,
-		RateLimitRPS:           50,
-		MaxConcurrentStreams:   8,
-		UploadTempDir:          "/tmp",
-		UploadReserveBytes:     0,
-		UploadStaleGrace:       time.Hour,
-		UploadCleanupInterval:  time.Hour,
-		PostgresDSN:            "postgres://u:p@h:5432/db",
-		PostgresConnectTimeout: time.Second,
-		PostgresQueryTimeout:   time.Second,
-		MinIOEndpoint:          "minio:9000",
-		MinIOAccessKey:         "k",
-		MinIOSecretKey:         "s",
-		MinIOBucket:            "b",
-		KafkaEnabled:           true,
-		KafkaBrokers:           []string{"kafka:9092"},
-		KafkaTopic:             "t",
-		KafkaDLQTopic:          "d",
-		KafkaGroup:             "g",
-		RetentionInterval:      time.Hour,
-		RetentionOlderThan:     168 * time.Hour,
-		RetentionBatchSize:     1000,
+	oldEnv := os.Environ()
+	os.Clearenv()
+	defer func() {
+		os.Clearenv()
+		for _, e := range oldEnv {
+			if i := strings.IndexByte(e, '='); i >= 0 {
+				os.Setenv(e[:i], e[i+1:])
+			}
+		}
+	}()
+
+	var base Config
+	if err := cleanenv.ReadEnv(&base); err != nil {
+		t.Fatalf("read defaults: %v", err)
 	}
+	base.KafkaEnabled = true
+	base.KafkaBrokers = []string{"kafka:9092"}
+	base.KafkaTopic = "t"
+	base.KafkaDLQTopic = "d"
+	base.KafkaGroup = "g"
+	base.RetentionInterval = time.Hour
+	base.RetentionOlderThan = 168 * time.Hour
+	base.RetentionBatchSize = 1000
 
 	tests := []struct {
 		name    string
