@@ -35,6 +35,18 @@ func (c *Config) validate() error {
 	if c.MaxJobAttempts <= 0 {
 		return fmt.Errorf("JOB_MAX_ATTEMPTS must be > 0, got %d", c.MaxJobAttempts)
 	}
+	if c.JobBackoffBase <= 0 {
+		return fmt.Errorf("JOB_BACKOFF_BASE must be > 0, got %s", c.JobBackoffBase)
+	}
+	if c.JobBackoffMax <= 0 {
+		return fmt.Errorf("JOB_BACKOFF_MAX must be > 0, got %s", c.JobBackoffMax)
+	}
+	if c.JobBackoffBase > c.JobBackoffMax {
+		return fmt.Errorf("JOB_BACKOFF_BASE (%s) must be <= JOB_BACKOFF_MAX (%s)", c.JobBackoffBase, c.JobBackoffMax)
+	}
+	if c.JobBackoffJitter < 0 || c.JobBackoffJitter > 1 {
+		return fmt.Errorf("JOB_BACKOFF_JITTER must be in [0, 1], got %v", c.JobBackoffJitter)
+	}
 	if c.FFMPEGTimeout <= 0 {
 		return fmt.Errorf("FFMPEG_TIMEOUT must be > 0, got %s", c.FFMPEGTimeout)
 	}

@@ -253,29 +253,6 @@ func (c *controlledCancellingRepo) BumpAttempt(
 	return c.inner.BumpAttempt(ctx, eventID, owner)
 }
 
-// signalRepo отправляет сигнал в канал при каждом вызове DeleteTerminalOlderThan.
-// Позволяет тесту надёжно дождаться конкретного числа вызовов, не опрашивая atomic.
-type signalRepo struct {
-	ch chan struct{}
-}
-
-func (s *signalRepo) Claim(ctx context.Context, eventID uuid.UUID, fingerprint, owner string, lease time.Duration) (*repo.ProcessedEvent, bool, error) {
-	return nil, false, nil
-}
-func (s *signalRepo) MarkDone(ctx context.Context, eventID uuid.UUID, owner string, result []byte) error {
-	return nil
-}
-func (s *signalRepo) MarkDLQ(ctx context.Context, eventID uuid.UUID, owner, reason string) error {
-	return nil
-}
-func (s *signalRepo) DeleteTerminalOlderThan(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
-	s.ch <- struct{}{}
-	return 0, nil
-}
-func (s *signalRepo) BumpAttempt(ctx context.Context, eventID uuid.UUID, owner string) (int, error) {
-	return 0, nil
-}
-
 type periodicityRepo struct{ calls *atomic.Int32 }
 
 func (p *periodicityRepo) Claim(ctx context.Context, eventID uuid.UUID, fingerprint, owner string, lease time.Duration) (*repo.ProcessedEvent, bool, error) {

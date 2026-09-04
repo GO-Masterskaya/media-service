@@ -33,6 +33,9 @@ type Config struct {
 	JobLease          time.Duration `env:"JOB_LEASE"             env-default:"30s"`
 	PollInterval      time.Duration `env:"POLL_INTERVAL"         env-default:"1s"`
 	MaxJobAttempts    int           `env:"JOB_MAX_ATTEMPTS"      env-default:"3"`
+	JobBackoffBase    time.Duration `env:"JOB_BACKOFF_BASE"      env-default:"30s"`
+	JobBackoffMax     time.Duration `env:"JOB_BACKOFF_MAX"       env-default:"10m"`
+	JobBackoffJitter  float64       `env:"JOB_BACKOFF_JITTER"    env-default:"0.2"`
 	FFMPEGTimeout     time.Duration `env:"FFMPEG_TIMEOUT"        env-default:"10m"`
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
 	Rendition         int           `env:"RENDITION"             env-default:"720"`
@@ -119,6 +122,9 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "JobLease:%s, ", c.JobLease)
 	fmt.Fprintf(&b, "PollInterval:%s, ", c.PollInterval)
 	fmt.Fprintf(&b, "MaxJobAttempts:%d, ", c.MaxJobAttempts)
+	fmt.Fprintf(&b, "JobBackoffBase:%s, ", c.JobBackoffBase)
+	fmt.Fprintf(&b, "JobBackoffMax:%s, ", c.JobBackoffMax)
+	fmt.Fprintf(&b, "JobBackoffJitter:%v, ", c.JobBackoffJitter)
 	fmt.Fprintf(&b, "FFMPEGTimeout:%s, ", c.FFMPEGTimeout)
 	fmt.Fprintf(&b, "ShutdownTimeout:%s, ", c.ShutdownTimeout)
 	fmt.Fprintf(&b, "Rendition:%d, ", c.Rendition)

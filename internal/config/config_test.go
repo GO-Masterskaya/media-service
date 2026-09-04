@@ -142,7 +142,9 @@ func TestValidate_RetentionKafkaEnabled(t *testing.T) {
 		os.Clearenv()
 		for _, e := range oldEnv {
 			if i := strings.IndexByte(e, '='); i >= 0 {
-				os.Setenv(e[:i], e[i+1:])
+				if err := os.Setenv(e[:i], e[i+1:]); err != nil {
+					t.Fatalf("restore env: %v", err)
+				}
 			}
 		}
 	}()

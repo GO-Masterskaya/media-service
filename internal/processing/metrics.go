@@ -11,12 +11,17 @@ type Metrics struct {
 	DBQueueDepth              prometheus.Gauge
 	JobsProcessedTotal        prometheus.Counter
 	JobsFailedTotal           prometheus.Counter
+	JobsRetriedTotal          prometheus.Counter
+	JobsRecoveredTotal        prometheus.Counter
+	ShutdownJobsReleasedTotal prometheus.Counter
+	ShutdownGracefulTotal     prometheus.Counter
+	ShutdownTimeoutTotal      prometheus.Counter
+	ProcessingDuration        prometheus.Histogram
 	LeaseExtensionsTotal      prometheus.Counter
 	LeaseExtensionErrorsTotal prometheus.Counter
 }
 
 // NewMetrics создаёт и регистрирует метрики.
-// Если reg == nil, используется глобальный реестр Prometheus.
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	if reg == nil {
 		reg = prometheus.DefaultRegisterer
@@ -47,6 +52,43 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Subsystem: "processing",
 			Name:      "jobs_failed_total",
 			Help:      "Total number of failed jobs.",
+		}),
+		JobsRetriedTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "jobs_retried_total",
+			Help:      "Total number of jobs released back to queue for retry.",
+		}),
+		JobsRecoveredTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "jobs_recovered_total",
+			Help:      "Total number of stale running jobs recovered to queued.",
+		}),
+		ShutdownJobsReleasedTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "shutdown_jobs_released_total",
+			Help:      "Total number of in-flight jobs released on shutdown.",
+		}),
+		ShutdownGracefulTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "shutdown_graceful_total",
+			Help:      "Total number of graceful engine shutdowns within timeout.",
+		}),
+		ShutdownTimeoutTotal: factory.NewCounter(prometheus.CounterOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "shutdown_timeout_total",
+			Help:      "Total number of engine shutdowns that hit the deadline.",
+		}),
+		ProcessingDuration: factory.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "media",
+			Subsystem: "processing",
+			Name:      "processing_duration_seconds",
+			Help:      "Duration of job handler execution in seconds.",
+			Buckets:   prometheus.ExponentialBuckets(0.5, 2, 12),
 		}),
 		LeaseExtensionsTotal: factory.NewCounter(prometheus.CounterOpts{
 			Namespace: "media",
