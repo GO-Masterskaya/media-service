@@ -15,29 +15,35 @@ import (
 // Маппит типы между пакетами repo и processing, хранит ownerID экземпляра Engine.
 type RepoAdapter struct {
 	jobRepo       *repo.PgJobRepo
-	ownerID       string        // уникальный идентификатор этого экземпляра Engine (для lease)
-	leaseDuration time.Duration // начальный lease при claim
-	maxAttempts   int           // максимальное количество попыток (для reaper)
+	ownerID       string
+	leaseDuration time.Duration
+	maxAttempts   int
+	backoff       BackoffConfig
 }
 
 // NewRepoAdapter создаёт адаптер. ownerID — уникальная строка, идентифицирующая
 // этот экземпляр сервиса (например, hostname или UUID).
-// leaseDuration — начальный lease при захвате задачи.
-// maxAttempts — максимальное количество попыток перед terminal failed (0 = default 3).
-func NewRepoAdapter(jobRepo *repo.PgJobRepo, ownerID string, leaseDuration time.Duration, maxAttempts int) *RepoAdapter {
+func NewRepoAdapter(
+	jobRepo *repo.PgJobRepo,
+	ownerID string,
+	leaseDuration time.Duration,
+	maxAttempts int,
+	backoff BackoffConfig,
+) *RepoAdapter {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	backoff = backoff.normalize()
 	return &RepoAdapter{
 		jobRepo:       jobRepo,
 		ownerID:       ownerID,
 		leaseDuration: leaseDuration,
 		maxAttempts:   maxAttempts,
+		backoff:       backoff,
 	}
 }
 
 // ClaimOne забирает одну задачу из БД и маппит repo.Job → processing.Job.
-// Если очередь пуста, возвращает (nil, nil).
 func (a *RepoAdapter) ClaimOne(ctx context.Context, leaseDuration time.Duration) (*Job, error) {
 	if leaseDuration <= 0 {
 		leaseDuration = a.leaseDuration
@@ -60,12 +66,10 @@ func (a *RepoAdapter) ClaimOne(ctx context.Context, leaseDuration time.Duration)
 	}, nil
 }
 
-// GetQueueDepth возвращает количество задач в очереди БД.
 func (a *RepoAdapter) GetQueueDepth(ctx context.Context) (int64, error) {
 	return a.jobRepo.GetQueueDepth(ctx)
 }
 
-// MarkDone помечает задачу как done через repo.MarkDone.
 func (a *RepoAdapter) MarkDone(ctx context.Context, jobID string) error {
 	id, err := uuid.Parse(jobID)
 	if err != nil {
@@ -81,7 +85,6 @@ func (a *RepoAdapter) MarkDone(ctx context.Context, jobID string) error {
 	return nil
 }
 
-// FailJob помечает задачу как failed через repo.MarkFailed.
 func (a *RepoAdapter) FailJob(ctx context.Context, jobID string, reason string) error {
 	id, err := uuid.Parse(jobID)
 	if err != nil {
@@ -89,7 +92,6 @@ func (a *RepoAdapter) FailJob(ctx context.Context, jobID string, reason string) 
 	}
 	err = a.jobRepo.MarkFailed(ctx, id, a.ownerID, reason)
 	if err != nil {
-		// Lease mismatch или not found — не критично, логируем но не падаем.
 		if errors.Is(err, repo.ErrLeaseMismatch) || errors.Is(err, repo.ErrNotFound) {
 			return fmt.Errorf("fail job %s (non-critical): %w", jobID, err)
 		}
@@ -98,23 +100,41 @@ func (a *RepoAdapter) FailJob(ctx context.Context, jobID string, reason string) 
 	return nil
 }
 
-// ReleaseJob возвращает задачу из running обратно в queued через repo.Release.
-func (a *RepoAdapter) ReleaseJob(ctx context.Context, jobID string) error {
+func (a *RepoAdapter) ReleaseJobForRetry(ctx context.Context, jobID string, attemptsAfterIncrement int, reason string) error {
 	id, err := uuid.Parse(jobID)
 	if err != nil {
 		return fmt.Errorf("parse job id: %w", err)
 	}
-	err = a.jobRepo.Release(ctx, id, a.ownerID)
+	return a.releaseForRetry(ctx, id, attemptsAfterIncrement, reason)
+}
+
+func (a *RepoAdapter) releaseForRetry(ctx context.Context, id uuid.UUID, attemptsAfterIncrement int, reason string) error {
+	runAfter := a.backoff.nextRunAfter(attemptsAfterIncrement)
+	err := a.jobRepo.ReleaseForRetry(ctx, id, a.ownerID, runAfter, reason)
 	if err != nil {
 		if errors.Is(err, repo.ErrLeaseMismatch) || errors.Is(err, repo.ErrNotFound) {
-			return fmt.Errorf("release job %s (non-critical): %w", jobID, err)
+			return fmt.Errorf("release job %s (non-critical): %w", id, err)
 		}
 		return fmt.Errorf("release job: %w", err)
 	}
 	return nil
 }
 
-// ExtendLease продлевает lease задачи через repo.ExtendLease.
+func (a *RepoAdapter) ReleaseJobOnShutdown(ctx context.Context, jobID string) error {
+	id, err := uuid.Parse(jobID)
+	if err != nil {
+		return fmt.Errorf("parse job id: %w", err)
+	}
+	err = a.jobRepo.ReleaseForShutdown(ctx, id, a.ownerID)
+	if err != nil {
+		if errors.Is(err, repo.ErrLeaseMismatch) || errors.Is(err, repo.ErrNotFound) {
+			return fmt.Errorf("release job on shutdown %s (non-critical): %w", jobID, err)
+		}
+		return fmt.Errorf("release job on shutdown: %w", err)
+	}
+	return nil
+}
+
 func (a *RepoAdapter) ExtendLease(ctx context.Context, jobID string, d time.Duration) error {
 	id, err := uuid.Parse(jobID)
 	if err != nil {
@@ -127,10 +147,6 @@ func (a *RepoAdapter) ExtendLease(ctx context.Context, jobID string, d time.Dura
 	return nil
 }
 
-// ReapExpiredLeases делегирует reaping протухших lease в repo.
-func (a *RepoAdapter) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error) {
-	if maxAttempts <= 0 {
-		maxAttempts = a.maxAttempts
-	}
-	return a.jobRepo.ReapExpiredLeases(ctx, maxAttempts)
+func (a *RepoAdapter) RecoverStaleJobs(ctx context.Context) (int64, error) {
+	return a.jobRepo.ReapExpiredLeases(ctx, a.maxAttempts, a.backoff.toRepo())
 }
