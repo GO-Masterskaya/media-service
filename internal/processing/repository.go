@@ -53,8 +53,8 @@ type JobRepository interface {
 	// reason сохраняется в last_error.
 	ReleaseJobForRetry(ctx context.Context, jobID string, attemptsAfterIncrement int, reason string) error
 
-	// ReleaseJobOnShutdown возвращает задачу в queued без инкремента attempts.
-	// Используется при graceful shutdown для незавершённых jobs.
+	// ReleaseJobOnShutdown возвращает задачу в queued без инкремента attempts
+	// и без изменения last_error. Используется при graceful shutdown.
 	ReleaseJobOnShutdown(ctx context.Context, jobID string) error
 
 	// ExtendLease продлевает lease задачи на указанную длительность.

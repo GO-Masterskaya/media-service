@@ -396,6 +396,41 @@ func TestJobRepo(t *testing.T) {
 		}
 	})
 
+	t.Run("release on shutdown preserves last_error", func(t *testing.T) {
+		resetDB(t, pool)
+		mediaID := seedMedia(t, pool)
+		jobID := uuid.New()
+		const priorError = "temporary ffmpeg error"
+		_, err := pool.Exec(ctx, `
+			INSERT INTO processing_jobs (id, media_id, type, status, locked_by, lease_until, attempts, last_error)
+			VALUES ($1, $2, 'thumbnail', 'running', 'worker-1', now() + interval '30 seconds', 1, $3)
+		`, jobID, mediaID, priorError)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := jobs.ReleaseForShutdown(ctx, jobID, "worker-1"); err != nil {
+			t.Fatal(err)
+		}
+
+		var status string
+		var attempts int
+		var lastError *string
+		err = pool.QueryRow(ctx, `SELECT status, attempts, last_error FROM processing_jobs WHERE id = $1`, jobID).
+			Scan(&status, &attempts, &lastError)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "queued" {
+			t.Fatalf("status %s, want queued", status)
+		}
+		if attempts != 1 {
+			t.Fatalf("attempts %d, want 1 (shutdown must not increment)", attempts)
+		}
+		if lastError == nil || *lastError != priorError {
+			t.Fatalf("last_error %v, want %q", lastError, priorError)
+		}
+	})
+
 	t.Run("release allows expired lease for owner", func(t *testing.T) {
 		resetDB(t, pool)
 		mediaID := seedMedia(t, pool)
