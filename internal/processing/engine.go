@@ -133,14 +133,21 @@ func (e *Engine) Stop() {
 	_ = e.Shutdown(context.Background())
 }
 
-// Wait блокирует до завершения всех worker/reaper горутин.
+// Wait блокирует до завершения всех worker/reaper горутин или до отмены ctx.
 // Безопасно вызывать после Shutdown (в т.ч. после timeout) перед закрытием pool.
-func (e *Engine) Wait() {
+// При таймауте возвращает ошибку — вызывающий может best-effort закрыть infra.
+func (e *Engine) Wait(ctx context.Context) error {
 	e.mu.Lock()
 	done := e.workersDone
 	e.mu.Unlock()
-	if done != nil {
-		<-done
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("processing engine wait timeout: %w", ctx.Err())
 	}
 }
 

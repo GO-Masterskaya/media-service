@@ -2,16 +2,80 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestAwaitEngineWorkersClosesInfraOnWaitTimeout(t *testing.T) {
+	var closed atomic.Bool
+	wait := func(ctx context.Context) error {
+		<-ctx.Done()
+		return context.DeadlineExceeded
+	}
+	start := time.Now()
+	awaitEngineWorkers(50*time.Millisecond, wait, func() { closed.Store(true) })
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("awaitEngineWorkers blocked too long on wait timeout")
+	}
+	if !closed.Load() {
+		t.Fatal("closeInfra must run after wait timeout")
+	}
+}
+
+func TestAwaitEngineWorkersClosesInfraOnHappyPath(t *testing.T) {
+	var closed atomic.Bool
+	wait := func(ctx context.Context) error {
+		return nil
+	}
+	awaitEngineWorkers(time.Second, wait, func() { closed.Store(true) })
+	if !closed.Load() {
+		t.Fatal("closeInfra must run when wait succeeds")
+	}
+}
+
+func TestAwaitEngineWorkersDoesNotCloseBeforeWaitReturns(t *testing.T) {
+	var closed atomic.Bool
+	released := make(chan struct{})
+	wait := func(ctx context.Context) error {
+		select {
+		case <-released:
+			if closed.Load() {
+				return errors.New("closeInfra ran before wait returned")
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		awaitEngineWorkers(time.Second, wait, func() { closed.Store(true) })
+		close(done)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	if closed.Load() {
+		t.Fatal("closeInfra must not run while wait is in progress")
+	}
+	close(released)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("awaitEngineWorkers did not finish")
+	}
+	if !closed.Load() {
+		t.Fatal("closeInfra must run after wait")
+	}
+}
 
 func TestMainGracefulShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {

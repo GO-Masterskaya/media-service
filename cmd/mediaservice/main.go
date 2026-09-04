@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
@@ -262,8 +263,14 @@ func main() {
 	<-ctx.Done()
 	slog.Info("shutdown signal received")
 
-	// 7. Graceful shutdown с дедлайном из config.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	// 7. Graceful shutdown.
+	// budget: ShutdownTimeout на остановку компонентов + ещё ShutdownTimeout на
+	// ожидание воркеров перед pool.Close (чтобы os.Exit не срезал infra close).
+	shutdownTimeout := cfg.ShutdownTimeout
+	overallCtx, overallCancel := context.WithTimeout(context.Background(), 2*shutdownTimeout)
+	defer overallCancel()
+
+	shutdownCtx, cancel := context.WithTimeout(overallCtx, shutdownTimeout)
 	defer cancel()
 
 	// 8. Останавливаем компоненты, передаем им shutdownCtx
@@ -340,32 +347,40 @@ func main() {
 		wg.Wait()
 
 		// После timeout Shutdown воркеры могут ещё работать — ждём их
-		// до закрытия pool, иначе пул закроется под живыми горутинами.
-		engine.Wait()
-
-		// 8.3 DLQ publisher закрываем после consumer'а, чтобы handler'и
-		// могли ещё отправить poison-сообщения во время shutdown.
-		if dlqPublisher != nil {
-			if err := dlqPublisher.Close(); err != nil {
-				slog.Error("dlq publisher close", "error", err)
+		// с отдельным бюджетом, затем всегда закрываем pool/storage.
+		awaitEngineWorkers(shutdownTimeout, engine.Wait, func() {
+			if dlqPublisher != nil {
+				if err := dlqPublisher.Close(); err != nil {
+					slog.Error("dlq publisher close", "error", err)
+				}
 			}
-		}
-
-		// 8.4 Инфраструктура — быстрые закрытия соединений.
-		pool.Close()
-		if err := sto.Close(); err != nil {
-			slog.Error("storage close", "error", err)
-		}
+			pool.Close()
+			if err := sto.Close(); err != nil {
+				slog.Error("storage close", "error", err)
+			}
+		})
 	}()
 
-	// 9. Дожидаемся остановки компонентов или истечения контекста.
+	// 9. Дожидаемся остановки компонентов или истечения общего бюджета.
 	select {
 	case <-shutdownDone:
 		slog.Info("media service stopped gracefully")
-	case <-shutdownCtx.Done():
-		if shutdownCtx.Err() == context.DeadlineExceeded {
-			slog.Error("timeout exceeded, components shutdown forcibly", "error", shutdownCtx.Err())
+	case <-overallCtx.Done():
+		if overallCtx.Err() == context.DeadlineExceeded {
+			slog.Error("timeout exceeded, components shutdown forcibly", "error", overallCtx.Err())
 		}
 		os.Exit(1)
 	}
+}
+
+// awaitEngineWorkers ждёт воркеров до waitFor, затем всегда вызывает closeInfra.
+// При таймауте Wait логирует и всё равно закрывает pool/storage (best-effort).
+func awaitEngineWorkers(waitFor time.Duration, wait func(context.Context) error, closeInfra func()) {
+	waitCtx, cancel := context.WithTimeout(context.Background(), waitFor)
+	defer cancel()
+	if err := wait(waitCtx); err != nil {
+		slog.Error("processing engine wait timeout; closing pool/storage best-effort while workers may still run",
+			"error", err)
+	}
+	closeInfra()
 }
