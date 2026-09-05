@@ -147,14 +147,25 @@ func (s *TempStore) periodicCleanup(interval time.Duration) {
 
 // Stop останавливает periodic cleanup и ожидает завершения горутины.
 // Безопасно вызывать несколько раз.
+// Stop останавливает periodic cleanup. Блокирует до выхода горутины.
 func (s *TempStore) Stop() {
+	_ = s.StopContext(context.Background())
+}
+
+// StopContext останавливает periodic cleanup с дедлайном ctx.
+func (s *TempStore) StopContext(ctx context.Context) error {
 	select {
 	case <-s.stopCleanup:
 		// Уже остановлен.
 	default:
 		close(s.stopCleanup)
 	}
-	<-s.cleanupDone
+	select {
+	case <-s.cleanupDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // TempFile — временный файл с отслеживанием записи.
