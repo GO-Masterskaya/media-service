@@ -18,37 +18,9 @@ import (
 // DownloadStream отдаёт содержимое объекта чанками.
 // Все проверки (media, variant, доступность) выполняются ДО первого вызова sender.
 func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant string, sender ChunkSender) (err error) {
-	if mediaID == uuid.Nil {
-		return fmt.Errorf("media_id is required: %w", ErrInvalidArgument)
-	}
-	if variant == "" {
-		variant = string(storage.VariantOriginal)
-	}
-
-	// 1. Проверяем метаданные медиа в БД (#10).
-	media, err := s.mediaRepo.GetByID(ctx, mediaID)
-	if err != nil {
-		if errors.Is(err, repo.ErrNotFound) {
-			return fmt.Errorf("media %s: %w", mediaID, ErrNotFound)
-		}
-		return fmt.Errorf("get media: %w", err)
-	}
-
-	// 2. Проверяем владельца до открытия объекта.
-	if callerID != uuid.Nil && media.OwnerID != callerID {
-		return ErrAccessDenied
-	}
-
-	// 3. Определяем storage key.
-	key, err := s.resolveKey(ctx, media, variant)
+	rc, err := s.OpenMedia(ctx, callerID, mediaID, variant)
 	if err != nil {
 		return err
-	}
-
-	// 4. Открываем объект в хранилище (#7).
-	rc, err := s.storage.GetObject(ctx, key)
-	if err != nil {
-		return fmt.Errorf("get object: %w", err)
 	}
 	defer func() {
 		if closeErr := rc.Close(); closeErr != nil && err == nil {
@@ -56,8 +28,50 @@ func (s *Service) DownloadStream(ctx context.Context, callerID uuid.UUID, mediaI
 		}
 	}()
 
-	// 5. Потоковая передача чанками. Файл не загружается целиком в RAM.
+	// Потоковая передача чанками. Файл не загружается целиком в RAM.
 	return s.streamChunks(ctx, rc, sender)
+}
+
+// OpenMedia открывает содержимое медиаобъекта для чтения.
+//
+// Все проверки - существование записи, права вызывающего, доступность
+// варианта - выполняются до возврата. Непустой io.ReadCloser означает, что
+// доступ уже подтверждён: ошибка при чтении будет относиться к сети или
+// хранилищу, а не к правам.
+//
+// Закрыть поток обязан вызывающий.
+//
+// Пустой variant трактуется как оригинал.
+func (s *Service) OpenMedia(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant string) (io.ReadCloser, error) {
+	if mediaID == uuid.Nil {
+		return nil, fmt.Errorf("media_id is required: %w", ErrInvalidArgument)
+	}
+	if variant == "" {
+		variant = string(storage.VariantOriginal)
+	}
+
+	// 1. Проверяем метаданные медиа в БД.
+	media, err := s.mediaRepo.GetByID(ctx, mediaID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return nil, fmt.Errorf("media %s: %w", mediaID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("get media: %w", err)
+	}
+
+	// 2. Проверяем владельца до открытия объекта.
+	if callerID != uuid.Nil && media.OwnerID != callerID {
+		return nil, ErrAccessDenied
+	}
+
+	// 3. Определяем storage key.
+	key, err := s.resolveKey(ctx, media, variant)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Открываем объект в хранилище.
+	return s.storage.GetObject(ctx, key)
 }
 
 // resolveKey определяет storage key в зависимости от варианта и проверяет статусы.
