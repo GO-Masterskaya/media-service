@@ -47,6 +47,9 @@ func (c *Config) validate() error {
 	if c.JobBackoffJitter < 0 || c.JobBackoffJitter > 1 {
 		return fmt.Errorf("JOB_BACKOFF_JITTER must be in [0, 1], got %v", c.JobBackoffJitter)
 	}
+	if c.JobReapBatchSize <= 0 {
+		return fmt.Errorf("JOB_REAP_BATCH_SIZE must be > 0, got %d", c.JobReapBatchSize)
+	}
 	if c.FFMPEGTimeout <= 0 {
 		return fmt.Errorf("FFMPEG_TIMEOUT must be > 0, got %s", c.FFMPEGTimeout)
 	}

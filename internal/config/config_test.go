@@ -30,6 +30,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WorkerConcurrency != 2 {
 		t.Errorf("WorkerConcurrency: want 2, got %d", cfg.WorkerConcurrency)
 	}
+	if cfg.JobReapBatchSize != 100 {
+		t.Errorf("JobReapBatchSize: want 100, got %d", cfg.JobReapBatchSize)
+	}
 }
 
 func TestLoadOverride(t *testing.T) {
@@ -79,6 +82,7 @@ func TestLoadProcessingValidationErrors(t *testing.T) {
 		{"JOB_LEASE", "0s", "JOB_LEASE"},
 		{"POLL_INTERVAL", "0s", "POLL_INTERVAL"},
 		{"JOB_MAX_ATTEMPTS", "0", "JOB_MAX_ATTEMPTS"},
+		{"JOB_REAP_BATCH_SIZE", "0", "JOB_REAP_BATCH_SIZE"},
 	}
 
 	for _, tt := range tests {

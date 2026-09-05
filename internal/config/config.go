@@ -36,6 +36,8 @@ type Config struct {
 	JobBackoffBase    time.Duration `env:"JOB_BACKOFF_BASE"      env-default:"30s"`
 	JobBackoffMax     time.Duration `env:"JOB_BACKOFF_MAX"       env-default:"10m"`
 	JobBackoffJitter  float64       `env:"JOB_BACKOFF_JITTER"    env-default:"0.2"`
+	// JobReapBatchSize — LIMIT для ReapExpiredLeases / RecoverStaleJobs за один тик.
+	JobReapBatchSize  int           `env:"JOB_REAP_BATCH_SIZE" env-default:"100"`
 	FFMPEGTimeout     time.Duration `env:"FFMPEG_TIMEOUT"        env-default:"10m"`
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
 	Rendition         int           `env:"RENDITION"             env-default:"720"`
@@ -125,6 +127,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "JobBackoffBase:%s, ", c.JobBackoffBase)
 	fmt.Fprintf(&b, "JobBackoffMax:%s, ", c.JobBackoffMax)
 	fmt.Fprintf(&b, "JobBackoffJitter:%v, ", c.JobBackoffJitter)
+	fmt.Fprintf(&b, "JobReapBatchSize:%d, ", c.JobReapBatchSize)
 	fmt.Fprintf(&b, "FFMPEGTimeout:%s, ", c.FFMPEGTimeout)
 	fmt.Fprintf(&b, "ShutdownTimeout:%s, ", c.ShutdownTimeout)
 	fmt.Fprintf(&b, "Rendition:%d, ", c.Rendition)
@@ -147,7 +150,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaBrokers:%v, ", c.KafkaBrokers)
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
-	fmt.Fprintf(&b, "KafkaGroup:%q", c.KafkaGroup)
+	fmt.Fprintf(&b, "KafkaGroup:%q, ", c.KafkaGroup)
 	fmt.Fprintf(&b, "RetentionInterval:%s, ", c.RetentionInterval)
 	fmt.Fprintf(&b, "RetentionOlderThan:%s, ", c.RetentionOlderThan)
 	fmt.Fprintf(&b, "RetentionBatchSize:%d, ", c.RetentionBatchSize)
