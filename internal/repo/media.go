@@ -49,6 +49,16 @@ type Media struct {
 	CreatedAt         time.Time
 }
 
+type MediaPage struct {
+	Items   []*Media
+	HasMore bool
+}
+
+type MediaCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
 	GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error)
@@ -117,6 +127,61 @@ func (r *PgMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
 		return nil, fmt.Errorf("get media by id: %w", err)
 	}
 	return m, nil
+}
+
+func (r *PgMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *MediaCursor) (*MediaPage, error) {
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	if pageSize > 1000 {
+		pageSize = 1000
+	}
+
+	// Берём на одну запись больше, чем нужно для страницы, чтобы понять, есть ли ещё данные.
+	// Благодаря сортировке по (created_at, id) и cursor-based условию новые записи не ломают
+	// пагинацию и не приводят к повторению или пропуску уже просмотренных записей, в отличие от OFFSET.
+	const q = `
+		SELECT m.id, m.owner_id, m.kind, m.orig_filename, m.mime, m.size_bytes, m.status, m.storage_key,
+		       m.metadata, m.idempotency_key, m.body_fingerprint, m.params_fingerprint,
+		       m.expires_at, COALESCE(m.error, ''), m.created_at
+		FROM media m
+		WHERE m.owner_id = $1
+		  AND ($2::timestamptz IS NULL OR (m.created_at, m.id) < ($2, $3))
+		ORDER BY m.created_at DESC, m.id DESC
+		LIMIT $4
+	`
+
+	limit := pageSize + 1
+	var createdAt any
+	var cursorID any
+	if cursor != nil {
+		createdAt = cursor.CreatedAt
+		cursorID = cursor.ID
+	}
+
+	rows, err := r.pool.Query(ctx, q, ownerID, createdAt, cursorID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list media by owner: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*Media, 0, pageSize)
+	for rows.Next() {
+		m, err := scanMedia(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan media by owner: %w", err)
+		}
+		items = append(items, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate media by owner: %w", err)
+	}
+
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+	return &MediaPage{Items: items, HasMore: hasMore}, nil
 }
 
 func (r *PgMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error) {
