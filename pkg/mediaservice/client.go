@@ -2,7 +2,6 @@ package mediaservice
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -297,83 +296,4 @@ func (c *Client) checkOpen() error {
 		return ErrClosed
 	}
 	return nil
-}
-
-// toInternal преобразует публичный Variant во внутренний storage.Variant,
-// отвергая неизвестные значения.
-//
-// Проверка нужна потому, что Variant это строковый тип, и Go позволяет
-// создать любое значение через приведение: Variant("thumbnale") скомпилируется.
-// Без проверки такое значение ушло бы в построение пути объекта, и вызывающий
-// получил бы «объект не найден» вместо понятной ошибки.
-//
-// ВАЖНО: список значений обязан совпадать с storage.Variant. Автоматической
-// связи между типами нет, при добавлении варианта нужно править оба места.
-func (v Variant) toInternal() (storage.Variant, error) {
-	switch v {
-	case VariantOriginal, VariantThumb, VariantPreview, VariantR720, VariantR360:
-		return storage.Variant(v), nil
-	default:
-		return "", fmt.Errorf("unknown variant %q: %w", v, ErrInvalidArgument)
-	}
-}
-
-// toPublicMedia преобразует внутреннюю модель repo.Media в публичную Media.
-//
-// Наружу отдаётся не всё. StorageKey остаётся внутренней деталью раскладки
-// хранилища. IdempotencyKey, BodyFingerprint и ParamsFingerprint влияют
-// только на запись и сам объект не описывают. OrigFilename и ExpiresAt
-// не отдаются, потому что их нет в message Media: два публичных API одного
-// сервиса не должны расходиться по составу полей. По filename вопрос
-// открыт, см. TODO у объявления Media в types.go.
-//
-// Derivatives остаются пустыми: repo.Media их не содержит, производные лежат
-// отдельной таблицей, а media.Service.GetMedia их пока не подтягивает.
-//
-// Ошибку возвращает только на невалидных данных из ядра: nil-запись,
-// битый JSON в metadata, отрицательный size_bytes.
-func toPublicMedia(m *repo.Media) (*Media, error) {
-	// Отсутствие записи ядро уже превращает в NotFound, поэтому nil здесь
-	// означает баг внутри. Выдавать его за ErrNotFound нельзя: пользователь
-	// получит правдоподобный ответ и никто не заметит поломку.
-	if m == nil {
-		return nil, fmt.Errorf("%w: nil media from core", ErrInternal)
-	}
-
-	// Metadata во внутренней модели - сырой JSON от ffprobe. Разбираем в map,
-	// а не в структуру, потому что набор ключей зависит от типа файла.
-	//
-	// repo.scanMedia подставляет "{}" вместо пустого поля, так что из БД
-	// пустой срез не придёт. Проверка страхует repo.Media, собранные мимо
-	// scanMedia - моки в тестах, нулевое значение структуры: на пустом срезе
-	// json.Unmarshal вернул бы "unexpected end of JSON input".
-	var metadata map[string]any
-	if len(m.Metadata) > 0 {
-		if err := json.Unmarshal(m.Metadata, &metadata); err != nil {
-			return nil, fmt.Errorf("parse media metadata: %w", err)
-		}
-	}
-
-	// Внутри int64 (bigint в схеме), снаружи uint64 по контракту.
-	// Отрицательных размеров быть не должно, но на уровне БД это ничем
-	// не закреплено, а конверсия молча превратила бы -1 в 1.8e19.
-	if m.SizeBytes < 0 {
-		return nil, fmt.Errorf("negative size_bytes: %d", m.SizeBytes)
-	}
-
-	// Значения MediaKind и MediaStatus совпадают с публичными дословно,
-	// поэтому достаточно приведения типа. Порядок полей повторяет
-	// объявление Media - так видно, что ничего не пропущено.
-	return &Media{
-		ID:          m.ID,
-		OwnerID:     m.OwnerID,
-		Kind:        Kind(m.Kind),
-		MIMEType:    m.Mime,
-		SizeBytes:   uint64(m.SizeBytes),
-		Status:      Status(m.Status),
-		Metadata:    metadata,
-		Derivatives: nil,
-		Error:       m.Error,
-		CreatedAt:   m.CreatedAt,
-	}, nil
 }
