@@ -28,6 +28,18 @@ func withCleanEnv(t *testing.T) {
 	})
 }
 
+// configFromDefaults читает Config через cleanenv env-default теги в изолированном окружении.
+// Новые обязательные параметры из validate() не роняют чужие литералы.
+func configFromDefaults(t *testing.T) Config {
+	t.Helper()
+	withCleanEnv(t)
+	var cfg Config
+	if err := cleanenv.ReadEnv(&cfg); err != nil {
+		t.Fatalf("cleanenv.ReadEnv defaults: %v", err)
+	}
+	return cfg
+}
+
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
@@ -141,7 +153,6 @@ func TestConfigStringRedactsSecrets(t *testing.T) {
 	if strings.Contains(s, "secret-key") {
 		t.Error("String() must not contain MinIOSecretKey")
 	}
-	// Хост из DSN должен присутствовать (маскированный)
 	if !strings.Contains(s, "dbhost:5432") {
 		t.Error("String() should contain masked DSN host")
 	}
@@ -161,12 +172,7 @@ func TestConfigLogValue(t *testing.T) {
 // TestValidate_RetentionKafkaEnabled мутирует глобальное окружение процесса.
 // Не использовать t.Parallel() в этом тесте и его subtests.
 func TestValidate_RetentionKafkaEnabled(t *testing.T) {
-	withCleanEnv(t)
-
-	var base Config
-	if err := cleanenv.ReadEnv(&base); err != nil {
-		t.Fatalf("read defaults: %v", err)
-	}
+	base := configFromDefaults(t)
 	base.KafkaEnabled = true
 	base.KafkaBrokers = []string{"kafka:9092"}
 	base.KafkaTopic = "t"
@@ -232,14 +238,9 @@ func TestValidate_RetentionKafkaEnabled(t *testing.T) {
 // TestValidate_JobReapBatchSize мутирует глобальное окружение процесса.
 // Не использовать t.Parallel().
 func TestValidate_JobReapBatchSize(t *testing.T) {
-	withCleanEnv(t)
-
-	var cfg Config
-	if err := cleanenv.ReadEnv(&cfg); err != nil {
-		t.Fatalf("read defaults: %v", err)
-	}
+	cfg := configFromDefaults(t)
 	if err := cfg.validate(); err != nil {
-		t.Fatalf("default config must be valid: %v", err)
+		t.Fatalf("defaults must pass validate: %v", err)
 	}
 
 	cfg.JobReapBatchSize = 0
