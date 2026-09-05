@@ -10,6 +10,24 @@ import (
 	"github.com/ilyakaznacheev/cleanenv"
 )
 
+// withCleanEnv очищает окружение на время теста и восстанавливает его после.
+// Тест, использующий эту функцию, не должен вызывать t.Parallel().
+func withCleanEnv(t *testing.T) {
+	t.Helper()
+	oldEnv := os.Environ()
+	os.Clearenv()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range oldEnv {
+			if i := strings.IndexByte(e, '='); i >= 0 {
+				if err := os.Setenv(e[:i], e[i+1:]); err != nil {
+					t.Fatalf("restore env: %v", err)
+				}
+			}
+		}
+	})
+}
+
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
@@ -139,19 +157,11 @@ func TestConfigLogValue(t *testing.T) {
 		t.Errorf("unexpected value: %s", val.String())
 	}
 }
+
+// TestValidate_RetentionKafkaEnabled мутирует глобальное окружение процесса.
+// Не использовать t.Parallel() в этом тесте и его subtests.
 func TestValidate_RetentionKafkaEnabled(t *testing.T) {
-	oldEnv := os.Environ()
-	os.Clearenv()
-	defer func() {
-		os.Clearenv()
-		for _, e := range oldEnv {
-			if i := strings.IndexByte(e, '='); i >= 0 {
-				if err := os.Setenv(e[:i], e[i+1:]); err != nil {
-					t.Fatalf("restore env: %v", err)
-				}
-			}
-		}
-	}()
+	withCleanEnv(t)
 
 	var base Config
 	if err := cleanenv.ReadEnv(&base); err != nil {
@@ -216,5 +226,28 @@ func TestValidate_RetentionKafkaEnabled(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+// TestValidate_JobReapBatchSize мутирует глобальное окружение процесса.
+// Не использовать t.Parallel().
+func TestValidate_JobReapBatchSize(t *testing.T) {
+	withCleanEnv(t)
+
+	var cfg Config
+	if err := cleanenv.ReadEnv(&cfg); err != nil {
+		t.Fatalf("read defaults: %v", err)
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("default config must be valid: %v", err)
+	}
+
+	cfg.JobReapBatchSize = 0
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for JobReapBatchSize=0")
+	}
+	if !strings.Contains(err.Error(), "JOB_REAP_BATCH_SIZE") {
+		t.Errorf("error should mention JOB_REAP_BATCH_SIZE, got: %v", err)
 	}
 }

@@ -35,9 +35,6 @@ func NewRepoAdapter(
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	if reapBatchSize <= 0 {
-		reapBatchSize = 100
-	}
 	backoff = backoff.normalize()
 	return &RepoAdapter{
 		jobRepo:       jobRepo,
