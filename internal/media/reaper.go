@@ -18,29 +18,40 @@ const defaultReapBatchSize = 100
 // (time.NewTicker паникует на неположительном интервале) — см. ревью PR #13/#17.
 const defaultReapInterval = time.Minute
 
-var (
-	reaperMetricsOnce sync.Once
-	reapScanned       prometheus.Counter
-	reapDeleted       prometheus.Counter
-	reapFailed        prometheus.Counter
-)
+// reaperMetrics — по образцу cleanerMetrics (internal/events/retention.go,
+// issue #60): собственный экземпляр на каждый Reaper вместо package-level
+// sync.Once/глобалов. Регистрация — через явно переданный Registerer, а не
+// жёстко на prometheus.DefaultRegisterer (см. ревью PR #13/#17), что заодно
+// снимает и проблему повторной регистрации в тестах.
+type reaperMetrics struct {
+	scanned prometheus.Counter
+	deleted prometheus.Counter
+	failed  prometheus.Counter
+}
 
-func initReaperMetrics() {
-	reaperMetricsOnce.Do(func() {
-		reapScanned = prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "reaper_scanned_total",
-			Help: "Total expired media records scanned by the TTL reaper",
-		})
-		reapDeleted = prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "reaper_deleted_total",
-			Help: "Total media records deleted by the TTL reaper",
-		})
-		reapFailed = prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "reaper_failed_total",
-			Help: "Total delete failures encountered by the TTL reaper",
-		})
-		prometheus.MustRegister(reapScanned, reapDeleted, reapFailed)
-	})
+func buildReaperMetrics() *reaperMetrics {
+	return &reaperMetrics{
+		scanned: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "media", Subsystem: "reaper", Name: "scanned_total",
+			Help: "Total expired media records scanned by the TTL reaper.",
+		}),
+		deleted: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "media", Subsystem: "reaper", Name: "deleted_total",
+			Help: "Total media records deleted by the TTL reaper.",
+		}),
+		failed: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "media", Subsystem: "reaper", Name: "failed_total",
+			Help: "Total delete failures encountered by the TTL reaper.",
+		}),
+	}
+}
+
+func newReaperMetrics(reg prometheus.Registerer) *reaperMetrics {
+	m := buildReaperMetrics()
+	if reg != nil {
+		reg.MustRegister(m.scanned, m.deleted, m.failed)
+	}
+	return m
 }
 
 // ReaperConfig — конфиг TTL reaper'а (issue #17), по образцу ReconcilerConfig.
@@ -59,13 +70,10 @@ type ReaperConfig struct {
 // Без TTL (expires_at IS NULL) записи никогда не попадают в выборку и не
 // затрагиваются.
 type Reaper struct {
-	svc *Service
-	cfg ReaperConfig
-	log *slog.Logger
-
-	scannedCounter prometheus.Counter
-	deletedCounter prometheus.Counter
-	failedCounter  prometheus.Counter
+	svc     *Service
+	cfg     ReaperConfig
+	log     *slog.Logger
+	metrics *reaperMetrics
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -76,18 +84,24 @@ type Reaper struct {
 	batchSize int
 }
 
-// NewReaper создаёт reaper. interval и batchSize конфигурируются извне
-// (TTL_REAP_INTERVAL, TTL_REAP_BATCH_SIZE) — см. criterion "период и batch
-// size конфигурируются". Для dry-run используйте NewReaperWithConfig.
+// NewReaper создаёт reaper для тестов/обратной совместимости — метрики не
+// регистрируются нигде (reg=nil), только собираются в памяти. Для реального
+// запуска (main.go) используйте NewReaperWithConfig с явным Registerer.
 func NewReaper(svc *Service, interval time.Duration, batchSize int, log *slog.Logger) *Reaper {
-	return NewReaperWithConfig(svc, ReaperConfig{Interval: interval, BatchSize: batchSize}, log)
+	return newReaper(svc, ReaperConfig{Interval: interval, BatchSize: batchSize}, log, nil)
 }
 
-// NewReaperWithConfig — полная форма конструктора, с поддержкой DryRun.
+// NewReaperWithConfig — полная форма конструктора, с поддержкой DryRun и
+// явно переданным Registerer (nil — не регистрировать метрики нигде, удобно
+// для тестов, где повторная регистрация на одном Registerer иначе паникует).
 // Interval<=0 и BatchSize<=0 подменяются дефолтами — конструктор безопасен
 // при прямом вызове в обход конфига/валидатора (см. ревью PR #13/#17: голый
 // time.NewTicker(0) в Run иначе паникует).
-func NewReaperWithConfig(svc *Service, cfg ReaperConfig, log *slog.Logger) *Reaper {
+func NewReaperWithConfig(svc *Service, cfg ReaperConfig, log *slog.Logger, reg prometheus.Registerer) *Reaper {
+	return newReaper(svc, cfg, log, reg)
+}
+
+func newReaper(svc *Service, cfg ReaperConfig, log *slog.Logger, reg prometheus.Registerer) *Reaper {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -97,17 +111,14 @@ func NewReaperWithConfig(svc *Service, cfg ReaperConfig, log *slog.Logger) *Reap
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = defaultReapBatchSize
 	}
-	initReaperMetrics()
 
 	return &Reaper{
-		svc:            svc,
-		cfg:            cfg,
-		log:            log,
-		scannedCounter: reapScanned,
-		deletedCounter: reapDeleted,
-		failedCounter:  reapFailed,
-		stopCh:         make(chan struct{}),
-		batchSize:      cfg.BatchSize,
+		svc:       svc,
+		cfg:       cfg,
+		log:       log,
+		metrics:   newReaperMetrics(reg),
+		stopCh:    make(chan struct{}),
+		batchSize: cfg.BatchSize,
 	}
 }
 
@@ -141,11 +152,12 @@ func (r *Reaper) Run(ctx context.Context) {
 			r.log.Info("reaper stopped (shutdown requested)")
 			return
 		case <-ticker.C:
+			// runOnce вызывается синхронно (не в go func) — обёртка в
+			// анонимную функцию тут не нужна, defer scoping'а требовать
+			// нечему (см. ревью PR #13/#17).
 			r.wg.Add(1)
-			func() {
-				defer r.wg.Done()
-				r.runOnce(ctx)
-			}()
+			r.runOnce(ctx)
+			r.wg.Done()
 		}
 	}
 }
@@ -194,13 +206,13 @@ func (r *Reaper) runOnce(ctx context.Context) {
 		ids, err := r.svc.mediaRepo.ListExpiredIDs(ctx, r.cfg.BatchSize)
 		if err != nil {
 			r.log.Error("reaper: list expired failed", slog.Any("error", err))
-			r.failedCounter.Inc()
+			r.metrics.failed.Inc()
 			return
 		}
 		if len(ids) == 0 {
 			return
 		}
-		r.scannedCounter.Add(float64(len(ids)))
+		r.metrics.scanned.Add(float64(len(ids)))
 
 		progressed := 0
 		for _, id := range ids {
@@ -230,16 +242,16 @@ func (r *Reaper) runOnce(ctx context.Context) {
 			deletedNow, err := r.svc.deleteByID(ctx, id, false)
 			if err != nil {
 				r.log.Error("reaper: delete failed", slog.Any("error", err), slog.String("media_id", id.String()))
-				r.failedCounter.Inc()
+				r.metrics.failed.Inc()
 				continue
 			}
 			// progressed считает любое успешное разрешение id (та же логика,
 			// что в DeleteByOwner) — id не вернётся из ListExpiredIDs снова,
-			// зацикливания не будет. deletedCounter — только реальные
+			// зацикливания не будет. deleted-метрика — только реальные
 			// удаления, не идемпотентные no-op'ы (см. ревью PR #13/#17).
 			progressed++
 			if deletedNow {
-				r.deletedCounter.Inc()
+				r.metrics.deleted.Inc()
 			}
 		}
 

@@ -105,7 +105,7 @@ func TestReaper_DefaultBatchSizeAppliedWhenNonPositive(t *testing.T) {
 // в обход конфига/валидатора.
 func TestReaper_DefaultIntervalAppliedWhenNonPositive(t *testing.T) {
 	svc := newTestSvc(&svcStubMediaRepo{}, &svcStubStorage{})
-	r := NewReaperWithConfig(svc, ReaperConfig{}, svcTestLogger())
+	r := NewReaperWithConfig(svc, ReaperConfig{}, svcTestLogger(), nil)
 	assert.Equal(t, defaultReapInterval, r.cfg.Interval)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,7 +127,7 @@ func TestReaper_DryRun_DoesNotDelete(t *testing.T) {
 		},
 	}
 	svc := newTestSvc(mr, &svcStubStorage{})
-	r := NewReaperWithConfig(svc, ReaperConfig{BatchSize: 100, DryRun: true}, svcTestLogger())
+	r := NewReaperWithConfig(svc, ReaperConfig{BatchSize: 100, DryRun: true}, svcTestLogger(), nil)
 
 	r.runOnce(context.Background())
 
@@ -151,7 +151,7 @@ func TestReaper_DryRun_FullPage_DoesNotLoopForever(t *testing.T) {
 		},
 	}
 	svc := newTestSvc(mr, &svcStubStorage{})
-	r := NewReaperWithConfig(svc, ReaperConfig{BatchSize: 5, DryRun: true}, svcTestLogger())
+	r := NewReaperWithConfig(svc, ReaperConfig{BatchSize: 5, DryRun: true}, svcTestLogger(), nil)
 
 	done := make(chan struct{})
 	go func() {

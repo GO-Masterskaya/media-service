@@ -181,7 +181,7 @@ func main() {
 		BatchSize: cfg.TTLReapBatchSize,
 		DryRun:    cfg.TTLReapDryRun,
 	}
-	reaper := media.NewReaperWithConfig(mediaSvc, reaperCfg, slog.Default())
+	reaper := media.NewReaperWithConfig(mediaSvc, reaperCfg, slog.Default(), prometheus.DefaultRegisterer)
 	go reaper.Run(ctx)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -341,7 +341,6 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
 			if err := reaper.Shutdown(shutdownCtx); err != nil {
 				slog.Error("reaper shutdown", "error", err)
 			}
