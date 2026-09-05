@@ -824,3 +824,59 @@ func TestShutdownReleasesInFlightJob(t *testing.T) {
 	assert.True(t, shutdownReleased[jobID.String()])
 	assert.Empty(t, repo.GetReleasedJobs(), "shutdown must not count as retry")
 }
+
+func TestEngineWaitContextTimeout(t *testing.T) {
+	repo := NewMockJobRepository([]processing.Job{
+		{ID: uuid.New(), MediaID: uuid.New(), Type: "hang", Attempts: 0},
+	})
+	registry := processing.NewRegistry()
+	started := make(chan struct{})
+	releaseHang := make(chan struct{})
+	registry.Register("hang", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		close(started)
+		<-releaseHang // игнорируем ctx — зависший in-flight
+		return nil
+	}))
+
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        30 * time.Second,
+		MaxAttempts:       3,
+	}, repo, registry, processing.NewMetrics(prometheus.NewRegistry()))
+
+	require.NoError(t, engine.Start(context.Background()))
+	<-started
+	t.Cleanup(func() { close(releaseHang) })
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_ = engine.Shutdown(shutdownCtx) // timeout; воркер ещё жив
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer waitCancel()
+	err := engine.Wait(waitCtx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestEngineWaitReturnsWhenWorkersDone(t *testing.T) {
+	repo := NewMockJobRepository(nil)
+	registry := processing.NewRegistry()
+	registry.Register("noop", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return nil
+	}))
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        time.Second,
+		MaxAttempts:       3,
+	}, repo, registry, processing.NewMetrics(prometheus.NewRegistry()))
+
+	require.NoError(t, engine.Start(context.Background()))
+	require.NoError(t, engine.Shutdown(context.Background()))
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, engine.Wait(waitCtx))
+}

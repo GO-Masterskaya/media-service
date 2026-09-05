@@ -142,16 +142,52 @@ func (r *PgJobRepo) MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reas
 }
 
 func (r *PgJobRepo) ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error {
-	return r.release(ctx, jobID, owner, runAfter, true, reason)
+	return r.withRunningLease(ctx, jobID, owner, func(tx pgx.Tx, mediaID uuid.UUID) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    last_error = NULLIF($2, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    attempts = attempts + 1,
+			    run_after = $3
+			WHERE id = $1
+		`, jobID, reason, runAfter)
+		if err != nil {
+			return fmt.Errorf("release job: %w", err)
+		}
+		return recalcMedia(ctx, tx, mediaID, "")
+	})
 }
 
 // ReleaseForShutdown возвращает задачу в queued без инкремента attempts
 // и без изменения last_error (диагностика прошлой попытки сохраняется).
 func (r *PgJobRepo) ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error {
-	return r.release(ctx, jobID, owner, time.Now(), false, "")
+	return r.withRunningLease(ctx, jobID, owner, func(tx pgx.Tx, mediaID uuid.UUID) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    run_after = $2
+			WHERE id = $1
+		`, jobID, time.Now())
+		if err != nil {
+			return fmt.Errorf("release job on shutdown: %w", err)
+		}
+		return recalcMedia(ctx, tx, mediaID, "")
+	})
 }
 
-func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, incrementAttempts bool, reason string) error {
+// withRunningLease берёт FOR UPDATE lease owner'а и выполняет fn в той же транзакции.
+func (r *PgJobRepo) withRunningLease(
+	ctx context.Context,
+	jobID uuid.UUID,
+	owner string,
+	fn func(tx pgx.Tx, mediaID uuid.UUID) error,
+) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -186,35 +222,7 @@ func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, 
 		return ErrLeaseMismatch
 	}
 
-	if incrementAttempts {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = 'queued',
-			    last_error = NULLIF($2, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL,
-			    attempts = attempts + 1,
-			    run_after = $3
-			WHERE id = $1
-		`, jobID, reason, runAfter)
-	} else {
-		// Shutdown: не трогаем last_error — пустой reason раньше сбрасывал его через NULLIF.
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = 'queued',
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL,
-			    run_after = $2
-			WHERE id = $1
-		`, jobID, runAfter)
-	}
-	if err != nil {
-		return fmt.Errorf("release job: %w", err)
-	}
-
-	if err := recalcMedia(ctx, tx, mediaID, ""); err != nil {
+	if err := fn(tx, mediaID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -466,7 +474,7 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, back
 		maxAttempts = 3
 	}
 	if batchSize <= 0 {
-		batchSize = 100
+		return 0, fmt.Errorf("reap batch size must be > 0, got %d", batchSize)
 	}
 	backoff = backoff.Normalize()
 
