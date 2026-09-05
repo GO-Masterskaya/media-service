@@ -48,6 +48,10 @@ type Media struct {
 	Error             string
 	CreatedAt         time.Time
 }
+type MediaPage struct {
+	Items   []*Media
+	HasMore bool
+}
 
 // ClaimState — исход попытки MarkDeleting. См. doc-комментарий MediaRepo.MarkDeleting.
 type ClaimState int
@@ -61,6 +65,11 @@ const (
 	// (чужой claim или зависшая с прошлой попытки — неразличимо).
 	ClaimAlreadyDeleting
 )
+
+type MediaCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
 
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
