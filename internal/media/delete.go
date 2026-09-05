@@ -19,6 +19,15 @@ const defaultDeleteBatchSize = 100
 // Шаги: атомарно claim'ить deleting -> удалить объекты MinIO по префиксу
 // {owner_id}/{media_id}/ -> удалить строку (derivatives уходят каскадом FK).
 //
+// Возвращает deleted=true только если ЭТОТ вызов реально выполнил очистку
+// (ClaimTaken, либо ClaimAlreadyDeleting с resumeStuck=true). deleted=false,
+// err=nil — идемпотентный no-op: записи уже не было (ClaimNone) или она
+// принадлежит чужому claim'у, который не наш (ClaimAlreadyDeleting,
+// resumeStuck=false). Это разделение важно для вызывающего кода: DeleteByOwner
+// считает по deleted, а не по отсутствию ошибки — иначе гонка (запись успели
+// удалить между ListDeletableByOwner и deleteByID) задваивает счётчик
+// удалённых записей записями, которых уже не было (см. ревью PR #13/#17).
+//
 // resumeStuck определяет поведение при repo.ClaimAlreadyDeleting (запись уже
 // в status=deleting — из чужого claim'а ИЛИ из прошлой прерванной попытки,
 // на уровне одного запроса это неразличимо, см. MediaRepo.MarkDeleting):
@@ -39,39 +48,39 @@ const defaultDeleteBatchSize = 100
 // БЕЗ проверки владельца: вызывающий код обязан сам гарантировать право на
 // удаление (single-delete API проверяет владельца до вызова; DeleteByOwner и
 // TTL reaper — уже owner-/TTL-scoped запросом, которым получен id).
-func (s *Service) deleteByID(ctx context.Context, mediaID uuid.UUID, resumeStuck bool) error {
+func (s *Service) deleteByID(ctx context.Context, mediaID uuid.UUID, resumeStuck bool) (deleted bool, err error) {
 	m, claim, err := s.mediaRepo.MarkDeleting(ctx, mediaID)
 	if err != nil {
-		return fmt.Errorf("mark deleting: %w", err)
+		return false, fmt.Errorf("mark deleting: %w", err)
 	}
 	switch claim {
 	case repo.ClaimNone:
-		return nil // идемпотентность: записи не было
+		return false, nil // идемпотентность: записи не было
 	case repo.ClaimAlreadyDeleting:
 		if !resumeStuck {
-			return nil // не наш claim — не трогаем (см. doc-комментарий выше)
+			return false, nil // не наш claim — не трогаем (см. doc-комментарий выше)
 		}
 		// иначе — доводим очистку до конца ниже, как и для ClaimTaken.
 	}
 
 	prefix, err := storage.MediaPrefix(m.OwnerID, m.ID)
 	if err != nil {
-		return fmt.Errorf("build media prefix: %w", err)
+		return false, fmt.Errorf("build media prefix: %w", err)
 	}
 
 	if err := s.storage.DeletePrefix(ctx, prefix); err != nil {
 		// Запись остаётся в status=deleting — это ОЖИДАЕМО: она видна для
 		// фоновой сверки orphan/deleting (issue #24), а не потеряна.
-		return fmt.Errorf("delete storage objects: %w", err)
+		return false, fmt.Errorf("delete storage objects: %w", err)
 	}
 
 	if err := s.mediaRepo.HardDelete(ctx, mediaID); err != nil && !errors.Is(err, repo.ErrNotFound) {
 		// ErrNotFound здесь ожидаем: фоновая сверка (#24) могла удалить эту же
 		// зависшую deleting-запись параллельно — это идемпотентный успех, а не
 		// ошибка.
-		return fmt.Errorf("hard delete row: %w", err)
+		return false, fmt.Errorf("hard delete row: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // PurgeMedia больше не выставлена как отдельный публичный метод: конфликт
@@ -126,7 +135,8 @@ func (s *Service) DeleteByOwner(ctx context.Context, ownerID uuid.UUID, batchSiz
 			default:
 			}
 
-			if err := s.deleteByID(ctx, id, true); err != nil {
+			deletedNow, err := s.deleteByID(ctx, id, true)
+			if err != nil {
 				s.log.Error("delete by owner: item failed",
 					slog.Any("error", err),
 					slog.String("owner_id", ownerID.String()),
@@ -134,8 +144,17 @@ func (s *Service) DeleteByOwner(ctx context.Context, ownerID uuid.UUID, batchSiz
 				)
 				continue
 			}
-			deleted++
+			// progressed считает любое успешное разрешение id (реально
+			// удалили ИЛИ подтвердили, что его уже нет) — это id больше не
+			// вернётся из ListDeletableByOwner, страница гарантированно
+			// изменится, зацикливания не будет. А вот в deleted (то, что
+			// видит вызывающий) идут только реальные удаления — иначе гонка
+			// (запись успели удалить между ListDeletableByOwner и этим
+			// вызовом) задваивала бы счётчик записями, которых уже не было.
 			progressed++
+			if deletedNow {
+				deleted++
+			}
 		}
 
 		if progressed == 0 {

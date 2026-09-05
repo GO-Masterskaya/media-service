@@ -31,8 +31,9 @@ func TestDeleteByID_ClaimTaken_Success(t *testing.T) {
 	st := &svcStubStorage{}
 	svc := newTestSvc(mr, st)
 
-	err := svc.deleteByID(context.Background(), mediaID, true)
+	deleted, err := svc.deleteByID(context.Background(), mediaID, true)
 	require.NoError(t, err)
+	assert.True(t, deleted, "ClaimTaken must result in an actual deletion")
 }
 
 func TestDeleteByID_ClaimNone_IsIdempotentSuccess(t *testing.T) {
@@ -40,8 +41,9 @@ func TestDeleteByID_ClaimNone_IsIdempotentSuccess(t *testing.T) {
 	mr := &svcStubMediaRepo{markDeletingClaim: repo.ClaimNone} // записи нет
 	svc := newTestSvc(mr, &svcStubStorage{})
 
-	err := svc.deleteByID(context.Background(), mediaID, true)
+	deleted, err := svc.deleteByID(context.Background(), mediaID, true)
 	require.NoError(t, err)
+	assert.False(t, deleted, "ClaimNone is an idempotent no-op, not a deletion — see review PR #13/#17 counter-inflation fix")
 }
 
 // --- Ретрай зависшей deleting-записи (issue из первого раунда ревью) ---
@@ -75,8 +77,9 @@ func TestDeleteByID_ResumeStuckTrue_CompletesCleanup(t *testing.T) {
 	}
 	svc := newTestSvc(mr, st)
 
-	err := svc.deleteByID(context.Background(), mediaID, true)
+	deleted, err := svc.deleteByID(context.Background(), mediaID, true)
 	require.NoError(t, err)
+	assert.True(t, deleted)
 	assert.True(t, deletePrefixCalled, "resumeStuck=true retry must actually attempt storage cleanup")
 	assert.True(t, hardDeleteCalled, "resumeStuck=true retry must actually attempt row deletion")
 }
@@ -98,8 +101,9 @@ func TestDeleteByID_ResumeStuckFalse_SkipsAlreadyClaimed(t *testing.T) {
 	}
 	svc := newTestSvc(mr, st)
 
-	err := svc.deleteByID(context.Background(), mediaID, false)
+	deleted, err := svc.deleteByID(context.Background(), mediaID, false)
 	require.NoError(t, err)
+	assert.False(t, deleted, "skipped claim must not report as deleted")
 	assert.False(t, deletePrefixCalled, "resumeStuck=false must skip a claim it doesn't own")
 }
 
@@ -126,6 +130,41 @@ func TestDeleteByOwner_DeterministicCount(t *testing.T) {
 	n, err := svc.DeleteByOwner(context.Background(), owner, 100)
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)
+}
+
+// TestDeleteByOwner_ClaimNoneRace_DoesNotInflateCount — регрессия из ревью:
+// между ListDeletableByOwner и deleteByID запись мог успеть удалить кто-то
+// другой (другой DeleteByOwner, DeleteMedia, Reaper, реконсилятор #24) —
+// MarkDeleting в этом случае вернёт ClaimNone. Раньше deleteByID возвращал
+// просто nil-ошибку на ClaimNone, и DeleteByOwner считал это удалением,
+// хотя фактически ничего не произошло. Счётчик должен считать только
+// реальные удаления.
+func TestDeleteByOwner_ClaimNoneRace_DoesNotInflateCount(t *testing.T) {
+	owner := uuid.New()
+	alreadyGone := uuid.New()
+	real1, real2 := uuid.New(), uuid.New()
+	calls := 0
+
+	mr := &svcStubMediaRepo{
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			if id == alreadyGone {
+				return nil, repo.ClaimNone, nil // кто-то уже удалил её первым
+			}
+			return &repo.Media{ID: id, OwnerID: owner}, repo.ClaimTaken, nil
+		},
+		listDeletableByOwner: func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+			calls++
+			if calls > 1 {
+				return nil, nil
+			}
+			return []uuid.UUID{real1, alreadyGone, real2}, nil
+		},
+	}
+	svc := newTestSvc(mr, &svcStubStorage{})
+
+	n, err := svc.DeleteByOwner(context.Background(), owner, 100)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, "only the 2 actually-deleted records should be counted, not the already-gone one")
 }
 
 func TestDeleteByOwner_PartialFailure_ContinuesAndReportsPartialCount(t *testing.T) {

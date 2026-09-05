@@ -118,6 +118,21 @@ func (r *Reaper) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
+		// Приоритетная неблокирующая проверка: если стоп-сигнал уже пришёл
+		// одновременно с тиком, обычный select ниже выбрал бы между ними
+		// псевдослучайно (гарантий приоритета у Go select нет) — и мог бы
+		// запустить ещё один полный проход runOnce уже после Shutdown (см.
+		// ревью PR #13/#17). Эта проверка гарантирует, что стоп побеждает.
+		select {
+		case <-ctx.Done():
+			r.log.Info("reaper stopped (context done)")
+			return
+		case <-r.stopCh:
+			r.log.Info("reaper stopped (shutdown requested)")
+			return
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
 			r.log.Info("reaper stopped (context done)")
@@ -212,13 +227,20 @@ func (r *Reaper) runOnce(ctx context.Context) {
 			// реплики параллельно вызовут DeletePrefix+HardDelete на одной
 			// записи, и дедупликация между репликами исчезнет (см. ревью).
 			// Зависшие записи — зона ответственности фоновой сверки (#24).
-			if err := r.svc.deleteByID(ctx, id, false); err != nil {
+			deletedNow, err := r.svc.deleteByID(ctx, id, false)
+			if err != nil {
 				r.log.Error("reaper: delete failed", slog.Any("error", err), slog.String("media_id", id.String()))
 				r.failedCounter.Inc()
 				continue
 			}
-			r.deletedCounter.Inc()
+			// progressed считает любое успешное разрешение id (та же логика,
+			// что в DeleteByOwner) — id не вернётся из ListExpiredIDs снова,
+			// зацикливания не будет. deletedCounter — только реальные
+			// удаления, не идемпотентные no-op'ы (см. ревью PR #13/#17).
 			progressed++
+			if deletedNow {
+				r.deletedCounter.Inc()
+			}
 		}
 
 		if progressed == 0 {

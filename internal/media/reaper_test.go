@@ -276,3 +276,40 @@ func TestReaper_SkipsAlreadyClaimedRecord_NoDoubleCleanup(t *testing.T) {
 	assert.False(t, deletePrefixCalled, "reaper must not clean up storage for a claim it doesn't own")
 	assert.False(t, hardDeleteCalled, "reaper must not hard-delete a row it doesn't own the claim for")
 }
+
+// TestReaper_ClaimNoneRace_NoStorageOrRowTouched — тот же класс регрессии,
+// что и TestDeleteByOwner_ClaimNoneRace_DoesNotInflateCount: если запись
+// успели удалить между ListExpiredIDs и MarkDeleting (ClaimNone), reaper не
+// должен трогать storage/строку — а значит, и не должен засчитывать это как
+// реальное удаление в deletedCounter (см. фикс deleteByID: возвращает
+// deleted=false для ClaimNone).
+func TestReaper_ClaimNoneRace_NoStorageOrRowTouched(t *testing.T) {
+	alreadyGone := uuid.New()
+	deletePrefixCalled := false
+	hardDeleteCalled := false
+
+	mr := &svcStubMediaRepo{
+		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			return []uuid.UUID{alreadyGone}, nil
+		},
+		markDeletingFunc: func(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+			return nil, repo.ClaimNone, nil // кто-то уже удалил её первым
+		},
+		hardDeleteFunc: func(ctx context.Context, id uuid.UUID) error {
+			hardDeleteCalled = true
+			return nil
+		},
+	}
+	st := &svcStubStorage{
+		deletePrefixFunc: func(ctx context.Context, prefix string) error {
+			deletePrefixCalled = true
+			return nil
+		},
+	}
+	svc := newTestSvc(mr, st)
+	r := NewReaper(svc, 0, 100, svcTestLogger())
+
+	require.NotPanics(t, func() { r.runOnce(context.Background()) })
+	assert.False(t, deletePrefixCalled, "ClaimNone must not attempt storage cleanup")
+	assert.False(t, hardDeleteCalled, "ClaimNone must not attempt row deletion — nothing to delete")
+}
