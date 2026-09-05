@@ -38,9 +38,10 @@ type JobRepo interface {
 	ClaimNext(ctx context.Context, owner string, leaseDuration time.Duration) (*Job, error)
 	MarkDone(ctx context.Context, jobID uuid.UUID, owner string) error
 	MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reason string) error
-	Release(ctx context.Context, jobID uuid.UUID, owner string) error
+	ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error
+	ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error
 	ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error
-	ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error)
+	ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig, batchSize int) (int64, error)
 }
 
 type PgJobRepo struct {
@@ -140,8 +141,91 @@ func (r *PgJobRepo) MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reas
 	return r.complete(ctx, jobID, owner, JobStatusFailed, reason)
 }
 
-func (r *PgJobRepo) Release(ctx context.Context, jobID uuid.UUID, owner string) error {
-	return r.complete(ctx, jobID, owner, JobStatusQueued, "")
+func (r *PgJobRepo) ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error {
+	return r.withRunningLease(ctx, jobID, owner, func(tx pgx.Tx, mediaID uuid.UUID) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    last_error = NULLIF($2, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    attempts = attempts + 1,
+			    run_after = $3
+			WHERE id = $1
+		`, jobID, reason, runAfter)
+		if err != nil {
+			return fmt.Errorf("release job: %w", err)
+		}
+		return recalcMedia(ctx, tx, mediaID, "")
+	})
+}
+
+// ReleaseForShutdown возвращает задачу в queued без инкремента attempts
+// и без изменения last_error (диагностика прошлой попытки сохраняется).
+func (r *PgJobRepo) ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error {
+	return r.withRunningLease(ctx, jobID, owner, func(tx pgx.Tx, mediaID uuid.UUID) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    run_after = $2
+			WHERE id = $1
+		`, jobID, time.Now())
+		if err != nil {
+			return fmt.Errorf("release job on shutdown: %w", err)
+		}
+		return recalcMedia(ctx, tx, mediaID, "")
+	})
+}
+
+// withRunningLease берёт FOR UPDATE lease owner'а и выполняет fn в той же транзакции.
+func (r *PgJobRepo) withRunningLease(
+	ctx context.Context,
+	jobID uuid.UUID,
+	owner string,
+	fn func(tx pgx.Tx, mediaID uuid.UUID) error,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var from JobStatus
+	var lockedBy *string
+	var mediaID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT media_id, status, locked_by
+		FROM processing_jobs
+		WHERE id = $1
+		FOR UPDATE
+	`, jobID).Scan(&mediaID, &from, &lockedBy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load job: %w", err)
+	}
+
+	if !CanTransition(string(from), string(JobStatusQueued)) {
+		return ErrInvalidTransition
+	}
+	if from != JobStatusRunning {
+		return ErrInvalidTransition
+	}
+	// Owner может release даже при протухшем lease (retry/shutdown),
+	// иначе задача зависает в running до reaper.
+	if lockedBy == nil || *lockedBy != owner {
+		return ErrLeaseMismatch
+	}
+
+	if err := fn(tx, mediaID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ExtendLease атомарно продлевает lease для running-задачи, принадлежащей owner.
@@ -200,29 +284,15 @@ func (r *PgJobRepo) complete(ctx context.Context, jobID uuid.UUID, owner string,
 		return ErrLeaseMismatch
 	}
 
-	if to == JobStatusQueued {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = $2,
-			    last_error = NULLIF($3, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL,
-			    attempts = attempts + 1,
-			    run_after = now() + ((attempts + 1) * interval '30 seconds')
-			WHERE id = $1
-		`, jobID, to, reason)
-	} else {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = $2,
-			    last_error = NULLIF($3, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL
-			WHERE id = $1
-		`, jobID, to, reason)
-	}
+	_, err = tx.Exec(ctx, `
+		UPDATE processing_jobs
+		SET status = $2,
+		    last_error = NULLIF($3, ''),
+		    locked_by = NULL,
+		    lease_until = NULL,
+		    locked_at = NULL
+		WHERE id = $1
+	`, jobID, to, reason)
 	if err != nil {
 		return fmt.Errorf("update job: %w", err)
 	}
@@ -396,12 +466,17 @@ func CanTransition(from, to string) bool {
 
 // ReapExpiredLeases возвращает running-задачи с протухшим lease обратно в queued
 // (с инкрементом attempts и exponential backoff через run_after).
-// Задачи, превысившие maxAttempts, переводятся в failed и пересчитывают статус media.
-// Возвращает количество обработанных задач.
-func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int64, error) {
+// Задачи, у которых следующая попытка исчерпала бы MaxAttempts, → failed.
+// Использует FOR UPDATE SKIP LOCKED + LIMIT (batchSize), чтобы несколько реперов
+// не блокировали друг друга и один тик не захватывал всю очередь.
+func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig, batchSize int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("reap batch size must be > 0, got %d", batchSize)
+	}
+	backoff = backoff.Normalize()
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -409,61 +484,85 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1. Re-queue задачи, у которых ещё есть попытки.
-	// Backoff: run_after = now() + (attempts * 30 seconds).
-	const requeueQ = `
-		UPDATE processing_jobs
-		SET status     = 'queued',
-		    locked_by  = NULL,
-		    lease_until = NULL,
-		    locked_at  = NULL,
-		    attempts   = attempts + 1,
-		    run_after  = now() + ((attempts + 1) * interval '30 seconds')
+	const selectQ = `
+		SELECT id, attempts, media_id
+		FROM processing_jobs
 		WHERE status = 'running'
 		  AND lease_until < now()
-		  AND attempts < $1
+		ORDER BY lease_until
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1
 	`
-	tagRequeued, err := tx.Exec(ctx, requeueQ, maxAttempts)
+	rows, err := tx.Query(ctx, selectQ, batchSize)
 	if err != nil {
-		return 0, fmt.Errorf("reap expired leases (requeue): %w", err)
-	}
-
-	// 2. Fail задачи, у которых попытки исчерпаны.
-	const failQ = `
-		UPDATE processing_jobs
-		SET status     = 'failed',
-		    locked_by  = NULL,
-		    lease_until = NULL,
-		    locked_at  = NULL,
-		    last_error = 'max attempts exceeded (lease expired)'
-		WHERE status = 'running'
-		  AND lease_until < now()
-		  AND attempts >= $1
-		RETURNING media_id
-	`
-	rows, err := tx.Query(ctx, failQ, maxAttempts)
-	if err != nil {
-		return 0, fmt.Errorf("reap expired leases (fail): %w", err)
+		return 0, fmt.Errorf("reap expired leases select: %w", err)
 	}
 	defer rows.Close()
 
-	var failedCount int64
-	mediaIDs := make(map[uuid.UUID]struct{})
+	type staleJob struct {
+		id       uuid.UUID
+		attempts int
+		mediaID  uuid.UUID
+	}
+	var stale []staleJob
 	for rows.Next() {
-		failedCount++
-		var mediaID uuid.UUID
-		if err := rows.Scan(&mediaID); err != nil {
-			return 0, fmt.Errorf("reap expired leases scan media_id: %w", err)
+		var j staleJob
+		if err := rows.Scan(&j.id, &j.attempts, &j.mediaID); err != nil {
+			return 0, fmt.Errorf("reap expired leases scan: %w", err)
 		}
-		mediaIDs[mediaID] = struct{}{}
+		stale = append(stale, j)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("reap expired leases rows error: %w", err)
+		return 0, fmt.Errorf("reap expired leases rows: %w", err)
 	}
 	rows.Close()
 
-	// 3. Пересчитываем статус media для всех затронутых media_id
-	for mediaID := range mediaIDs {
+	var processed int64
+	mediaFailed := make(map[uuid.UUID]struct{})
+
+	for _, j := range stale {
+		// Как у worker: nextAttempt = attempts+1; если nextAttempt >= max → fail.
+		if j.attempts+1 >= maxAttempts {
+			tag, err := tx.Exec(ctx, `
+				UPDATE processing_jobs
+				SET status = 'failed',
+				    locked_by = NULL,
+				    lease_until = NULL,
+				    locked_at = NULL,
+				    last_error = 'max attempts exceeded (lease expired)'
+				WHERE id = $1
+			`, j.id)
+			if err != nil {
+				return 0, fmt.Errorf("reap expired leases fail job %s: %w", j.id, err)
+			}
+			if tag.RowsAffected() > 0 {
+				processed++
+				mediaFailed[j.mediaID] = struct{}{}
+			}
+			continue
+		}
+
+		runAfter := backoff.NextRunAfter(j.attempts + 1)
+		tag, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    attempts = attempts + 1,
+			    last_error = 'lease expired',
+			    run_after = $2
+			WHERE id = $1
+		`, j.id, runAfter)
+		if err != nil {
+			return 0, fmt.Errorf("reap expired leases requeue job %s: %w", j.id, err)
+		}
+		if tag.RowsAffected() > 0 {
+			processed++
+		}
+	}
+
+	for mediaID := range mediaFailed {
 		if err := recalcMedia(ctx, tx, mediaID, "max attempts exceeded (lease expired)"); err != nil {
 			return 0, fmt.Errorf("reap expired leases recalc media %s: %w", mediaID, err)
 		}
@@ -472,6 +571,5 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int) (int
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("reap expired leases commit tx: %w", err)
 	}
-
-	return tagRequeued.RowsAffected() + failedCount, nil
+	return processed, nil
 }

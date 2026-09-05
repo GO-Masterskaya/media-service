@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 )
 
 // validate проверяет, что все параметры корректны.
@@ -33,6 +34,21 @@ func (c *Config) validate() error {
 	}
 	if c.MaxJobAttempts <= 0 {
 		return fmt.Errorf("JOB_MAX_ATTEMPTS must be > 0, got %d", c.MaxJobAttempts)
+	}
+	if c.JobBackoffBase <= 0 {
+		return fmt.Errorf("JOB_BACKOFF_BASE must be > 0, got %s", c.JobBackoffBase)
+	}
+	if c.JobBackoffMax <= 0 {
+		return fmt.Errorf("JOB_BACKOFF_MAX must be > 0, got %s", c.JobBackoffMax)
+	}
+	if c.JobBackoffBase > c.JobBackoffMax {
+		return fmt.Errorf("JOB_BACKOFF_BASE (%s) must be <= JOB_BACKOFF_MAX (%s)", c.JobBackoffBase, c.JobBackoffMax)
+	}
+	if c.JobBackoffJitter < 0 || c.JobBackoffJitter > 1 {
+		return fmt.Errorf("JOB_BACKOFF_JITTER must be in [0, 1], got %v", c.JobBackoffJitter)
+	}
+	if c.JobReapBatchSize <= 0 {
+		return fmt.Errorf("JOB_REAP_BATCH_SIZE must be > 0, got %d", c.JobReapBatchSize)
 	}
 	if c.FFMPEGTimeout <= 0 {
 		return fmt.Errorf("FFMPEG_TIMEOUT must be > 0, got %s", c.FFMPEGTimeout)
@@ -103,6 +119,15 @@ func (c *Config) validate() error {
 		}
 		if c.KafkaGroup == "" {
 			return fmt.Errorf("KAFKA_GROUP is required when KAFKA_ENABLED=true")
+		}
+		if c.RetentionInterval <= 0 {
+			return fmt.Errorf("RETENTION_INTERVAL must be > 0, got %s", c.RetentionInterval)
+		}
+		if c.RetentionOlderThan < 24*time.Hour {
+			return fmt.Errorf("RETENTION_OLDER_THAN must be >= 24h, got %s (risk of duplicate side-effect on redelivery)", c.RetentionOlderThan)
+		}
+		if c.RetentionBatchSize <= 0 {
+			return fmt.Errorf("RETENTION_BATCH_SIZE must be > 0, got %d", c.RetentionBatchSize)
 		}
 	}
 	return nil

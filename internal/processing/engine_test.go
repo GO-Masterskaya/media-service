@@ -20,22 +20,24 @@ import (
 // MockJobRepository — потокобезопасный мок репозитория для unit-тестов.
 // Реализует pull-on-demand интерфейс (ClaimOne вместо ClaimQueued).
 type MockJobRepository struct {
-	mu              sync.Mutex
-	queuedJobs      []processing.Job
-	runningJobs     map[string]processing.Job
-	doneJobs        map[string]bool   // jobID -> true
-	failedJobs      map[string]string // jobID -> reason
-	released        map[string]bool   // jobID -> true
-	leaseExtensions int               // количество вызовов ExtendLease
+	mu               sync.Mutex
+	queuedJobs       []processing.Job
+	runningJobs      map[string]processing.Job
+	doneJobs         map[string]bool   // jobID -> true
+	failedJobs       map[string]string // jobID -> reason
+	released         map[string]bool   // jobID -> true (retry)
+	shutdownReleased map[string]bool   // jobID -> true
+	leaseExtensions  int               // количество вызовов ExtendLease
 }
 
 func NewMockJobRepository(jobs []processing.Job) *MockJobRepository {
 	return &MockJobRepository{
-		queuedJobs:  jobs,
-		runningJobs: make(map[string]processing.Job),
-		doneJobs:    make(map[string]bool),
-		failedJobs:  make(map[string]string),
-		released:    make(map[string]bool),
+		queuedJobs:       jobs,
+		runningJobs:      make(map[string]processing.Job),
+		doneJobs:         make(map[string]bool),
+		failedJobs:       make(map[string]string),
+		released:         make(map[string]bool),
+		shutdownReleased: make(map[string]bool),
 	}
 }
 
@@ -75,12 +77,23 @@ func (m *MockJobRepository) FailJob(_ context.Context, jobID string, reason stri
 	return nil
 }
 
-func (m *MockJobRepository) ReleaseJob(_ context.Context, jobID string) error {
+func (m *MockJobRepository) ReleaseJobForRetry(_ context.Context, jobID string, _ int, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.released[jobID] = true
 	if j, ok := m.runningJobs[jobID]; ok {
 		j.Attempts++
+		m.queuedJobs = append(m.queuedJobs, j)
+		delete(m.runningJobs, jobID)
+	}
+	return nil
+}
+
+func (m *MockJobRepository) ReleaseJobOnShutdown(_ context.Context, jobID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shutdownReleased[jobID] = true
+	if j, ok := m.runningJobs[jobID]; ok {
 		m.queuedJobs = append(m.queuedJobs, j)
 		delete(m.runningJobs, jobID)
 	}
@@ -94,7 +107,7 @@ func (m *MockJobRepository) ExtendLease(_ context.Context, jobID string, d time.
 	return nil
 }
 
-func (m *MockJobRepository) ReapExpiredLeases(_ context.Context, _ int) (int64, error) {
+func (m *MockJobRepository) RecoverStaleJobs(_ context.Context) (int64, error) {
 	return 0, nil
 }
 
@@ -129,6 +142,16 @@ func (m *MockJobRepository) GetReleasedJobs() map[string]bool {
 	defer m.mu.Unlock()
 	cp := make(map[string]bool, len(m.released))
 	for k, v := range m.released {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (m *MockJobRepository) GetShutdownReleasedJobs() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make(map[string]bool, len(m.shutdownReleased))
+	for k, v := range m.shutdownReleased {
 		cp[k] = v
 	}
 	return cp
@@ -729,4 +752,131 @@ func TestHeartbeatExtendsLease(t *testing.T) {
 	// Задача должна быть done, а не failed.
 	done := repo.GetDoneJobs()
 	assert.True(t, done[jobID.String()], "Длительная задача с heartbeat должна быть done, а не зациклена")
+}
+
+func TestPermanentErrorFailsImmediately(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "bad_input", Attempts: 0},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+	registry.Register("bad_input", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return processing.PermanentError{Err: errors.New("invalid media format")}
+	}))
+
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        5 * time.Second,
+		MaxAttempts:       3,
+	}, repo, registry, processing.NewMetrics(prometheus.NewRegistry()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, engine.Start(ctx))
+
+	assert.Eventually(t, func() bool {
+		failed := repo.GetFailedJobs()
+		_, ok := failed[jobID.String()]
+		return ok
+	}, 2*time.Second, 10*time.Millisecond)
+
+	engine.Stop()
+
+	assert.Empty(t, repo.GetReleasedJobs(), "permanent error must not retry")
+}
+
+func TestShutdownReleasesInFlightJob(t *testing.T) {
+	jobID := uuid.New()
+	jobs := []processing.Job{
+		{ID: jobID, MediaID: uuid.New(), Type: "slow", Attempts: 2},
+	}
+
+	repo := NewMockJobRepository(jobs)
+	registry := processing.NewRegistry()
+	started := make(chan struct{})
+	registry.Register("slow", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}))
+
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        30 * time.Second,
+		MaxAttempts:       3,
+	}, repo, registry, processing.NewMetrics(prometheus.NewRegistry()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, engine.Start(ctx))
+
+	<-started
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, engine.Shutdown(shutdownCtx))
+
+	shutdownReleased := repo.GetShutdownReleasedJobs()
+	assert.True(t, shutdownReleased[jobID.String()])
+	assert.Empty(t, repo.GetReleasedJobs(), "shutdown must not count as retry")
+}
+
+func TestEngineWaitContextTimeout(t *testing.T) {
+	repo := NewMockJobRepository([]processing.Job{
+		{ID: uuid.New(), MediaID: uuid.New(), Type: "hang", Attempts: 0},
+	})
+	registry := processing.NewRegistry()
+	started := make(chan struct{})
+	releaseHang := make(chan struct{})
+	registry.Register("hang", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		close(started)
+		<-releaseHang // игнорируем ctx — зависший in-flight
+		return nil
+	}))
+
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        30 * time.Second,
+		MaxAttempts:       3,
+	}, repo, registry, processing.NewMetrics(prometheus.NewRegistry()))
+
+	require.NoError(t, engine.Start(context.Background()))
+	<-started
+	t.Cleanup(func() { close(releaseHang) })
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_ = engine.Shutdown(shutdownCtx) // timeout; воркер ещё жив
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer waitCancel()
+	err := engine.Wait(waitCtx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestEngineWaitReturnsWhenWorkersDone(t *testing.T) {
+	repo := NewMockJobRepository(nil)
+	registry := processing.NewRegistry()
+	registry.Register("noop", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
+		return nil
+	}))
+	engine := processing.NewEngine(processing.Config{
+		WorkerConcurrency: 1,
+		PollInterval:      5 * time.Millisecond,
+		JobTimeout:        time.Second,
+		MaxAttempts:       3,
+	}, repo, registry, processing.NewMetrics(prometheus.NewRegistry()))
+
+	require.NoError(t, engine.Start(context.Background()))
+	require.NoError(t, engine.Shutdown(context.Background()))
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, engine.Wait(waitCtx))
 }
