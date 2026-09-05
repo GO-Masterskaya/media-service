@@ -116,7 +116,16 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 	return presigned, nil
 }
 
-func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*repo.Media, error) {
+// GetMedia возвращает метаданные медиаобъекта.
+//
+// Проверка владельца применяется так же, как в GetDownloadURL: при нулевом
+// callerID она пропускается - это анонимный режим, включаемый отсутствием
+// STRICT_OWNER_CHECK. Непустой callerID, не совпадающий с владельцем, даёт
+// PermissionDenied.
+//
+// Деривативы не возвращаются: они лежат в отдельной таблице и читаются
+// отдельным запросом.
+func (s *Service) GetMedia(ctx context.Context, callerID, mediaID uuid.UUID) (*repo.Media, error) {
 	m, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
@@ -124,6 +133,10 @@ func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*repo.Media,
 		}
 		s.log.Error("get media failed", slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	if callerID != uuid.Nil && m.OwnerID != callerID {
+		return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
 	}
 	return m, nil
 }
