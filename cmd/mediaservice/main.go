@@ -159,6 +159,7 @@ func main() {
 				BatchLimit: cfg.RetentionBatchSize,
 			},
 			slog.Default(),
+			nil,
 		)
 		go cleaner.Start(ctx)
 
