@@ -4,18 +4,35 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"mediaservice/internal/repo"
+	"mediaservice/internal/storage"
 	"path"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 )
 
 type ChunkSender func([]byte) error
+
+type mediaLister interface {
+	ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error)
+}
+
+type derivativeLister interface {
+	ListByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]*repo.Derivative, error)
+}
+
+type MediaItem struct {
+	Media       *repo.Media
+	Derivatives []*repo.Derivative
+}
+
+type MediaPage struct {
+	Items   []*MediaItem
+	HasMore bool
+}
 
 var (
 	ErrNotFound           = errors.New("media not found")
@@ -126,6 +143,59 @@ func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*repo.Media,
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	return m, nil
+}
+
+func (s *Service) GetMediaWithDerivatives(ctx context.Context, mediaID uuid.UUID) (*MediaItem, error) {
+	m, err := s.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	lister, ok := s.derivRepo.(derivativeLister)
+	if !ok {
+		return nil, status.Error(codes.Internal, "derivative listing is not supported")
+	}
+	derivatives, err := lister.ListByMediaIDs(ctx, []uuid.UUID{mediaID})
+	if err != nil {
+		s.log.Error("get media derivatives failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	return &MediaItem{Media: m, Derivatives: derivatives[mediaID]}, nil
+}
+
+func (s *Service) ListMediaByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*MediaPage, error) {
+	lister, ok := s.mediaRepo.(mediaLister)
+	if !ok {
+		return nil, status.Error(codes.Internal, "media listing is not supported")
+	}
+	page, err := lister.ListByOwner(ctx, ownerID, pageSize, cursor)
+	if err != nil {
+		s.log.Error("list media by owner failed", slog.Any("error", err), slog.String("owner_id", ownerID.String()))
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	if page == nil {
+		return nil, status.Error(codes.Internal, "empty media page")
+	}
+
+	ids := make([]uuid.UUID, 0, len(page.Items))
+	for _, m := range page.Items {
+		ids = append(ids, m.ID)
+	}
+	derivLister, ok := s.derivRepo.(derivativeLister)
+	if !ok {
+		return nil, status.Error(codes.Internal, "derivative listing is not supported")
+	}
+	derivatives, err := derivLister.ListByMediaIDs(ctx, ids)
+	if err != nil {
+		s.log.Error("list media derivatives failed", slog.Any("error", err), slog.String("owner_id", ownerID.String()))
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	items := make([]*MediaItem, 0, len(page.Items))
+	for _, m := range page.Items {
+		items = append(items, &MediaItem{Media: m, Derivatives: derivatives[m.ID]})
+	}
+	return &MediaPage{Items: items, HasMore: page.HasMore}, nil
 }
 
 // AttachMedia создаёт привязку media к owner через таблицу media_attachments.
