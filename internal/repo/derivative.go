@@ -35,6 +35,37 @@ func NewPgDerivativeRepo(pool *pgxpool.Pool) *PgDerivativeRepo {
 	return &PgDerivativeRepo{pool: pool}
 }
 
+func (r *PgDerivativeRepo) ListByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]*Derivative, error) {
+	result := make(map[uuid.UUID][]*Derivative, len(mediaIDs))
+	if len(mediaIDs) == 0 {
+		return result, nil
+	}
+
+	const q = `
+		SELECT id, media_id, variant, mime, size_bytes, storage_key, metadata
+		FROM media_derivative
+		WHERE media_id = ANY($1)
+		ORDER BY media_id, created_at ASC, id ASC
+	`
+	rows, err := r.pool.Query(ctx, q, mediaIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list derivatives: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var d Derivative
+		if err := rows.Scan(&d.ID, &d.MediaID, &d.Variant, &d.Mime, &d.SizeBytes, &d.StorageKey, &d.Metadata); err != nil {
+			return nil, fmt.Errorf("scan derivative: %w", err)
+		}
+		result[d.MediaID] = append(result[d.MediaID], &d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate derivatives: %w", err)
+	}
+	return result, nil
+}
+
 func (r *PgDerivativeRepo) GetByMediaAndVariant(ctx context.Context, mediaID uuid.UUID, variant string) (*Derivative, error) {
 	const q = `
 		SELECT id, media_id, variant, mime, size_bytes, storage_key
