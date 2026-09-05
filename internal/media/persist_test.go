@@ -84,6 +84,16 @@ func (r *persistMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 	return map[uuid.UUID]struct{}{}, nil
 }
 
+func (r *persistMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+	return nil, repo.ClaimNone, nil
+}
+func (r *persistMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (r *persistMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func (s *persistMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
@@ -609,6 +619,16 @@ func (r *raceAfterPutRepo) ListDeleting(ctx context.Context, olderThan time.Time
 }
 func (r *raceAfterPutRepo) HardDelete(ctx context.Context, id uuid.UUID) error { return nil }
 func (r *raceAfterPutRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, nil
+}
+
+func (r *raceAfterPutRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+	return nil, repo.ClaimNone, nil
+}
+func (r *raceAfterPutRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (r *raceAfterPutRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }
 

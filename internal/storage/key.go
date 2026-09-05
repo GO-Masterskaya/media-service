@@ -42,6 +42,17 @@ func BuildKey(ownerID, mediaID uuid.UUID, variant Variant, mimeType, filename st
 	return key, nil
 }
 
+// MediaPrefix возвращает префикс "{owner_id}/{media_id}/" — под ним лежат
+// original и все derivatives одного media (см. layout SPEC §6). Используется
+// для удаления всех объектов media одним вызовом Interface.DeletePrefix,
+// вместо сбора ключей original+derivatives по отдельности.
+func MediaPrefix(ownerID, mediaID uuid.UUID) (string, error) {
+	if ownerID == uuid.Nil || mediaID == uuid.Nil {
+		return "", fmt.Errorf("owner_id and media_id must be valid UUIDs")
+	}
+	return path.Join(ownerID.String(), mediaID.String()) + "/", nil
+}
+
 func extFromMime(mime string) string {
 	switch {
 	case strings.HasPrefix(mime, "image/jpeg"):

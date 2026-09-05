@@ -66,6 +66,18 @@ func (s *mockMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (m *mockMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+	return nil, repo.ClaimNone, nil
+}
+
+func (m *mockMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (m *mockMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
 func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }

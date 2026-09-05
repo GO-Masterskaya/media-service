@@ -174,6 +174,16 @@ func main() {
 	grpcServer := grpc.NewServer()
 	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
 
+	// +++ ADDED: TTL reaper (#17, ревью PR #13/#17: dry-run/kill-switch/метрики
+	// по образцу reconciler). Graceful shutdown — через reaper.Shutdown ниже.
+	reaperCfg := media.ReaperConfig{
+		Interval:  cfg.TTLReapInterval,
+		BatchSize: cfg.TTLReapBatchSize,
+		DryRun:    cfg.TTLReapDryRun,
+	}
+	reaper := media.NewReaperWithConfig(mediaSvc, reaperCfg, slog.Default(), prometheus.DefaultRegisterer)
+	go reaper.Run(ctx)
+
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		slog.Error("grpc listen", "error", err)
@@ -327,6 +337,14 @@ func main() {
 				}
 			}()
 		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := reaper.Shutdown(shutdownCtx); err != nil {
+				slog.Error("reaper shutdown", "error", err)
+			}
+		}()
 
 		wg.Add(1)
 		go func() {
