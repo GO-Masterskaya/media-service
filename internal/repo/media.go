@@ -48,7 +48,15 @@ type Media struct {
 	Error             string
 	CreatedAt         time.Time
 }
+type MediaPage struct {
+	Items   []*Media
+	HasMore bool
+}
 
+type MediaCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
 	GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error)
