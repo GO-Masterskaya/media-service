@@ -313,3 +313,39 @@ func TestReaper_ClaimNoneRace_NoStorageOrRowTouched(t *testing.T) {
 	assert.False(t, deletePrefixCalled, "ClaimNone must not attempt storage cleanup")
 	assert.False(t, hardDeleteCalled, "ClaimNone must not attempt row deletion — nothing to delete")
 }
+
+// TestReaper_Run_PanicInRunOnce_DoesNotHangShutdown — регрессия из ревью:
+// в прошлом раунде обёртку "wg.Add/anonymous func/defer wg.Done()" в Run()
+// упростили до плоских r.wg.Add(1); r.runOnce(ctx); r.wg.Done(), решив, что
+// defer не нужен раз runOnce синхронный. Это было ошибкой: без defer паника
+// внутри runOnce пропускает wg.Done(), и Shutdown зависает на wg.Wait()
+// навсегда. Тест проверяет, что Shutdown возвращается даже после паники.
+func TestReaper_Run_PanicInRunOnce_DoesNotHangShutdown(t *testing.T) {
+	mr := &svcStubMediaRepo{
+		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			panic("simulated panic in runOnce")
+		},
+	}
+	svc := newTestSvc(mr, &svcStubStorage{})
+	r := NewReaper(svc, 10*time.Millisecond, 100, svcTestLogger())
+
+	go func() {
+		defer func() { recover() }() // паника ожидаема и намеренна для этого теста
+		r.Run(context.Background())
+	}()
+
+	time.Sleep(30 * time.Millisecond) // дать панике сработать хотя бы раз
+
+	done := make(chan struct{})
+	go func() {
+		_ = r.Shutdown(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// ок — Shutdown вернулся, wg.Done() отработал через defer при панике
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown hung after panic in runOnce — defer r.wg.Done() missing")
+	}
+}
