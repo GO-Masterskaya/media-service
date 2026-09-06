@@ -330,7 +330,7 @@ func TestReaper_Run_PanicInRunOnce_DoesNotHangShutdown(t *testing.T) {
 	r := NewReaper(svc, 10*time.Millisecond, 100, svcTestLogger())
 
 	go func() {
-		defer func() { recover() }() // паника ожидаема и намеренна для этого теста
+		defer func() { _ = recover() }() // паника ожидаема и намеренна для этого теста
 		r.Run(context.Background())
 	}()
 
