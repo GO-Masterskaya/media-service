@@ -40,6 +40,8 @@ type Config struct {
 	JobBackoffBase    time.Duration `env:"JOB_BACKOFF_BASE"      env-default:"30s"`
 	JobBackoffMax     time.Duration `env:"JOB_BACKOFF_MAX"       env-default:"10m"`
 	JobBackoffJitter  float64       `env:"JOB_BACKOFF_JITTER"    env-default:"0.2"`
+	// JobReapBatchSize — LIMIT для ReapExpiredLeases / RecoverStaleJobs за один тик.
+	JobReapBatchSize  int           `env:"JOB_REAP_BATCH_SIZE" env-default:"100"`
 	FFMPEGTimeout     time.Duration `env:"FFMPEG_TIMEOUT"        env-default:"10m"`
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT"      env-default:"30s"`
 	Rendition         int           `env:"RENDITION"             env-default:"720"`
@@ -47,8 +49,12 @@ type Config struct {
 	ProcessingTempDir string        `env:"PROCESSING_TEMP_DIR" env-default:"/tmp/processing"`
 
 	// Storage / TTL
-	PresignTTL      time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
-	TTLReapInterval time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	PresignTTL       time.Duration `env:"PRESIGN_TTL"           env-default:"15m"`
+	TTLReapInterval  time.Duration `env:"TTL_REAP_INTERVAL"     env-default:"1m"`
+	TTLReapBatchSize int           `env:"TTL_REAP_BATCH_SIZE"   env-default:"100"`
+	// TTLReapDryRun: только считать/логировать "would delete", ничего не
+	// удалять — рекомендуется на первый выкат reaper'а (ревью PR #13/#17).
+	TTLReapDryRun bool `env:"TTL_REAP_DRY_RUN"      env-default:"false"`
 
 	// Upload temp storage
 	UploadTempDir         string        `env:"UPLOAD_TEMP_DIR"       env-default:"/tmp/media-uploads"`
@@ -57,8 +63,9 @@ type Config struct {
 	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
 
 	// Limits
-	// MAX_CONCURRENT_STREAMS — прикладной лимит одновременных upload/download
-	// стримов per-caller (#21). Не путать с grpc.MaxConcurrentStreams (HTTP/2).
+	// MAX_CONCURRENT_STREAMS — зарезервирован под прикладной лимит одновременных
+	// upload/download стримов per-caller (#21). Пока нигде не применяется;
+	// не путать с grpc.MaxConcurrentStreams (HTTP/2).
 	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
 	MaxConcurrentStreams int `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
 
@@ -133,12 +140,15 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "JobBackoffBase:%s, ", c.JobBackoffBase)
 	fmt.Fprintf(&b, "JobBackoffMax:%s, ", c.JobBackoffMax)
 	fmt.Fprintf(&b, "JobBackoffJitter:%v, ", c.JobBackoffJitter)
+	fmt.Fprintf(&b, "JobReapBatchSize:%d, ", c.JobReapBatchSize)
 	fmt.Fprintf(&b, "FFMPEGTimeout:%s, ", c.FFMPEGTimeout)
 	fmt.Fprintf(&b, "ShutdownTimeout:%s, ", c.ShutdownTimeout)
 	fmt.Fprintf(&b, "Rendition:%d, ", c.Rendition)
 	fmt.Fprintf(&b, "ThumbSecond:%d, ", c.ThumbSecond)
 	fmt.Fprintf(&b, "PresignTTL:%s, ", c.PresignTTL)
 	fmt.Fprintf(&b, "TTLReapInterval:%s, ", c.TTLReapInterval)
+	fmt.Fprintf(&b, "TTLReapBatchSize:%d, ", c.TTLReapBatchSize)
+	fmt.Fprintf(&b, "TTLReapDryRun:%t, ", c.TTLReapDryRun)
 	fmt.Fprintf(&b, "UploadTempDir:%q, ", c.UploadTempDir)
 	fmt.Fprintf(&b, "UploadReserveBytes:%d, ", c.UploadReserveBytes)
 	fmt.Fprintf(&b, "UploadStaleGrace:%s, ", c.UploadStaleGrace)

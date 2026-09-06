@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"strings"
+	"sync/atomic"
 
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
@@ -12,7 +13,37 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"mediaservice/internal/storage"
 )
+
+// inFlightRPCs считает активные non-health RPC (для skip drainWindow при 0).
+var inFlightRPCs atomic.Int64
+
+// InFlightRPCs возвращает число in-flight non-health RPC.
+func InFlightRPCs() int64 {
+	return inFlightRPCs.Load()
+}
+
+func trackInFlightRPC() func() {
+	inFlightRPCs.Add(1)
+	return func() { inFlightRPCs.Add(-1) }
+}
+
+// parseVariant нормализует variant и отвергает неизвестные до обращения к БД.
+// r_360 не производится pipeline'ом — InvalidArgument, а не вечный NotFound.
+func parseVariant(raw string) (storage.Variant, error) {
+	if raw == "" {
+		return storage.VariantOriginal, nil
+	}
+	v := storage.Variant(raw)
+	switch v {
+	case storage.VariantOriginal, storage.VariantThumb, storage.VariantPreview, storage.VariantR720:
+		return v, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "unsupported variant: %s", raw)
+	}
+}
 
 func extractOrGenerateCID(ctx context.Context) string {
 	md, _ := metadata.FromIncomingContext(ctx)

@@ -5,7 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 func TestHealthServer_SetServingStatus(t *testing.T) {
@@ -20,6 +22,16 @@ func TestHealthServer_SetServingStatus(t *testing.T) {
 	}
 	if resp.Status != grpc_health_v1.HealthCheckResponse_NOT_SERVING {
 		t.Fatalf("got %v, want NOT_SERVING", resp.Status)
+	}
+}
+
+func TestHealthServer_UnknownServiceNotFound(t *testing.T) {
+	t.Parallel()
+
+	s := NewHealthServer(nil)
+	_, err := s.Check(t.Context(), &grpc_health_v1.HealthCheckRequest{Service: "other.Service"})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("got %v, want NotFound", err)
 	}
 }
 

@@ -163,6 +163,7 @@ func main() {
 				BatchLimit: cfg.RetentionBatchSize,
 			},
 			slog.Default(),
+			nil,
 		)
 		go cleaner.Start(ctx)
 
@@ -203,6 +204,16 @@ func main() {
 	healthServer := api.NewHealthServer(pool)
 	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+
+	// +++ ADDED: TTL reaper (#17, ревью PR #13/#17: dry-run/kill-switch/метрики
+	// по образцу reconciler). Graceful shutdown — через reaper.Shutdown ниже.
+	reaperCfg := media.ReaperConfig{
+		Interval:  cfg.TTLReapInterval,
+		BatchSize: cfg.TTLReapBatchSize,
+		DryRun:    cfg.TTLReapDryRun,
+	}
+	reaper := media.NewReaperWithConfig(mediaSvc, reaperCfg, slog.Default(), prometheus.DefaultRegisterer)
+	go reaper.Run(ctx)
 
 	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
@@ -255,7 +266,7 @@ func main() {
 		Base:   cfg.JobBackoffBase,
 		Max:    cfg.JobBackoffMax,
 		Jitter: cfg.JobBackoffJitter,
-	})
+	}, cfg.JobReapBatchSize)
 
 	procRegistry := processing.NewRegistry()
 	procRegistry.Register("thumbnail", processing.HandlerFunc(func(ctx context.Context, job processing.Job) error {
@@ -312,8 +323,23 @@ func main() {
 		stop()
 	}
 
-	// 12. Graceful shutdown с дедлайном из config.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	// 12. Graceful shutdown.
+	// overallCtx = drain + 2*ST (компоненты + Wait) + slack, чтобы os.Exit
+	// не срезал pool.Close/sto.Close. awaitEngineWorkers берёт остаток overallCtx.
+	const shutdownSlack = 5 * time.Second
+	shutdownTimeout := cfg.ShutdownTimeout
+	drainWindow := 2 * time.Second
+	if shutdownTimeout < 4*time.Second {
+		drainWindow = shutdownTimeout / 2
+	}
+	// Не тратим бюджет, если нет in-flight RPC (некого ждать на LB).
+	if api.InFlightRPCs() == 0 {
+		drainWindow = 0
+	}
+	overallCtx, overallCancel := context.WithTimeout(context.Background(), 2*shutdownTimeout+shutdownSlack+drainWindow)
+	defer overallCancel()
+
+	shutdownCtx, cancel := context.WithTimeout(overallCtx, shutdownTimeout+drainWindow)
 	defer cancel()
 
 	shutdownDone := make(chan struct{})
@@ -324,15 +350,13 @@ func main() {
 		healthServer.SetServingStatus("media.v1.MediaService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
-		drainWindow := 2 * time.Second
-		if cfg.ShutdownTimeout < 4*time.Second {
-			drainWindow = cfg.ShutdownTimeout / 2
-		}
-		timer := time.NewTimer(drainWindow)
-		select {
-		case <-timer.C:
-		case <-shutdownCtx.Done():
-			timer.Stop()
+		if drainWindow > 0 {
+			timer := time.NewTimer(drainWindow)
+			select {
+			case <-timer.C:
+			case <-shutdownCtx.Done():
+				timer.Stop()
+			}
 		}
 
 		grpcStopped := make(chan struct{})
@@ -340,7 +364,6 @@ func main() {
 			grpcServer.GracefulStop()
 			close(grpcStopped)
 		}()
-
 		select {
 		case <-grpcStopped:
 			slog.Info("grpc server stopped gracefully")
@@ -387,8 +410,19 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			uploadStore.Stop()
-			slog.Info("upload temp store stopped")
+			if err := reaper.Shutdown(shutdownCtx); err != nil {
+				slog.Error("reaper shutdown", "error", err)
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := uploadStore.StopContext(shutdownCtx); err != nil {
+				slog.Warn("upload temp store stop timed out", "error", err)
+			} else {
+				slog.Info("upload temp store stopped")
+			}
 		}()
 
 		wg.Add(1)
@@ -401,24 +435,45 @@ func main() {
 			}
 		}()
 
-		wg.Wait()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// kafka.Shutdown(shutdownCtx)
+		}()
 
-		// После timeout Shutdown воркеры могут ещё работать — ждём их
-		// до закрытия pool, иначе пул закроется под живыми горутинами.
-		engine.Wait()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			//код Wait()'a стримов
+		}()
 
-		if dlqPublisher != nil {
-			if err := dlqPublisher.Close(); err != nil {
-				slog.Error("dlq publisher close", "error", err)
+		componentsDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(componentsDone)
+		}()
+		select {
+		case <-componentsDone:
+		case <-shutdownCtx.Done():
+			slog.Warn("component shutdown wait timed out; proceeding to engine wait / infra close",
+				"error", shutdownCtx.Err())
+		}
+
+		// Wait на остатке overallCtx, затем всегда закрываем pool/storage.
+		awaitEngineWorkers(overallCtx, engine.Wait, func() {
+			if dlqPublisher != nil {
+				if err := dlqPublisher.Close(); err != nil {
+					slog.Error("dlq publisher close", "error", err)
+				}
 			}
-		}
-
-		pool.Close()
-		if err := sto.Close(); err != nil {
-			slog.Error("storage close", "error", err)
-		}
+			pool.Close()
+			if err := sto.Close(); err != nil {
+				slog.Error("storage close", "error", err)
+			}
+		})
 	}()
 
+	// Дожидаемся остановки или истечения общего бюджета (с запасом).
 	select {
 	case <-shutdownDone:
 		if serveFatal != nil {
@@ -426,10 +481,23 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("media service stopped gracefully")
-	case <-shutdownCtx.Done():
-		if shutdownCtx.Err() == context.DeadlineExceeded {
-			slog.Error("timeout exceeded, components shutdown forcibly", "error", shutdownCtx.Err())
+	case <-overallCtx.Done():
+		if overallCtx.Err() == context.DeadlineExceeded {
+			slog.Error("timeout exceeded, components shutdown forcibly", "error", overallCtx.Err())
 		}
 		os.Exit(1)
 	}
+}
+
+// awaitEngineWorkers ждёт воркеров в пределах ctx, затем всегда вызывает closeInfra.
+// При таймауте логирует, что in-flight jobs могут остаться в running до reaper.
+func awaitEngineWorkers(ctx context.Context, wait func(context.Context) error, closeInfra func()) {
+	if err := wait(ctx); err != nil {
+		slog.Error("processing engine wait timeout; closing pool/storage under live workers — "+
+			"in-flight jobs may stay running until lease reaper",
+			"error", err)
+	} else {
+		slog.Info("processing engine workers finished")
+	}
+	closeInfra()
 }

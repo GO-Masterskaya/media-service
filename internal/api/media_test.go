@@ -25,6 +25,14 @@ import (
 type stubMediaRepo struct {
 	media *repo.Media
 	err   error
+
+	// --- delete (issue #13) ---
+	markDeletingClaim repo.ClaimState
+	markDeletingErr   error
+	hardDeleteErr     error
+
+	listDeletableByOwner func(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error)
+	listExpiredIDs       func(ctx context.Context, limit int) ([]uuid.UUID, error)
 }
 
 func (s *stubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
@@ -42,10 +50,36 @@ func (s *stubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTyp
 func (s *stubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
-func (s *stubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
-	return nil
-}
+
 func (s *stubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	return nil, nil
+}
+
+func (s *stubMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
+	if s.markDeletingErr != nil {
+		return nil, repo.ClaimNone, s.markDeletingErr
+	}
+	if s.markDeletingClaim == repo.ClaimNone {
+		return nil, repo.ClaimNone, nil
+	}
+	return s.media, s.markDeletingClaim, nil
+}
+
+func (s *stubMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	return s.hardDeleteErr
+}
+
+func (s *stubMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if s.listDeletableByOwner != nil {
+		return s.listDeletableByOwner(ctx, ownerID, limit)
+	}
+	return nil, nil
+}
+
+func (s *stubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if s.listExpiredIDs != nil {
+		return s.listExpiredIDs(ctx, limit)
+	}
 	return nil, nil
 }
 
@@ -186,6 +220,19 @@ func TestGetDownloadURL_InvalidVariant(t *testing.T) {
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
 
+func TestGetDownloadURL_R360Rejected(t *testing.T) {
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
+	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
+
+	_, err := server.GetDownloadURL(ctxWithOwner(ownerID().String()), &mediav1.GetDownloadURLRequest{
+		MediaId: "11111111-1111-1111-1111-111111111111",
+		Variant: "r_360",
+	})
+
+	requireGRPCCode(t, err, codes.InvalidArgument)
+}
+
 func TestGetDownloadURL_PreviewVariant(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusReady)}
 	dr := &stubDerivRepo{deriv: &repo.Derivative{
@@ -243,4 +290,19 @@ func TestGetDownloadURL_ServiceError(t *testing.T) {
 	})
 
 	requireGRPCCode(t, err, codes.NotFound)
+}
+
+// TestDeleteByOwner_Disabled — issue #13/#17 ревью: DeleteByOwner временно
+// отключён, пока x-owner-id ничем не валидируется (см. комментарий в
+// media.go). Тест фиксирует это осознанное поведение, чтобы его нельзя было
+// случайно "вернуть" без соответствующей проверки авторизации.
+func TestDeleteByOwner_Disabled(t *testing.T) {
+	svc := media.NewService(&stubMediaRepo{}, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
+
+	_, err := server.DeleteByOwner(ctxWithOwner(ownerID().String()), &mediav1.DeleteByOwnerRequest{
+		OwnerId: ownerID().String(),
+	})
+
+	requireGRPCCode(t, err, codes.Unimplemented)
 }

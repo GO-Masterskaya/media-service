@@ -68,21 +68,31 @@ func (s *HealthServer) Ready() bool {
 // Check отвечает на gRPC health probe.
 func (s *HealthServer) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
 	if req.Service != "" && req.Service != "media.v1.MediaService" {
-		return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_UNKNOWN}, nil
+		return nil, status.Error(codes.NotFound, "unknown service")
 	}
-	if st := s.servingStatus(req.Service); st != grpc_health_v1.HealthCheckResponse_SERVING {
-		return &grpc_health_v1.HealthCheckResponse{Status: st}, nil
+	st, err := s.probe(ctx, req.Service)
+	if err != nil {
+		return nil, err
+	}
+	return &grpc_health_v1.HealthCheckResponse{Status: st}, nil
+}
+
+// probe возвращает serving status с учётом drain-флага и ping БД (как Check).
+func (s *HealthServer) probe(ctx context.Context, service string) (grpc_health_v1.HealthCheckResponse_ServingStatus, error) {
+	if st := s.servingStatus(service); st != grpc_health_v1.HealthCheckResponse_SERVING {
+		return st, nil
 	}
 	if s.pool != nil {
 		if err := s.pool.Ping(ctx); err != nil {
 			slog.Error("health check failed", "error", err)
-			return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING}, nil
+			return grpc_health_v1.HealthCheckResponse_NOT_SERVING, nil
 		}
 	}
-	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
+	return grpc_health_v1.HealthCheckResponse_SERVING, nil
 }
 
 // Watch стримит изменения serving status (grpc_health_probe / xDS).
+// Как Check: учитывает drain и доступность БД.
 func (s *HealthServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc_health_v1.Health_WatchServer) error {
 	service := req.GetService()
 	if service != "" && service != "media.v1.MediaService" {
@@ -91,7 +101,10 @@ func (s *HealthServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc
 
 	last := grpc_health_v1.HealthCheckResponse_SERVICE_UNKNOWN
 	send := func() error {
-		st := s.servingStatus(service)
+		st, err := s.probe(stream.Context(), service)
+		if err != nil {
+			return err
+		}
 		if st == last {
 			return nil
 		}

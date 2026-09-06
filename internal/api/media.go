@@ -12,7 +12,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"mediaservice/internal/media"
-	"mediaservice/internal/storage"
 	mediav1 "mediaservice/proto/media/v1"
 )
 
@@ -63,9 +62,9 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		return nil, status.Error(codes.InvalidArgument, "invalid media_id")
 	}
 
-	variant := storage.Variant(req.Variant)
-	if variant == "" {
-		variant = storage.VariantOriginal
+	variant, err := parseVariant(req.Variant)
+	if err != nil {
+		return nil, err
 	}
 
 	callerID, err := s.resolveCaller(ctx)
@@ -83,6 +82,50 @@ func (s *MediaServer) GetDownloadURL(ctx context.Context, req *mediav1.GetDownlo
 		Url:       url.URL,
 		ExpiresAt: timestamppb.New(url.ExpiresAt),
 	}, nil
+}
+
+// DeleteMedia — issue #18/#50 (см. main): снимает привязку media→callerID и,
+// если usages_count после этого дошёл до нуля, чистит файлы и запись.
+// Это НЕ безусловный hard-delete по владельцу — та семантика, которую issue
+// #13/#17 изначально предлагал на это же имя, во избежание дублирования
+// метода Service.DeleteMedia переехала во внутренний конвейер deleteByID
+// (используется только DeleteByOwner/Reaper, наружу не выставлен) — см.
+// обсуждение конфликта PR #13/#17 vs #50.
+func (s *MediaServer) DeleteMedia(ctx context.Context, req *mediav1.DeleteMediaRequest) (*mediav1.DeleteMediaResponse, error) {
+	if req.MediaId == "" {
+		return nil, status.Error(codes.InvalidArgument, "media_id is required")
+	}
+	mediaID, err := uuid.Parse(req.MediaId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid media_id")
+	}
+
+	callerID, err := s.resolveCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.svc.DeleteMedia(ctx, callerID, mediaID); err != nil {
+		return nil, mapMediaError(err)
+	}
+	return &mediav1.DeleteMediaResponse{Deleted: true}, nil
+}
+
+// DeleteByOwner — issue #13, ВРЕМЕННО ОТКЛЮЧЕНО (ревью PR #13/#17).
+//
+// callerID здесь берётся из x-owner-id в metadata, которая НИКЕМ не
+// валидируется — auth interceptor ещё не написан (см. TODO #5 в конфиге).
+// Для одиночного DeleteMedia это принятый в v1 риск (см. ТЗ §5, как и у
+// GetDownloadURL): максимум один чужой объект за раз. Для DeleteByOwner —
+// необратимое МАССОВОЕ удаление — тот же риск неприемлем: злоумышленнику
+// достаточно подставить чужой uuid и в заголовок, и в тело запроса, чтобы
+// стереть чужую медиатеку целиком.
+//
+// Доменная логика (Service.DeleteByOwner) и её тесты (delete_test.go)
+// оставлены нетронутыми — RPC включится обратно, как только появится
+// настоящая проверка токена (#5). До тех пор — Unimplemented.
+func (s *MediaServer) DeleteByOwner(ctx context.Context, req *mediav1.DeleteByOwnerRequest) (*mediav1.DeleteByOwnerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "DeleteByOwner is disabled until request-level auth validation ships (#5): x-owner-id is currently caller-supplied and unverified, unsafe for irreversible bulk delete")
 }
 
 // mapMediaError — доменные ошибки media.* → gRPC status (Upload/Download/…).

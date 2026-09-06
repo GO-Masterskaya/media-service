@@ -2,16 +2,103 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestAwaitEngineWorkersClosesInfraOnWaitTimeout(t *testing.T) {
+	var closed atomic.Bool
+	wait := func(ctx context.Context) error {
+		<-ctx.Done()
+		return context.DeadlineExceeded
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	awaitEngineWorkers(ctx, wait, func() { closed.Store(true) })
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("awaitEngineWorkers blocked too long on wait timeout")
+	}
+	if !closed.Load() {
+		t.Fatal("closeInfra must run after wait timeout")
+	}
+}
+
+func TestAwaitEngineWorkersClosesInfraOnHappyPath(t *testing.T) {
+	var closed atomic.Bool
+	wait := func(ctx context.Context) error {
+		return nil
+	}
+	awaitEngineWorkers(context.Background(), wait, func() { closed.Store(true) })
+	if !closed.Load() {
+		t.Fatal("closeInfra must run when wait succeeds")
+	}
+}
+
+func TestAwaitEngineWorkersDoesNotCloseBeforeWaitReturns(t *testing.T) {
+	var closed atomic.Bool
+	released := make(chan struct{})
+	wait := func(ctx context.Context) error {
+		select {
+		case <-released:
+			if closed.Load() {
+				return errors.New("closeInfra ran before wait returned")
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		awaitEngineWorkers(context.Background(), wait, func() { closed.Store(true) })
+		close(done)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	if closed.Load() {
+		t.Fatal("closeInfra must not run while wait is in progress")
+	}
+	close(released)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("awaitEngineWorkers did not finish")
+	}
+	if !closed.Load() {
+		t.Fatal("closeInfra must run after wait")
+	}
+}
+
+func TestAwaitEngineWorkersUsesParentDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	var sawParentDeadline atomic.Bool
+	wait := func(ctx context.Context) error {
+		<-ctx.Done()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			sawParentDeadline.Store(true)
+		}
+		return ctx.Err()
+	}
+	var closed atomic.Bool
+	awaitEngineWorkers(parent, wait, func() { closed.Store(true) })
+	if !sawParentDeadline.Load() {
+		t.Fatal("wait must see parent overallCtx deadline, not a fresh Background timer")
+	}
+	if !closed.Load() {
+		t.Fatal("closeInfra must still run")
+	}
+}
 
 func TestMainGracefulShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {

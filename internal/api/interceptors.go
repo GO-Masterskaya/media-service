@@ -14,7 +14,6 @@ import (
 )
 
 type correlationIDKey struct{}
-type apiTokenKey struct{}
 
 // RecoveryInterceptor перехватывает панику в unary RPC и возвращает INTERNAL.
 func RecoveryInterceptor() grpc.UnaryServerInterceptor {
@@ -57,9 +56,15 @@ func CorrelationIDInterceptor() grpc.UnaryServerInterceptor {
 		ctx = context.WithValue(ctx, correlationIDKey{}, cid)
 		_ = grpc.SetHeader(ctx, metadata.Pairs("x-correlation-id", cid))
 
-		slog.Info("rpc started", "method", info.FullMethod, "correlation_id", cid)
+		health := isHealthMethod(info.FullMethod)
+		if !health {
+			defer trackInFlightRPC()()
+			slog.Info("rpc started", "method", info.FullMethod, "correlation_id", cid)
+		}
 		resp, err := handler(ctx, req)
-		slog.Info("rpc finished", "method", info.FullMethod, "correlation_id", cid, "error", err)
+		if !health {
+			slog.Info("rpc finished", "method", info.FullMethod, "correlation_id", cid, "error", err)
+		}
 		return resp, err
 	}
 }
@@ -72,9 +77,15 @@ func CorrelationIDStreamInterceptor() grpc.StreamServerInterceptor {
 		_ = grpc.SetHeader(ctx, metadata.Pairs("x-correlation-id", cid))
 
 		wrapped := &ctxStream{ServerStream: stream, ctx: ctx}
-		slog.Info("stream started", "method", info.FullMethod, "correlation_id", cid)
+		health := isHealthMethod(info.FullMethod)
+		if !health {
+			defer trackInFlightRPC()()
+			slog.Info("stream started", "method", info.FullMethod, "correlation_id", cid)
+		}
 		err := handler(srv, wrapped)
-		slog.Info("stream finished", "method", info.FullMethod, "correlation_id", cid, "error", err)
+		if !health {
+			slog.Info("stream finished", "method", info.FullMethod, "correlation_id", cid, "error", err)
+		}
 		return err
 	}
 }
@@ -90,7 +101,6 @@ func TokenInterceptor(enabled bool, expectedToken string) grpc.UnaryServerInterc
 		if !tokenMatches(token, expectedToken) {
 			return nil, status.Error(codes.Unauthenticated, "invalid or missing authorization token")
 		}
-		ctx = context.WithValue(ctx, apiTokenKey{}, token)
 		return handler(ctx, req)
 	}
 }
@@ -105,9 +115,7 @@ func TokenStreamInterceptor(enabled bool, expectedToken string) grpc.StreamServe
 		if !tokenMatches(token, expectedToken) {
 			return status.Error(codes.Unauthenticated, "invalid or missing authorization token")
 		}
-		ctx := context.WithValue(stream.Context(), apiTokenKey{}, token)
-		wrapped := &ctxStream{ServerStream: stream, ctx: ctx}
-		return handler(srv, wrapped)
+		return handler(srv, stream)
 	}
 }
 

@@ -41,7 +41,7 @@ type JobRepo interface {
 	ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error
 	ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error
 	ExtendLease(ctx context.Context, jobID uuid.UUID, owner string, d time.Duration) error
-	ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig) (int64, error)
+	ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig, batchSize int) (int64, error)
 }
 
 type PgJobRepo struct {
@@ -142,14 +142,52 @@ func (r *PgJobRepo) MarkFailed(ctx context.Context, jobID uuid.UUID, owner, reas
 }
 
 func (r *PgJobRepo) ReleaseForRetry(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, reason string) error {
-	return r.release(ctx, jobID, owner, runAfter, true, reason)
+	return r.withRunningLease(ctx, jobID, owner, func(tx pgx.Tx, mediaID uuid.UUID) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    last_error = NULLIF($2, ''),
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    attempts = attempts + 1,
+			    run_after = $3
+			WHERE id = $1
+		`, jobID, reason, runAfter)
+		if err != nil {
+			return fmt.Errorf("release job: %w", err)
+		}
+		return recalcMedia(ctx, tx, mediaID, "")
+	})
 }
 
+// ReleaseForShutdown возвращает задачу в queued без инкремента attempts
+// и без изменения last_error (диагностика прошлой попытки сохраняется).
 func (r *PgJobRepo) ReleaseForShutdown(ctx context.Context, jobID uuid.UUID, owner string) error {
-	return r.release(ctx, jobID, owner, time.Now(), false, "")
+	return r.withRunningLease(ctx, jobID, owner, func(tx pgx.Tx, mediaID uuid.UUID) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE processing_jobs
+			SET status = 'queued',
+			    locked_by = NULL,
+			    lease_until = NULL,
+			    locked_at = NULL,
+			    run_after = $2
+			WHERE id = $1
+		`, jobID, time.Now())
+		if err != nil {
+			return fmt.Errorf("release job on shutdown: %w", err)
+		}
+		return recalcMedia(ctx, tx, mediaID, "")
+	})
 }
 
-func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, runAfter time.Time, incrementAttempts bool, reason string) error {
+// withRunningLease берёт FOR UPDATE lease owner'а и выполняет fn в той же транзакции.
+func (r *PgJobRepo) withRunningLease(
+	ctx context.Context,
+	jobID uuid.UUID,
+	owner string,
+	fn func(tx pgx.Tx, mediaID uuid.UUID) error,
+) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -184,35 +222,7 @@ func (r *PgJobRepo) release(ctx context.Context, jobID uuid.UUID, owner string, 
 		return ErrLeaseMismatch
 	}
 
-	if incrementAttempts {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = 'queued',
-			    last_error = NULLIF($2, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL,
-			    attempts = attempts + 1,
-			    run_after = $3
-			WHERE id = $1
-		`, jobID, reason, runAfter)
-	} else {
-		_, err = tx.Exec(ctx, `
-			UPDATE processing_jobs
-			SET status = 'queued',
-			    last_error = NULLIF($2, ''),
-			    locked_by = NULL,
-			    lease_until = NULL,
-			    locked_at = NULL,
-			    run_after = $3
-			WHERE id = $1
-		`, jobID, reason, runAfter)
-	}
-	if err != nil {
-		return fmt.Errorf("release job: %w", err)
-	}
-
-	if err := recalcMedia(ctx, tx, mediaID, ""); err != nil {
+	if err := fn(tx, mediaID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -457,14 +467,16 @@ func CanTransition(from, to string) bool {
 // ReapExpiredLeases возвращает running-задачи с протухшим lease обратно в queued
 // (с инкрементом attempts и exponential backoff через run_after).
 // Задачи, у которых следующая попытка исчерпала бы MaxAttempts, → failed.
-// Использует FOR UPDATE SKIP LOCKED + LIMIT, чтобы несколько реперов не блокировали друг друга.
-func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig) (int64, error) {
+// Использует FOR UPDATE SKIP LOCKED + LIMIT (batchSize), чтобы несколько реперов
+// не блокировали друг друга и один тик не захватывал всю очередь.
+func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, backoff JobBackoffConfig, batchSize int) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("reap batch size must be > 0, got %d", batchSize)
+	}
 	backoff = backoff.Normalize()
-
-	const reapBatchLimit = 100
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -481,7 +493,7 @@ func (r *PgJobRepo) ReapExpiredLeases(ctx context.Context, maxAttempts int, back
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1
 	`
-	rows, err := tx.Query(ctx, selectQ, reapBatchLimit)
+	rows, err := tx.Query(ctx, selectQ, batchSize)
 	if err != nil {
 		return 0, fmt.Errorf("reap expired leases select: %w", err)
 	}

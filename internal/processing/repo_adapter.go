@@ -18,6 +18,7 @@ type RepoAdapter struct {
 	ownerID       string
 	leaseDuration time.Duration
 	maxAttempts   int
+	reapBatchSize int
 	backoff       BackoffConfig
 }
 
@@ -29,6 +30,7 @@ func NewRepoAdapter(
 	leaseDuration time.Duration,
 	maxAttempts int,
 	backoff BackoffConfig,
+	reapBatchSize int,
 ) *RepoAdapter {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
@@ -39,6 +41,7 @@ func NewRepoAdapter(
 		ownerID:       ownerID,
 		leaseDuration: leaseDuration,
 		maxAttempts:   maxAttempts,
+		reapBatchSize: reapBatchSize,
 		backoff:       backoff,
 	}
 }
@@ -148,5 +151,5 @@ func (a *RepoAdapter) ExtendLease(ctx context.Context, jobID string, d time.Dura
 }
 
 func (a *RepoAdapter) RecoverStaleJobs(ctx context.Context) (int64, error) {
-	return a.jobRepo.ReapExpiredLeases(ctx, a.maxAttempts, a.backoff.toRepo())
+	return a.jobRepo.ReapExpiredLeases(ctx, a.maxAttempts, a.backoff.toRepo(), a.reapBatchSize)
 }
