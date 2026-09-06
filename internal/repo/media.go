@@ -49,12 +49,65 @@ type Media struct {
 	CreatedAt         time.Time
 }
 
+// ClaimState — исход попытки MarkDeleting. См. doc-комментарий MediaRepo.MarkDeleting.
+type ClaimState int
+
+const (
+	// ClaimNone — записи не существует.
+	ClaimNone ClaimState = iota
+	// ClaimTaken — этот вызов первым перевёл запись в status=deleting.
+	ClaimTaken
+	// ClaimAlreadyDeleting — запись существует, но уже была deleting
+	// (чужой claim или зависшая с прошлой попытки — неразличимо).
+	ClaimAlreadyDeleting
+)
+
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
 	GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error)
 	InsertWithJobs(ctx context.Context, m Media, jobTypes []string) (*Media, error)
-	ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*Media, error)
+
+	// MarkDeleting — атомарный claim в конвейере удаления (issues #13, #17):
+	// UPDATE ... WHERE status <> 'deleting' атомарен на уровне БД.
+	//
+	// Три исхода:
+	//   - ClaimTaken: этот вызов ПЕРВЫМ перевёл запись в status=deleting.
+	//     Возвращённая *Media содержит owner_id/id для MinIO-префикса.
+	//     Caller обязан довести очистку (DeletePrefix + HardDelete).
+	//   - ClaimAlreadyDeleting: запись существует, но УЖЕ была deleting —
+	//     из чужого claim'а (другая реплика/конкурентный вызов прямо сейчас)
+	//     ИЛИ из прошлой прерванной попытки. Различить эти два случая на
+	//     уровне одного запроса нельзя — решение о том, доводить очистку до
+	//     конца или пропустить, остаётся за вызывающим кодом (см. deleteByID
+	//     и параметр resumeStuck): ручной повтор должен доводить, периодический
+	//     обход (reaper) — пропускать, чтобы не гоняться за чужим claim'ом.
+	//   - ClaimNone: записи не существует вовсе. Идемпотентный успех.
+	MarkDeleting(ctx context.Context, id uuid.UUID) (m *Media, claim ClaimState, err error)
+
+	// HardDelete удаляет строку media. media_derivative уходит каскадом через
+	// FK ON DELETE CASCADE. Возвращает ErrNotFound, если строки уже не
+	// было — ОЖИДАЕМЫЙ путь при гонке с фоновой сверкой (#24), которая может
+	// параллельно удалить ту же зависшую deleting-запись; вызывающий код
+	// обязан трактовать ErrNotFound здесь как идемпотентный успех.
 	HardDelete(ctx context.Context, id uuid.UUID) error
+
+	// ListDeletableByOwner отдаёт очередной batch id media заданного owner,
+	// ещё не находящихся в status=deleting. После того как MarkDeleting
+	// заклеймил запись, следующий вызов её уже не вернёт — это и обеспечивает
+	// отсутствие повторной обработки в рамках одного DeleteByOwner.
+	ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error)
+
+	// ListExpiredIDs отдаёт очередной batch id media с истёкшим TTL
+	// (expires_at задан и в прошлом), ещё не находящихся в status=deleting.
+	ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error)
+
+	// ListDeleting отдаёт media, зависшие в status=deleting дольше olderThan —
+	// используется фоновой сверкой (#24) для докручивания прерванных удалений.
+	ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*Media, error)
+
+	// ExistsBatch проверяет, какие из переданных id всё ещё существуют —
+	// используется фоновой сверкой (#24) для поиска "осиротевших" объектов
+	// в MinIO без соответствующей строки в БД.
 	ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error)
 	// CreateAttachment создаёт привязку media→owner и инкрементирует usages_count.
 	// Идемпотентна: если привязка уже есть — возвращает nil.
@@ -221,6 +274,37 @@ func mapInsertUniqueViolation(err error) error {
 	}
 }
 
+func (r *PgMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*Media, ClaimState, error) {
+	const q = `
+		UPDATE media
+		SET status = 'deleting'
+		WHERE id = $1 AND status <> 'deleting'
+		RETURNING id, owner_id, status, storage_key`
+
+	var m Media
+	err := r.pool.QueryRow(ctx, q, id).Scan(&m.ID, &m.OwnerID, &m.Status, &m.StorageKey)
+	if err == nil {
+		return &m, ClaimTaken, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, ClaimNone, fmt.Errorf("mark deleting: %w", err)
+	}
+
+	// 0 строк: либо записи нет вовсе, либо она уже в status=deleting — из
+	// чужого claim'а или из прошлой прерванной попытки (на уровне одного
+	// запроса эти два случая неразличимы). Различаем отдельным чтением
+	// только "нет вовсе" vs "уже deleting"; что делать со вторым случаем —
+	// решает вызывающий код (см. ClaimAlreadyDeleting).
+	existing, getErr := r.GetByID(ctx, id)
+	if getErr != nil {
+		if errors.Is(getErr, ErrNotFound) {
+			return nil, ClaimNone, nil
+		}
+		return nil, ClaimNone, fmt.Errorf("mark deleting: check existing: %w", getErr)
+	}
+	return existing, ClaimAlreadyDeleting, nil
+}
+
 // ListDeleting возвращает записи со статусом deleting, обновлённые раньше cutoff.
 func (r *PgMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*Media, error) {
 	const q = `SELECT id, owner_id, status, storage_key FROM media
@@ -243,7 +327,8 @@ func (r *PgMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, lim
 	return result, rows.Err()
 }
 
-// HardDelete безвозвратно удаляет запись.
+// HardDelete безвозвратно удаляет запись. Возвращает ErrNotFound, если строки
+// уже не было — ожидаемый путь при гонке с фоновой сверкой (#24).
 func (r *PgMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 	const q = `DELETE FROM media WHERE id = $1`
 	tag, err := r.pool.Exec(ctx, q, id)
@@ -254,6 +339,45 @@ func (r *PgMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (r *PgMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	const q = `
+		SELECT id FROM media
+		WHERE owner_id = $1 AND status <> 'deleting'
+		ORDER BY id
+		LIMIT $2`
+	return r.listIDs(ctx, q, ownerID, limit)
+}
+
+func (r *PgMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	const q = `
+		SELECT id FROM media
+		WHERE expires_at IS NOT NULL AND expires_at <= now() AND status <> 'deleting'
+		ORDER BY expires_at
+		LIMIT $1`
+	return r.listIDs(ctx, q, limit)
+}
+
+func (r *PgMediaRepo) listIDs(ctx context.Context, q string, args ...any) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list ids: %w", err)
+	}
+	return ids, nil
 }
 
 // ExistsBatch проверяет существование записей по ID.
