@@ -13,11 +13,19 @@ import (
 // мигратором встраивающего проекта.
 //
 // Имена файлов в формате golang-migrate: {версия}_{имя}.{up|down}.sql.
-// Пример применения через golang-migrate:
 //
-//	src, _ := iofs.New(mediaservice.Migrations(), ".")
-//	m, _ := migrate.NewWithSourceInstance("iofs", src, dsn)
-//	err := m.Up()
+// Драйвер базы нужно передавать явно, через WithInstance. Вариант
+// NewWithSourceInstance со строкой подключения выбирает драйвер по схеме
+// URL, а драйвер для postgres:// регистрируется отдельным пакетом, которого
+// в зависимостях библиотеки нет: пакет pgx/v5 регистрирует схему pgx5.
+//
+//	src, err := iofs.New(mediaservice.Migrations(), ".")
+//	db, err := sql.Open("pgx", dsn)
+//	driver, err := migratepgx.WithInstance(db, &migratepgx.Config{})
+//	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
+//	err = m.Up()
+//
+// Полный вариант с обработкой ошибок - в примере ExampleMigrations.
 func Migrations() fs.FS {
 	return migrations.FS
 }
