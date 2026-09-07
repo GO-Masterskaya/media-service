@@ -198,7 +198,9 @@ func (s *Service) Upload(ctx context.Context, params UploadRequestParams, chunkR
 	if err != nil {
 		return nil, fmt.Errorf("open temp file for reading: %w", err)
 	}
-	defer rf.Close()
+	defer func() {
+		_ = rf.Close()
+	}()
 
 	kind := repo.MediaKind(probeInfo.Kind)
 	mediaID := uuid.New()
