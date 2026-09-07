@@ -28,9 +28,11 @@ import (
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrAlreadyExists, ErrInternal,
 // ErrNotImplemented.
 func (c *Client) Upload(ctx context.Context, params UploadParams, reader io.Reader) (UploadResult, error) {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return UploadResult{}, err
 	}
+	defer release()
 	return UploadResult{}, ErrNotImplemented // TODO жду мерж #9
 }
 
@@ -48,9 +50,11 @@ func (c *Client) Upload(ctx context.Context, params UploadParams, reader io.Read
 //
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrNotFound, ErrAccessDenied, ErrInternal.
 func (c *Client) GetMedia(ctx context.Context, ownerID, mediaID uuid.UUID) (*Media, error) {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	if ownerID == uuid.Nil {
 		return nil, fmt.Errorf("%w: owner_id is required", ErrInvalidArgument)
@@ -77,9 +81,11 @@ func (c *Client) GetMedia(ctx context.Context, ownerID, mediaID uuid.UUID) (*Med
 //
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrInternal, ErrNotImplemented.
 func (c *Client) ListByOwner(ctx context.Context, params ListParams) (ListResult, error) {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return ListResult{}, err
 	}
+	defer release()
 	return ListResult{}, ErrNotImplemented // TODO жду мерж #10
 }
 
@@ -99,9 +105,11 @@ func (c *Client) ListByOwner(ctx context.Context, params ListParams) (ListResult
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrNotFound, ErrAccessDenied,
 // ErrNotReady, ErrInternal.
 func (c *Client) GetDownloadURL(ctx context.Context, ownerID, mediaID uuid.UUID, variant Variant) (PresignedURL, error) {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return PresignedURL{}, err
 	}
+	defer release()
 
 	// Проверять обязательно: ядро пропускает сверку владельца, если callerID
 	// нулевой, поэтому нулевое значение открыло бы доступ к чужим объектам.
@@ -142,9 +150,11 @@ func (c *Client) GetDownloadURL(ctx context.Context, ownerID, mediaID uuid.UUID,
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrNotFound, ErrAccessDenied,
 // ErrNotReady, ErrInternal.
 func (c *Client) DownloadStream(ctx context.Context, ownerID, mediaID uuid.UUID, variant Variant) (io.ReadCloser, error) {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	// Проверять обязательно: ядро пропускает сверку владельца при нулевом
 	// callerID, и нулевое значение открыло бы доступ к чужим объектам.
@@ -187,9 +197,11 @@ func (c *Client) DownloadStream(ctx context.Context, ownerID, mediaID uuid.UUID,
 //
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrNotFound, ErrNotReady, ErrInternal.
 func (c *Client) Delete(ctx context.Context, ownerID, mediaID uuid.UUID) error {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return err
 	}
+	defer release()
 
 	if ownerID == uuid.Nil {
 		return fmt.Errorf("%w: owner_id is required", ErrInvalidArgument)
@@ -231,28 +243,21 @@ func (c *Client) Delete(ctx context.Context, ownerID, mediaID uuid.UUID) error {
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrInternal, а также context.Canceled
 // и context.DeadlineExceeded.
 func (c *Client) DeleteByOwner(ctx context.Context, ownerID uuid.UUID) (int, error) {
-	if err := c.checkOpen(); err != nil {
+	release, err := c.acquire()
+	if err != nil {
 		return 0, err
 	}
+	defer release()
 
 	if ownerID == uuid.Nil {
 		return 0, fmt.Errorf("%w: owner_id is required", ErrInvalidArgument)
 	}
-
-	/*
-
-			// Ноль означает "размер батча выбирает ядро". Это настройка
-			// производительности, а не часть публичного контракта, и в сигнатуру
-			// метода она не выносится: обосновать выбор числа вызывающему нечем.
-			deleted, err := c.core.DeleteByOwner(ctx, ownerID, 0)
-			if err != nil {
-				return deleted, mapCoreError(err)
-			}
-			return deleted, nil
-		}
-
-	*/
-
-	// Реализация ждёт #13 (PR #54), где объявлен media.Service.DeleteByOwner.
-	return 0, ErrNotImplemented
+	// Ноль означает "размер батча выбирает ядро". Это настройка
+	// производительности, а не часть публичного контракта: обосновать
+	// выбор числа вызывающему нечем.
+	deleted, err := c.core.DeleteByOwner(ctx, ownerID, 0)
+	if err != nil {
+		return deleted, mapCoreError(err)
+	}
+	return deleted, nil
 }

@@ -65,11 +65,14 @@ func mapCoreError(err error) error {
 		return nil
 	}
 
-	// Отмену и таймаут отдаём как есть: вызывающий должен отличать
-	// собственную отмену от аварии сервиса - в первом случае ретрай
-	// бессмыслен, во втором осмыслен.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
+	// Отмену и таймаут отдаём как стандартные значения, а не как ошибку ядра:
+	// вызывающему важно отличать собственную отмену от аварии сервиса, но
+	// внутренняя обёртка ему для этого не нужна и наружу выходить не должна.
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
 	}
 
 	switch {
