@@ -85,7 +85,7 @@ func (s *Service) resolveKey(ctx context.Context, media *repo.Media, variant str
 			return "", fmt.Errorf("storage key empty for original: %w", ErrNotFound)
 		}
 		return media.StorageKey, nil
-	case string(storage.VariantThumb), string(storage.VariantR360), string(storage.VariantR720), string(storage.VariantPreview):
+	case string(storage.VariantThumb), string(storage.VariantR720), string(storage.VariantPreview):
 		if media.Status != repo.MediaStatusReady {
 			return "", fmt.Errorf("media status %q: %w", media.Status, ErrFailedPrecondition)
 		}

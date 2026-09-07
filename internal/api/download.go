@@ -24,6 +24,11 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 		return status.Error(codes.InvalidArgument, "invalid media_id")
 	}
 
+	variant, err := parseVariant(req.Variant)
+	if err != nil {
+		return err
+	}
+
 	// Проверяем отмену до начала работы.
 	if ctx.Err() != nil {
 		return status.Error(codes.Canceled, "request canceled")
@@ -35,12 +40,14 @@ func (s *MediaServer) DownloadStream(req *mediav1.DownloadStreamRequest, stream 
 		return err
 	}
 
-	slog.Info("download started", slog.String("mediaID", req.MediaId), slog.String("variant", req.Variant))
+	slog.Info("download started", logAttrs(ctx, "media_id", req.MediaId, "variant", string(variant))...)
 	// счетчик отображающий размер отправленных байт для логирования
 	var bytesSent int64
-	defer slog.Info("download finished", slog.String("mediaID", req.MediaId), slog.Int64("bytesSent", bytesSent))
+	defer func() {
+		slog.Info("download finished", logAttrs(ctx, "media_id", req.MediaId, "bytes_sent", bytesSent)...)
+	}()
 
-	err = s.svc.DownloadStream(ctx, callerID, mediaID, req.Variant, func(chunk []byte) error {
+	err = s.svc.DownloadStream(ctx, callerID, mediaID, string(variant), func(chunk []byte) error {
 		bytesSent += int64(len(chunk))
 		return stream.Send(&mediav1.DownloadChunk{Data: chunk})
 	})
