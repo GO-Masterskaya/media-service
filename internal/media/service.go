@@ -13,6 +13,7 @@ import (
 
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
+	"mediaservice/internal/upload"
 )
 
 type ChunkSender func([]byte) error
@@ -28,11 +29,15 @@ var (
 )
 
 type Service struct {
-	mediaRepo  repo.MediaRepo
-	derivRepo  repo.DerivativeRepo
-	storage    storage.Interface
-	presignTTL time.Duration
-	log        *slog.Logger
+	mediaRepo      repo.MediaRepo
+	derivRepo      repo.DerivativeRepo
+	storage        storage.Interface
+	tempStore      *upload.TempStore
+	prober         Prober
+	maxUploadBytes int64
+	mimeAllowlist  []string
+	presignTTL     time.Duration
+	log            *slog.Logger
 }
 
 func NewService(
@@ -46,11 +51,28 @@ func NewService(
 		log = slog.Default()
 	}
 	return &Service{
-		mediaRepo:  mediaRepo,
-		derivRepo:  derivRepo,
-		storage:    storage,
-		presignTTL: presignTTL,
-		log:        log,
+		mediaRepo:      mediaRepo,
+		derivRepo:      derivRepo,
+		storage:        storage,
+		prober:         DefaultProber{},
+		maxUploadBytes: 524288000,
+		mimeAllowlist:  []string{"image/*", "video/*", "audio/*"},
+		presignTTL:     presignTTL,
+		log:            log,
+	}
+}
+
+// SetUploadConfig настраивает параметры для Upload RPC.
+func (s *Service) SetUploadConfig(tempStore *upload.TempStore, prober Prober, maxUploadBytes int64, mimeAllowlist []string) {
+	s.tempStore = tempStore
+	if prober != nil {
+		s.prober = prober
+	}
+	if maxUploadBytes > 0 {
+		s.maxUploadBytes = maxUploadBytes
+	}
+	if len(mimeAllowlist) > 0 {
+		s.mimeAllowlist = mimeAllowlist
 	}
 }
 

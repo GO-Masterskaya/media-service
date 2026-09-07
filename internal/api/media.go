@@ -149,6 +149,8 @@ func mapMediaError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
 	default:
 		// GetDownloadURL уже может вернуть готовый status.Error.
 		if _, ok := status.FromError(err); ok {

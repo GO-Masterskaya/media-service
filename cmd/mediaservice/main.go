@@ -211,6 +211,7 @@ func main() {
 		slog.Error("create upload temp store", "error", err)
 		os.Exit(1)
 	}
+	mediaSvc.SetUploadConfig(uploadStore, media.DefaultProber{}, cfg.MaxUploadBytes, cfg.MIMEAllowlist)
 
 	// 5.1 Processing Engine
 	jobRepo := repo.NewPgJobRepo(pool)
