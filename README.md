@@ -71,13 +71,14 @@ make help    # все команды
 
 ```bash
 # 1. buf — управляет зависимостями proto и вызывает плагины
-go install github.com/bufbuild/buf/cmd/buf@latest
+#    (в CI: bufbuild/buf-action version 1.72.0)
+go install github.com/bufbuild/buf/cmd/buf@v1.72.0
 
-# 2. Go плагины для protoc
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+# 2. Go плагины для protoc — те же пины, что в CI / Makefile
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 
-# 3. Рантайм-валидатор
+# 3. Рантайм-валидатор (версия из go.mod / buf.lock, не buf dep update в CI)
 go get buf.build/go/protovalidate
 ```
 

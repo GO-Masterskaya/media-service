@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -70,5 +71,25 @@ func TestHTTPHealthHandlers_ReadyzRespectsDrain(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got status %d, want 503 after drain", rec.Code)
+	}
+}
+
+func TestWatchProbeInterval(t *testing.T) {
+	t.Parallel()
+	// Follow-up #73: не тикать раз в секунду при мёртвой БД.
+	if watchProbeInterval < 2*time.Second {
+		t.Fatalf("watchProbeInterval=%s, want >= 2s", watchProbeInterval)
+	}
+}
+
+func TestLBDrainWait(t *testing.T) {
+	t.Parallel()
+
+	window := 2 * time.Second
+	if got := LBDrainWait(window, 0); got != 0 {
+		t.Fatalf("inFlight=0: got %s, want 0", got)
+	}
+	if got := LBDrainWait(window, 3); got != window {
+		t.Fatalf("inFlight>0: got %s, want %s", got, window)
 	}
 }
