@@ -14,3 +14,4 @@ internal/processing/*.png
 internal/processing/*.jpeg
 internal/processing/*.jpg
 internal/processing/*.m3u8
+.idea/

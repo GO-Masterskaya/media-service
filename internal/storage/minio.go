@@ -55,6 +55,23 @@ func NewMinIO(cfg MinIOConfig, log *slog.Logger) (Interface, error) {
 	}, nil
 }
 
+// NewMinIOFromClient оборачивает уже готовый клиент MinIO в адаптер хранилища.
+//
+// В отличие от NewMinIO, клиент не создаётся, а принимается извне. Нужен
+// встраиваемой библиотеке pkg/mediaservice: встраивающий проект передаёт
+// своё соединение и сам отвечает за его закрытие.
+func NewMinIOFromClient(client *minio.Client, bucket string, log *slog.Logger) Interface {
+	if log == nil {
+		log = slog.Default()
+	}
+
+	return &minioStorage{
+		client: client,
+		bucket: bucket,
+		log:    log,
+	}
+}
+
 func (s *minioStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 	start := time.Now()
 	opts := minio.PutObjectOptions{

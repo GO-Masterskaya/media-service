@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,9 +14,18 @@ import (
 	"mediaservice/migrations"
 )
 
-func RunMigrations(dsn string) error {
+// RunMigrationsContext применяет встроенные миграции схемы к базе по dsn.
+//
+// Контекст соблюдается частично: golang-migrate не принимает его в Up(),
+// поэтому отмена возможна только на границе версий. Уже начавшийся SQL
+// одной миграции досчитается до конца - прервать длинный ALTER TABLE
+// нельзя. Это ограничение библиотеки миграций, а не недосмотр.
+func RunMigrationsContext(ctx context.Context, dsn string) error {
 	if dsn == "" {
 		return fmt.Errorf("repo: DSN is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	src, err := iofs.New(migrations.FS, ".")
@@ -26,6 +36,14 @@ func RunMigrations(dsn string) error {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("repo: open database: %w", err)
+	}
+
+	// sql.Open соединение не устанавливает. Пингуем явно, чтобы недоступная
+	// база выяснилась здесь, а не внутри мигратора, и чтобы на этом шаге
+	// работала отмена по контексту.
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("repo: connect database: %w", err)
 	}
 
 	driver, err := migratepgx.WithInstance(db, &migratepgx.Config{})
@@ -39,12 +57,32 @@ func RunMigrations(dsn string) error {
 		_ = db.Close()
 		return fmt.Errorf("repo: init migrator: %w", err)
 	}
-
 	defer func() { _, _ = m.Close() }()
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("repo: apply migrations: %w", err)
-	}
+	// Up() контекста не принимает, поэтому запускаем его отдельно и ждём
+	// либо завершения, либо отмены. GracefulStop просит мигратор
+	// остановиться после текущей версии.
+	done := make(chan error, 1)
+	go func() { done <- m.Up() }()
 
-	return nil
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, migrate.ErrNoChange) {
+			return fmt.Errorf("repo: apply migrations: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		m.GracefulStop <- true
+		// Дожидаемся выхода из Up(), иначе m.Close() в defer гонится
+		// с работающей горутиной.
+		<-done
+		return ctx.Err()
+	}
+}
+
+// RunMigrations применяет встроенные миграции схемы к базе по dsn.
+//
+// Эквивалент RunMigrationsContext с context.Background().
+func RunMigrations(dsn string) error {
+	return RunMigrationsContext(context.Background(), dsn)
 }
