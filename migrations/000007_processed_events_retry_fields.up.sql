@@ -1,0 +1,3 @@
+ALTER TABLE processed_events
+    ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;

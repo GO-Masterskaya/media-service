@@ -36,10 +36,18 @@ tidy: ## Привести go.mod в порядок
 	go mod tidy
 
 .PHONY: proto
-proto: ## Сгенерировать код из proto
-	protoc --go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
-		proto/media/v1/*.proto
+proto: ## Сгенерировать Go stubs из proto (идемпотентно)
+	@which buf > /dev/null || (echo "ERROR: buf не установлен. См. README.md#proto-toolchain" && exit 1)
+	@which protoc-gen-go > /dev/null || (echo "ERROR: protoc-gen-go не установлен. Запусти: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest" && exit 1)
+	@which protoc-gen-go-grpc > /dev/null || (echo "ERROR: protoc-gen-go-grpc не установлен. Запусти: go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest" && exit 1)
+	rm -f proto/media/v1/*.pb.go
+	buf generate
+
+.PHONY: proto-lint
+proto-lint: ## Проверить proto на lint и breaking changes
+	@which buf > /dev/null || (echo "ERROR: buf не установлен." && exit 1)
+	buf lint
+	buf breaking --against '.git#branch=main'
 
 .PHONY: up
 up: ## Поднять инфраструктуру и сервис

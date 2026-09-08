@@ -61,3 +61,42 @@ make help    # все команды
 - В standalone-режиме миграции применяются автоматически при старте сервиса
   (`repo.RunMigrations`). При встраивании как библиотеки схемой управляет
   вызывающее приложение.
+
+## Proto toolchain
+
+Контракт описан в `proto/media/v1/media.proto`. Генерация Go stubs воспроизводится
+через `buf` + локальные плагины `protoc-gen-go` / `protoc-gen-go-grpc`.
+
+### Установка
+
+```bash
+# 1. buf — управляет зависимостями proto и вызывает плагины
+go install github.com/bufbuild/buf/cmd/buf@latest
+
+# 2. Go плагины для protoc
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+# 3. Рантайм-валидатор
+go get github.com/bufbuild/protovalidate-go
+```
+
+Валидация buf.validate выполняется автоматически в unary/streaming interceptor до попадания в handler
+
+В корне репозитория уже есть `buf.yaml` и `buf.gen.yaml` — они фиксируют
+версии плагинов и зависимостей proto. Менять их не нужно для повторной генерации.
+
+### Использование сгенерированных stubs
+
+Сгенерированные типы лежат в `proto/media/v1` (пакет `mediav1`). Пример клиента:
+
+```go
+import (
+    "google.golang.org/grpc"
+    mediav1 "mediaservice/proto/media/v1"
+)
+
+conn, _ := grpc.Dial("localhost:9090", grpc.WithTransportCredentials(...))
+client := mediav1.NewMediaServiceClient(conn)
+resp, _ := client.GetMedia(ctx, &mediav1.GetMediaRequest{MediaId: "..."})
+```

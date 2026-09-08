@@ -8,33 +8,86 @@
 package metrics
 
 import (
-	"context"
+	"math"
+	"testing"
 
-	"google.golang.org/grpc/metadata"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 )
 
-type testServerStream struct {
-	ctx context.Context
+func TestRPCRequestsTotal(t *testing.T) {
+	RPCRequestsTotal.Reset()
+
+	RPCRequestsTotal.WithLabelValues("/media.v1.MediaService/GetMedia", "OK").Inc()
+	RPCRequestsTotal.WithLabelValues("/media.v1.MediaService/GetMedia", "OK").Inc()
+	RPCRequestsTotal.WithLabelValues("/media.v1.MediaService/GetMedia", "NotFound").Inc()
+
+	got := testutil.ToFloat64(
+		RPCRequestsTotal.WithLabelValues("/media.v1.MediaService/GetMedia", "OK"),
+	)
+
+	if got != 2 {
+		t.Errorf("expected 2 requests, got %v", got)
+	}
 }
 
-func (s *testServerStream) Context() context.Context {
-	return s.ctx
+func TestRPCDuration(t *testing.T) {
+	RPCDuration.Reset()
+
+	method := "/media.v1.MediaService/GetMedia"
+
+	RPCDuration.WithLabelValues(method).Observe(0.1)
+	RPCDuration.WithLabelValues(method).Observe(0.2)
+
+	ch := make(chan prometheus.Metric, 1)
+	RPCDuration.Collect(ch)
+
+	metric := <-ch
+
+	var dtoMetric dto.Metric
+	if err := metric.Write(&dtoMetric); err != nil {
+		t.Fatalf("failed to read histogram: %v", err)
+	}
+
+	histogram := dtoMetric.GetHistogram()
+
+	if histogram.GetSampleCount() != 2 {
+		t.Errorf(
+			"expected 2 observations, got %d",
+			histogram.GetSampleCount(),
+		)
+	}
+	// тут сравниваем значение float64, а оно будет типа 0.30000000000000004, поэтому зазор в одну миллиардную
+	if math.Abs(histogram.GetSampleSum()-0.3) > 1e-9 {
+		t.Errorf(
+			"expected duration sum approximately 0.3, got %v",
+			histogram.GetSampleSum(),
+		)
+	}
 }
 
-func (s *testServerStream) SetHeader(metadata.MD) error {
-	return nil
-}
+func TestActiveStreams(t *testing.T) {
+	// Приводим gauge к известному состоянию.
+	current := testutil.ToFloat64(ActiveStreams)
+	ActiveStreams.Sub(current)
 
-func (s *testServerStream) SendHeader(metadata.MD) error {
-	return nil
-}
+	ActiveStreams.Inc()
+	ActiveStreams.Inc()
 
-func (s *testServerStream) SetTrailer(metadata.MD) {}
+	if got := testutil.ToFloat64(ActiveStreams); got != 2 {
+		t.Errorf("expected 2 active streams, got %v", got)
+	}
 
-func (s *testServerStream) SendMsg(any) error {
-	return nil
-}
+	ActiveStreams.Dec()
 
-func (s *testServerStream) RecvMsg(any) error {
-	return nil
+	if got := testutil.ToFloat64(ActiveStreams); got != 1 {
+		t.Errorf("expected 1 active stream, got %v", got)
+	}
+
+	ActiveStreams.Dec()
+
+	if got := testutil.ToFloat64(ActiveStreams); got != 0 {
+		t.Errorf("expected 0 active streams, got %v", got)
+	}
 }
