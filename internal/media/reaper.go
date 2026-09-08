@@ -152,12 +152,18 @@ func (r *Reaper) Run(ctx context.Context) {
 			r.log.Info("reaper stopped (shutdown requested)")
 			return
 		case <-ticker.C:
-			// runOnce вызывается синхронно (не в go func) — обёртка в
-			// анонимную функцию тут не нужна, defer scoping'а требовать
-			// нечему (см. ревью PR #13/#17).
+			// Обёртка в анонимную функцию нужна НЕ из-за конкуррентности
+			// (runOnce вызывается синхронно, не в go func) — а чтобы defer
+			// r.wg.Done() сработал именно после этого runOnce, а не после
+			// возврата из самого Run(): защита от паники внутри runOnce.
+			// Без defer паника пропустила бы wg.Done(), и Shutdown завис бы
+			// навсегда на wg.Wait() (см. ревью PR #13/#17 — предыдущее
+			// "упрощение" без defer было ошибкой, не просто лишней indirection).
 			r.wg.Add(1)
-			r.runOnce(ctx)
-			r.wg.Done()
+			func() {
+				defer r.wg.Done()
+				r.runOnce(ctx)
+			}()
 		}
 	}
 }

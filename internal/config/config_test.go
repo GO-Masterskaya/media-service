@@ -30,6 +30,7 @@ func withCleanEnv(t *testing.T) {
 
 // configFromDefaults читает Config через cleanenv env-default теги в изолированном окружении.
 // Новые обязательные параметры из validate() не роняют чужие литералы.
+// Токен подставляется явно: GRPC_AUTH_ENABLED=true по умолчанию, а у токена нет env-default.
 func configFromDefaults(t *testing.T) Config {
 	t.Helper()
 	withCleanEnv(t)
@@ -37,16 +38,30 @@ func configFromDefaults(t *testing.T) Config {
 	if err := cleanenv.ReadEnv(&cfg); err != nil {
 		t.Fatalf("cleanenv.ReadEnv defaults: %v", err)
 	}
+	if cfg.GRPCAuthEnabled && cfg.GRPCAuthToken == "" {
+		cfg.GRPCAuthToken = "test-token"
+	}
 	return cfg
 }
 
 func TestLoadDefaults(t *testing.T) {
+	// Auth enabled by default requires an explicit token (no env-default).
+	t.Setenv("GRPC_AUTH_TOKEN", "test-token")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.GRPCAddr != ":9090" {
 		t.Errorf("GRPCAddr: want :9090, got %s", cfg.GRPCAddr)
+	}
+	if cfg.HTTPAddr != ":8080" {
+		t.Errorf("HTTPAddr: want :8080, got %s", cfg.HTTPAddr)
+	}
+	if !cfg.GRPCAuthEnabled {
+		t.Error("GRPCAuthEnabled: want true by default")
+	}
+	if cfg.GRPCAuthToken != "test-token" {
+		t.Errorf("GRPCAuthToken: want test-token, got %q", cfg.GRPCAuthToken)
 	}
 	if cfg.ShutdownTimeout != 30*time.Second {
 		t.Errorf("ShutdownTimeout: want 30s, got %s", cfg.ShutdownTimeout)
@@ -65,10 +80,23 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadAuthTokenRequiredWhenEnabled(t *testing.T) {
+	t.Setenv("GRPC_AUTH_ENABLED", "true")
+	t.Setenv("GRPC_AUTH_TOKEN", "")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected validation error for empty GRPC_AUTH_TOKEN")
+	}
+	if !strings.Contains(err.Error(), "GRPC_AUTH_TOKEN") {
+		t.Errorf("error should mention GRPC_AUTH_TOKEN, got: %v", err)
+	}
+}
+
 func TestLoadOverride(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("GRPC_ADDR", ":9999")
+	t.Setenv("GRPC_AUTH_TOKEN", "test-token")
 	t.Setenv("SHUTDOWN_TIMEOUT", "5s")
 	t.Setenv("POSTGRES_CONNECT_TIMEOUT", "2s")
 	t.Setenv("POSTGRES_QUERY_TIMEOUT", "10s")
@@ -92,6 +120,7 @@ func TestLoadOverride(t *testing.T) {
 }
 
 func TestLoadValidationError(t *testing.T) {
+	t.Setenv("GRPC_AUTH_TOKEN", "test-token")
 	t.Setenv("MAX_UPLOAD_BYTES", "0")
 	_, err := Load()
 	if err == nil {
@@ -117,6 +146,7 @@ func TestLoadProcessingValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.envKey, func(t *testing.T) {
+			t.Setenv("GRPC_AUTH_TOKEN", "test-token")
 			t.Setenv(tt.envKey, tt.envVal)
 			_, err := Load()
 			if err == nil {

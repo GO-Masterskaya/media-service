@@ -78,7 +78,7 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
 # 3. Рантайм-валидатор
-go get github.com/bufbuild/protovalidate-go
+go get buf.build/go/protovalidate
 ```
 
 Валидация buf.validate выполняется автоматически в unary/streaming interceptor до попадания в handler
