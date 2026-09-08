@@ -320,21 +320,38 @@ func TestReaper_ClaimNoneRace_NoStorageOrRowTouched(t *testing.T) {
 // defer не нужен раз runOnce синхронный. Это было ошибкой: без defer паника
 // внутри runOnce пропускает wg.Done(), и Shutdown зависает на wg.Wait()
 // навсегда. Тест проверяет, что Shutdown возвращается даже после паники.
+//
+// Паника теперь перехватывается внутри Run() (см. defer recover() рядом с
+// debug.Stack()), так что вызывающей горутине свой recover не нужен — если
+// бы паника всё же пробилась наружу, тест сам бы упал с panic, что и было бы
+// правильным сигналом регрессии.
+//
+// Момент, когда паника реально произошла, ловим через канал из стаба, а не
+// фиксированным time.Sleep — иначе тест был бы гонкой между sleep и первым
+// тиком (см. ревью PR #13/#17): при интервале 10ms и sleep 30ms обычно
+// успевает, но не гарантированно.
 func TestReaper_Run_PanicInRunOnce_DoesNotHangShutdown(t *testing.T) {
+	panicked := make(chan struct{}, 1)
 	mr := &svcStubMediaRepo{
 		listExpiredIDs: func(ctx context.Context, limit int) ([]uuid.UUID, error) {
+			select {
+			case panicked <- struct{}{}:
+			default:
+			}
 			panic("simulated panic in runOnce")
 		},
 	}
 	svc := newTestSvc(mr, &svcStubStorage{})
 	r := NewReaper(svc, 10*time.Millisecond, 100, svcTestLogger())
 
-	go func() {
-		defer func() { _ = recover() }() // паника ожидаема и намеренна для этого теста
-		r.Run(context.Background())
-	}()
+	go r.Run(context.Background())
 
-	time.Sleep(30 * time.Millisecond) // дать панике сработать хотя бы раз
+	select {
+	case <-panicked:
+		// дождались хотя бы одного реального срабатывания паники
+	case <-time.After(2 * time.Second):
+		t.Fatal("runOnce never got a chance to panic — test setup broken")
+	}
 
 	done := make(chan struct{})
 	go func() {
