@@ -13,6 +13,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// watchProbeInterval — как часто Watch перепроверяет БД между notify.
+// Не каждую секунду: при мёртвой БД иначе spam ping + логов на каждого watcher.
+const watchProbeInterval = 5 * time.Second
+
 // HealthServer реализует gRPC health checking.
 type HealthServer struct {
 	grpc_health_v1.UnimplementedHealthServer
@@ -74,17 +78,21 @@ func (s *HealthServer) Check(ctx context.Context, req *grpc_health_v1.HealthChec
 	if err != nil {
 		return nil, err
 	}
+	if st == grpc_health_v1.HealthCheckResponse_NOT_SERVING && s.Ready() {
+		// Drain ещё SERVING, но ping БД упал — одноразовый Check, можно залогировать.
+		slog.Error("health check: database not reachable")
+	}
 	return &grpc_health_v1.HealthCheckResponse{Status: st}, nil
 }
 
 // probe возвращает serving status с учётом drain-флага и ping БД (как Check).
+// Без логов: caller решает, когда шуметь (Check — на фейл; Watch — на смену статуса).
 func (s *HealthServer) probe(ctx context.Context, service string) (grpc_health_v1.HealthCheckResponse_ServingStatus, error) {
 	if st := s.servingStatus(service); st != grpc_health_v1.HealthCheckResponse_SERVING {
 		return st, nil
 	}
 	if s.pool != nil {
 		if err := s.pool.Ping(ctx); err != nil {
-			slog.Error("health check failed", "error", err)
 			return grpc_health_v1.HealthCheckResponse_NOT_SERVING, nil
 		}
 	}
@@ -108,6 +116,13 @@ func (s *HealthServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc
 		if st == last {
 			return nil
 		}
+		if last != grpc_health_v1.HealthCheckResponse_SERVICE_UNKNOWN {
+			slog.Info("health watch status changed",
+				"service", service,
+				"from", last.String(),
+				"to", st.String(),
+			)
+		}
 		last = st
 		return stream.Send(&grpc_health_v1.HealthCheckResponse{Status: st})
 	}
@@ -116,7 +131,7 @@ func (s *HealthServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc
 		return err
 	}
 
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(watchProbeInterval)
 	defer ticker.Stop()
 
 	for {

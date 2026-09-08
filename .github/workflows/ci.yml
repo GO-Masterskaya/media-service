@@ -36,13 +36,11 @@ jobs:
 
       - name: Install protoc plugins
         run: |
-          # Pin to versions that produced committed pb.go (see proto file headers).
+          # Pin to versions that produced committed pb.go (see proto file headers / Makefile).
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 
-      - name: buf dep update
-        run: buf dep update
-
+      # Используем закоммиченный buf.lock — без buf dep update (@latest для proto-deps).
       - name: buf lint
         run: buf lint
 
@@ -58,13 +56,11 @@ jobs:
           if [ ! -f "$WT/buf.lock" ] && [ -f buf.lock ]; then
             cp buf.lock "$WT/buf.lock"
           fi
-          (cd "$WT" && buf dep update)
           buf breaking --against "$WT"
           git worktree remove --force "$WT"
 
       - name: Ensure generated code is up to date
         run: |
-          buf dep update
           rm -f proto/media/v1/*.pb.go proto/media/v1/*_grpc.pb.go
           buf generate
           git diff --exit-code proto/media/v1/

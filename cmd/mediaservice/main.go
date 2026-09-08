@@ -329,13 +329,10 @@ func main() {
 	// не срезал pool.Close/sto.Close. awaitEngineWorkers берёт остаток overallCtx.
 	const shutdownSlack = 5 * time.Second
 	shutdownTimeout := cfg.ShutdownTimeout
+	// Резервируем потенциальное окно в бюджете заранее; skip — после NOT_SERVING.
 	drainWindow := 2 * time.Second
 	if shutdownTimeout < 4*time.Second {
 		drainWindow = shutdownTimeout / 2
-	}
-	// Не тратим бюджет, если нет in-flight RPC (некого ждать на LB).
-	if api.InFlightRPCs() == 0 {
-		drainWindow = 0
 	}
 	overallCtx, overallCancel := context.WithTimeout(context.Background(), 2*shutdownTimeout+shutdownSlack+drainWindow)
 	defer overallCancel()
@@ -347,12 +344,14 @@ func main() {
 	go func() {
 		defer close(shutdownDone)
 
-		// Сначала NOT_SERVING (gRPC + /readyz), затем окно для LB, потом drain.
+		// Сначала NOT_SERVING (gRPC + /readyz), потом смотрим in-flight и ждём LB.
+		// Иначе skip по счётчику до not-ready схлопывает окно, ради которого оно нужно.
 		healthServer.SetServingStatus("media.v1.MediaService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
-		if drainWindow > 0 {
-			timer := time.NewTimer(drainWindow)
+		wait := api.LBDrainWait(drainWindow, api.InFlightRPCs())
+		if wait > 0 {
+			timer := time.NewTimer(wait)
 			select {
 			case <-timer.C:
 			case <-shutdownCtx.Done():

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
@@ -21,8 +22,18 @@ import (
 var inFlightRPCs atomic.Int64
 
 // InFlightRPCs возвращает число in-flight non-health RPC.
+// Используется после NOT_SERVING: при 0 можно скипать LB drainWindow.
 func InFlightRPCs() int64 {
 	return inFlightRPCs.Load()
+}
+
+// LBDrainWait — сколько ждать после NOT_SERVING перед GracefulStop.
+// Счётчик смотрим только после not-ready, иначе окно для LB схлопывается зря.
+func LBDrainWait(window time.Duration, inFlight int64) time.Duration {
+	if inFlight == 0 {
+		return 0
+	}
+	return window
 }
 
 func trackInFlightRPC() func() {
