@@ -67,6 +67,10 @@ proto-lint: ## Проверить proto на lint и breaking changes
 up: ## Поднять инфраструктуру и сервис
 	docker compose up -d --build
 
+.PHONY: up-kafka
+up-kafka: ## Поднять инфраструктуру вместе с Kafka (профиль kafka)
+	docker compose --profile kafka up -d --build
+
 .PHONY: down
 down: ## Остановить всё
 	docker compose down

@@ -129,6 +129,22 @@ func (c *Config) validate() error {
 		if c.KafkaGroup == "" {
 			return fmt.Errorf("KAFKA_GROUP is required when KAFKA_ENABLED=true")
 		}
+		// Креды принимаются только парой: одна заданная переменная из двух —
+		// это опечатка в деплое, а не осознанный анонимный доступ.
+		if (c.KafkaUsername == "") != (c.KafkaPassword == "") {
+			return fmt.Errorf("KAFKA_USERNAME and KAFKA_PASSWORD must be set together")
+		}
+		// SASL/SCRAM не шифрует трафик: без TLS и события, и сам обмен
+		// с брокером видны на любом узле между сервисом и Kafka.
+		if c.KafkaUsername != "" && !c.KafkaTLS {
+			return fmt.Errorf("KAFKA_TLS must be true when KAFKA_USERNAME/KAFKA_PASSWORD are set")
+		}
+		if c.KafkaPollTimeout <= 0 {
+			return fmt.Errorf("KAFKA_POLL_TIMEOUT must be > 0, got %s", c.KafkaPollTimeout)
+		}
+		if c.KafkaReconnectMaxBackoff <= 0 {
+			return fmt.Errorf("KAFKA_RECONNECT_MAX_BACKOFF must be > 0, got %s", c.KafkaReconnectMaxBackoff)
+		}
 		if c.RetentionInterval <= 0 {
 			return fmt.Errorf("RETENTION_INTERVAL must be > 0, got %s", c.RetentionInterval)
 		}

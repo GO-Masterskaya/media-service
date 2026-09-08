@@ -88,6 +88,19 @@ type Config struct {
 	KafkaDLQTopic string   `env:"KAFKA_DLQ_TOPIC"       env-default:"media.events.dlq"`
 	KafkaGroup    string   `env:"KAFKA_GROUP"           env-default:"media-service"`
 
+	// Kafka security. Дефолт пустой: локальный compose поднимает брокер
+	// без авторизации, prod обязан задать креды и TLS (см. validate).
+	KafkaUsername string `env:"KAFKA_USERNAME"        env-default:""`
+	KafkaPassword string `env:"KAFKA_PASSWORD"        env-default:""`
+	KafkaTLS      bool   `env:"KAFKA_TLS"             env-default:"false"`
+
+	// KafkaPollTimeout — потолок ожидания одного poll. Нужен, чтобы цикл
+	// консьюмера регулярно возвращал управление и проверял отмену контекста.
+	KafkaPollTimeout time.Duration `env:"KAFKA_POLL_TIMEOUT"    env-default:"1s"`
+	// KafkaReconnectMaxBackoff — потолок экспоненциальной паузы между
+	// повторными poll после ошибки (SPEC #27: bounded backoff).
+	KafkaReconnectMaxBackoff time.Duration `env:"KAFKA_RECONNECT_MAX_BACKOFF" env-default:"10s"`
+
 	// StrictOwnerCheck включает строгую проверку владельца.
 	// При true требуется валидный auth interceptor (TODO #5).
 	// Пока используется как feature-flag для deploy-модели за gateway.
@@ -166,6 +179,13 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
 	fmt.Fprintf(&b, "KafkaGroup:%q, ", c.KafkaGroup)
+	// Ни username, ни пароль в лог не идут: пишем только факт включённогgit о
+	// SASL. Этого достаточно, чтобы отличить "креды не подхватились"
+	// от "креды не заданы", и ничего не утечёт в аварийный дамп конфига.
+	fmt.Fprintf(&b, "KafkaSASL:%v, ", c.KafkaUsername != "")
+	fmt.Fprintf(&b, "KafkaTLS:%v, ", c.KafkaTLS)
+	fmt.Fprintf(&b, "KafkaPollTimeout:%s, ", c.KafkaPollTimeout)
+	fmt.Fprintf(&b, "KafkaReconnectMaxBackoff:%s, ", c.KafkaReconnectMaxBackoff)
 	fmt.Fprintf(&b, "RetentionInterval:%s, ", c.RetentionInterval)
 	fmt.Fprintf(&b, "RetentionOlderThan:%s, ", c.RetentionOlderThan)
 	fmt.Fprintf(&b, "RetentionBatchSize:%d, ", c.RetentionBatchSize)

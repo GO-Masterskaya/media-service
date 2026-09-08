@@ -70,6 +70,52 @@ services:
     volumes:
       - ./migrations:/app/migrations:ro
 
+  # Kafka под профилем: обычный `make up` её не поднимает, сервис при
+  # KAFKA_ENABLED=false к ней не ходит. Redpanda выбрана вместо связки
+  # Kafka+ZooKeeper — один контейнер, протокол тот же (SPEC §9).
+  kafka:
+    image: redpandadata/redpanda:v24.3.6
+    container_name: media-kafka
+    profiles: ["kafka"]
+    restart: unless-stopped
+    command: >
+      redpanda start --overprovisioned --smp 1 --memory 512M --reserve-memory 0M
+      --node-id 0 --check=false
+      --kafka-addr PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      --advertise-kafka-addr PLAINTEXT://kafka:9092,OUTSIDE://localhost:19092
+    ports:
+      # 9092 наружу не публикуем: внутри сети сервис ходит по kafka:9092.
+      # 19092 нужен, чтобы запускать go-тесты с хоста.
+      - "19092:19092"
+    healthcheck:
+      # rpk cluster health ходит в Admin API и флага брокеров не принимает.
+      # Нам нужен именно Kafka API: от него зависит createkafkatopics ниже.
+      test: [ "CMD-SHELL", "rpk cluster info -X brokers=localhost:9092 >/dev/null 2>&1 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Топики создаются явно, а не автосозданием на первом produce:
+  # авто-топик получает дефолтные partitions/retention кластера, и
+  # конфигурация окружения становится неповторяемой.
+  createkafkatopics:
+    image: redpandadata/redpanda:v24.3.6
+    container_name: media-createkafkatopics
+    profiles: ["kafka"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-media.events}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-media.events.dlq}
+    entrypoint: >
+      /bin/sh -c "
+      rpk topic create $$KAFKA_TOPIC --brokers kafka:9092 || true;
+      rpk topic create $$KAFKA_DLQ_TOPIC --brokers kafka:9092 || true
+      "
+    restart: "no"
+
 volumes:
   postgres_data:
   minio_data:

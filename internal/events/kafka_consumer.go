@@ -2,12 +2,26 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+const (
+	// defaultPollTimeout — потолок ожидания одного PollFetches, если
+	// KafkaConsumerConfig.PollTimeout не задан.
+	defaultPollTimeout = time.Second
+	// reconnectBackoffBase — стартовая пауза после ошибки poll. Дальше
+	// удваивается до reconnectMaxBackoff и сбрасывается на первом
+	// успешном poll.
+	reconnectBackoffBase = 100 * time.Millisecond
+	// defaultReconnectMaxBackoff — потолок паузы, если
+	// KafkaConsumerConfig.ReconnectMaxBackoff не задан.
+	defaultReconnectMaxBackoff = 10 * time.Second
 )
 
 // kafkaClient — абстракция над kgo.Client для тестируемости.
@@ -23,6 +37,14 @@ type KafkaConsumerConfig struct {
 	Brokers []string
 	Topic   string
 	GroupID string
+	// Security — TLS и SASL/SCRAM. Нулевое значение = PLAINTEXT без
+	// авторизации, это допустимо только для локального compose.
+	Security KafkaSecurity
+	// PollTimeout — потолок ожидания одного PollFetches. 0 → defaultPollTimeout.
+	PollTimeout time.Duration
+	// ReconnectMaxBackoff — потолок паузы между повторами после ошибки poll.
+	// 0 → defaultReconnectMaxBackoff.
+	ReconnectMaxBackoff time.Duration
 }
 
 type partitionWorkerState struct {
@@ -41,6 +63,12 @@ type KafkaConsumer struct {
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	partitionWorkers sync.Map
+
+	// Нормализованные значения из KafkaConsumerConfig. Хранятся здесь,
+	// а не в cfg, чтобы Run не зависел от конструктора: часть unit-тестов
+	// собирает KafkaConsumer литералом.
+	pollTimeout         time.Duration
+	reconnectMaxBackoff time.Duration
 }
 
 func NewKafkaConsumer(
@@ -60,17 +88,28 @@ func NewKafkaConsumer(
 	if handler == nil {
 		return nil, fmt.Errorf("handler required")
 	}
+	if err := cfg.Security.Validate(); err != nil {
+		return nil, err
+	}
 	if log == nil {
 		log = slog.Default()
 	}
-
-	c := &KafkaConsumer{
-		handler: handler,
-		log:     log,
-		stopCh:  make(chan struct{}),
+	if cfg.PollTimeout <= 0 {
+		cfg.PollTimeout = defaultPollTimeout
+	}
+	if cfg.ReconnectMaxBackoff <= 0 {
+		cfg.ReconnectMaxBackoff = defaultReconnectMaxBackoff
 	}
 
-	client, err := kgo.NewClient(
+	c := &KafkaConsumer{
+		handler:             handler,
+		log:                 log,
+		stopCh:              make(chan struct{}),
+		pollTimeout:         cfg.PollTimeout,
+		reconnectMaxBackoff: cfg.ReconnectMaxBackoff,
+	}
+
+	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ConsumerGroup(cfg.GroupID),
 		kgo.ConsumeTopics(cfg.Topic),
@@ -89,7 +128,12 @@ func NewKafkaConsumer(
 				}
 			}
 		}),
-	)
+	}
+	// TLS и SASL добавляются последними и только если заданы: пустая
+	// Security оставляет клиента в PLAINTEXT для локального compose.
+	opts = append(opts, cfg.Security.clientOpts()...)
+
+	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("create kafka client: %w", err)
 	}
@@ -102,6 +146,14 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 	c.runWg.Add(1)
 	defer c.runWg.Done()
 
+	// Потолок берём из поля, но не доверяем ему вслепую: литерал в тесте
+	// может оставить ноль, и тогда удвоение backoff стало бы бесконечным.
+	maxBackoff := c.reconnectMaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = defaultReconnectMaxBackoff
+	}
+	backoff := min(reconnectBackoffBase, maxBackoff)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -111,14 +163,56 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 		default:
 		}
 
-		fetches := c.client.PollFetches(ctx)
+		fetches := c.pollOnce(ctx)
+
+		// Err0 — дешёвая проверка «искусственного» фетча. franz-go
+		// подставляет одиночный фетч с topic="" и partition=-1, когда
+		// poll прерван: закрытием клиента, отменой или дедлайном контекста.
+		// Записей в таком фетче нет никогда (см. PollRecords), поэтому
+		// выходить/продолжать здесь безопасно.
+		if err := fetches.Err0(); err != nil {
+			switch {
+			case errors.Is(err, kgo.ErrClientClosed):
+				return nil
+			case errors.Is(err, context.Canceled):
+				return ctx.Err()
+			case errors.Is(err, context.DeadlineExceeded):
+				// Истёк дедлайн одного poll: в топике просто нет новых
+				// записей. Это не обрыв связи — backoff не трогаем
+				// и сразу поллим снова.
+				continue
+			}
+		}
+
 		if errs := fetches.Errors(); len(errs) > 0 {
 			for _, err := range errs {
 				c.log.Error("fetch error", "topic", err.Topic, "partition", err.Partition, "err", err.Err)
 			}
+			// Ошибки есть, записей нет — считаем это недоступностью
+			// брокера. Без паузы цикл превращается в busy-loop: poll
+			// падает мгновенно и мы сразу зовём его снова.
+			if fetches.NumRecords() == 0 {
+				c.log.Warn("kafka poll failed, backing off", slog.Duration("backoff", backoff))
+				if !c.sleep(ctx, backoff) {
+					// Прервано ctx или stopCh — выйдем через select
+					// в начале следующей итерации.
+					continue
+				}
+				backoff = nextBackoff(backoff, maxBackoff)
+				continue
+			}
 		}
+		// Данные пришли — соединение живо, начинаем отсчёт заново.
+		backoff = min(reconnectBackoffBase, maxBackoff)
 
 		fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+			// Партиция без записей воркера не заслуживает: он бы навсегда
+			// осел в partitionWorkers и жил до shutdown. Сюда попадают
+			// в том числе «искусственные» партиции -1 с ошибкой.
+			if len(p.Records) == 0 {
+				return
+			}
+
 			key := fmt.Sprintf("%s:%d", p.Topic, p.Partition)
 
 			stateAny, loaded := c.partitionWorkers.Load(key)
@@ -151,6 +245,48 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 			}
 		})
 	}
+}
+
+// pollOnce ограничивает время одного PollFetches. Без дедлайна poll висит
+// до появления записей, и цикл Run не может проверить stopCh — остановка
+// держится только на client.Close(). С дедлайном цикл дышит раз в
+// pollTimeout, а истечение дедлайна отличимо от ошибки связи.
+//
+// Дочерний контекст обязателен: отмена родительского ctx через него
+// проходит, а обратно дедлайн не протекает.
+func (c *KafkaConsumer) pollOnce(ctx context.Context) kgo.Fetches {
+	if c.pollTimeout <= 0 {
+		return c.client.PollFetches(ctx)
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, c.pollTimeout)
+	defer cancel()
+	return c.client.PollFetches(pollCtx)
+}
+
+// sleep возвращает false, если пауза прервана остановкой консьюмера.
+// Обычный time.Sleep здесь недопустим: он задержал бы shutdown на весь
+// backoff.
+func (c *KafkaConsumer) sleep(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-c.stopCh:
+		return false
+	}
+}
+
+// nextBackoff удваивает паузу, не превышая потолок.
+// Параметр назван limit, а не max, чтобы не перекрывать встроенный max.
+func nextBackoff(current, limit time.Duration) time.Duration {
+	next := current * 2
+	if next > limit {
+		return limit
+	}
+	return next
 }
 
 func (c *KafkaConsumer) partitionWorker(
