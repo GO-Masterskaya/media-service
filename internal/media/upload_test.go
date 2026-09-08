@@ -140,13 +140,13 @@ func TestUpload_Success_Image(t *testing.T) {
 func TestUpload_Success_Video(t *testing.T) {
 	prober := &mockProber{
 		info: &processing.MediaInfo{
-			Kind:        processing.KindVideo,
-			Width:       1920,
-			Height:      1080,
-			Duration:    10 * time.Second,
-			Codec:       "h264",
-			Bitrate:     5000000,
-			FormatName:  "mov,mp4,m4a,3gp,3g2,mj2",
+			Kind:       processing.KindVideo,
+			Width:      1920,
+			Height:     1080,
+			Duration:   10 * time.Second,
+			Codec:      "h264",
+			Bitrate:    5000000,
+			FormatName: "mov,mp4,m4a,3gp,3g2,mj2",
 		},
 	}
 	svc, mr, _, tempStore := setupUploadTestService(t, prober, 10*1024*1024, []string{"video/*"})

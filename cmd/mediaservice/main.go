@@ -174,6 +174,20 @@ func main() {
 		)
 	}
 
+	uploadMetrics := upload.NewMetrics(nil)
+	uploadStore, err := upload.New(upload.Config{
+		Dir:             cfg.UploadTempDir,
+		MaxFileSize:     cfg.MaxUploadBytes,
+		ReserveBytes:    cfg.UploadReserveBytes,
+		StaleGrace:      cfg.UploadStaleGrace,
+		CleanupInterval: cfg.UploadCleanupInterval,
+	}, uploadMetrics, slog.Default())
+	if err != nil {
+		slog.Error("create upload temp store", "error", err)
+		os.Exit(1)
+	}
+	mediaSvc.SetUploadConfig(uploadStore, media.DefaultProber{}, cfg.MaxUploadBytes, cfg.MIMEAllowlist)
+
 	// 9. gRPC server с цепочкой interceptors.
 	// MaxRecvMsgSize — лимит одного protobuf-сообщения (чанк), не всего upload.
 	const maxRecvMsgSize = 16 << 20 // 16 MiB
@@ -245,20 +259,6 @@ func main() {
 			fatalErr <- fmt.Errorf("http health server: %w", err)
 		}
 	}()
-
-	uploadMetrics := upload.NewMetrics(nil)
-	uploadStore, err := upload.New(upload.Config{
-		Dir:             cfg.UploadTempDir,
-		MaxFileSize:     cfg.MaxUploadBytes,
-		ReserveBytes:    cfg.UploadReserveBytes,
-		StaleGrace:      cfg.UploadStaleGrace,
-		CleanupInterval: cfg.UploadCleanupInterval,
-	}, uploadMetrics, slog.Default())
-	if err != nil {
-		slog.Error("create upload temp store", "error", err)
-		os.Exit(1)
-	}
-	mediaSvc.SetUploadConfig(uploadStore, media.DefaultProber{}, cfg.MaxUploadBytes, cfg.MIMEAllowlist)
 
 	// 10. Processing Engine
 	jobRepo := repo.NewPgJobRepo(pool)
