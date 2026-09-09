@@ -274,6 +274,32 @@ func TestGetMedia_OwnerAllowed(t *testing.T) {
 	assert.Equal(t, owner.String(), got.OwnerId)
 }
 
+func TestListMediaByOwner_ForeignOwnerDenied(t *testing.T) {
+	owner := ownerID()
+	caller := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+	server := NewMediaServer(
+		media.NewService(
+			&stubMediaRepo{},
+			&stubDerivRepo{},
+			&stubStorage{},
+			time.Minute,
+			testLogger(),
+		),
+		true,
+	)
+
+	_, err := server.ListMediaByOwner(
+		ctxWithOwner(caller.String()),
+		&mediav1.ListMediaByOwnerRequest{
+			OwnerId:  owner.String(),
+			PageSize: 10,
+		},
+	)
+
+	requireGRPCCode(t, err, codes.PermissionDenied)
+}
+
 func TestListMediaByOwner_UsesPageTokenAndKeepsOwnerInToken(t *testing.T) {
 	first := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	second := uuid.MustParse("22222222-2222-2222-2222-222222222222")
