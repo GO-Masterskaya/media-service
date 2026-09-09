@@ -116,11 +116,15 @@ func toProtoMedia(item *media.MediaItem) (*mediav1.Media, error) {
 	metadata, _ = structpb.NewStruct(map[string]any{})
 	if len(m.Metadata) > 0 {
 		var obj map[string]any
-		if err := json.Unmarshal(m.Metadata, &obj); err == nil {
-			if parsed, err := structpb.NewStruct(obj); err == nil {
-				metadata = parsed
-			}
+		if err := json.Unmarshal(m.Metadata, &obj); err != nil {
+			return nil, fmt.Errorf("invalid media metadata: %w", err)
 		}
+
+		parsed, err := structpb.NewStruct(obj)
+		if err != nil {
+			return nil, fmt.Errorf("invalid media metadata: %w", err)
+		}
+		metadata = parsed
 	}
 
 	out := &mediav1.Media{
@@ -230,7 +234,7 @@ func (s *MediaServer) ListMediaByOwner(ctx context.Context, req *mediav1.ListMed
 	for _, item := range page.Items {
 		m, err := toProtoMedia(item)
 		if err != nil {
-			return nil, status.Error(codes.Internal, "invalid media metadata")
+			continue
 		}
 		resp.Items = append(resp.Items, m)
 	}

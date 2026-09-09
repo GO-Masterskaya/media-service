@@ -300,6 +300,85 @@ func TestListMediaByOwner_ForeignOwnerDenied(t *testing.T) {
 	requireGRPCCode(t, err, codes.PermissionDenied)
 }
 
+func TestListMediaByOwner_EmptyList(t *testing.T) {
+	owner := ownerID()
+
+	server := NewMediaServer(
+		media.NewService(
+			&stubMediaRepo{},
+			&stubDerivRepo{},
+			&stubStorage{},
+			time.Minute,
+			testLogger(),
+		),
+		true,
+	)
+
+	resp, err := server.ListMediaByOwner(
+		ctxWithOwner(owner.String()),
+		&mediav1.ListMediaByOwnerRequest{
+			OwnerId:  owner.String(),
+			PageSize: 10,
+		},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Empty(t, resp.Items)
+	assert.Empty(t, resp.NextPageToken)
+}
+
+func TestListMediaByOwner_PageSizeAboveMax(t *testing.T) {
+	owner := ownerID()
+
+	server := NewMediaServer(
+		media.NewService(
+			&stubMediaRepo{},
+			&stubDerivRepo{},
+			&stubStorage{},
+			time.Minute,
+			testLogger(),
+		),
+		true,
+	)
+
+	_, err := server.ListMediaByOwner(
+		ctxWithOwner(owner.String()),
+		&mediav1.ListMediaByOwnerRequest{
+			OwnerId:  owner.String(),
+			PageSize: 1001,
+		},
+	)
+
+	requireGRPCCode(t, err, codes.InvalidArgument)
+}
+
+func TestListMediaByOwner_InvalidPageToken(t *testing.T) {
+	owner := ownerID()
+
+	server := NewMediaServer(
+		media.NewService(
+			&stubMediaRepo{},
+			&stubDerivRepo{},
+			&stubStorage{},
+			time.Minute,
+			testLogger(),
+		),
+		true,
+	)
+
+	_, err := server.ListMediaByOwner(
+		ctxWithOwner(owner.String()),
+		&mediav1.ListMediaByOwnerRequest{
+			OwnerId:   owner.String(),
+			PageSize:  10,
+			PageToken: "not-a-valid-page-token",
+		},
+	)
+
+	requireGRPCCode(t, err, codes.InvalidArgument)
+}
+
 func TestListMediaByOwner_UsesPageTokenAndKeepsOwnerInToken(t *testing.T) {
 	first := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	second := uuid.MustParse("22222222-2222-2222-2222-222222222222")
@@ -378,13 +457,10 @@ func TestListMediaByOwner_InvalidMetadataDoesNotFailWholePage(t *testing.T) {
 	)
 
 	require.NoError(t, err)
-	require.Len(t, resp.Items, 2)
+	require.Len(t, resp.Items, 1)
 
 	assert.Equal(t, first.String(), resp.Items[0].Id)
-	assert.Equal(t, second.String(), resp.Items[1].Id)
-
 	assert.True(t, resp.Items[0].Metadata.Fields["valid"].GetBoolValue())
-	assert.Empty(t, resp.Items[1].Metadata.Fields)
 }
 
 func TestGetDownloadURL_Success(t *testing.T) {

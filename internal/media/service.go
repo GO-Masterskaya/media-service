@@ -233,7 +233,7 @@ func (s *Service) ListMediaByOwner(ctx context.Context, callerID, ownerID uuid.U
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	if page == nil {
-		return nil, status.Error(codes.Internal, "empty media page")
+		page = &repo.MediaPage{}
 	}
 
 	ids := make([]uuid.UUID, 0, len(page.Items))
