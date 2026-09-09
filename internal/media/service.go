@@ -204,8 +204,8 @@ func (s *Service) GetMedia(ctx context.Context, callerID, mediaID uuid.UUID) (*r
 	return m, nil
 }
 
-func (s *Service) GetMediaWithDerivatives(ctx context.Context, mediaID uuid.UUID) (*MediaItem, error) {
-	m, err := s.GetMedia(ctx, uuid.Nil, mediaID)
+func (s *Service) GetMediaWithDerivatives(ctx context.Context, callerID, mediaID uuid.UUID) (*MediaItem, error) {
+	m, err := s.GetMedia(ctx, callerID, mediaID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,14 +231,23 @@ func (s *Service) GetMediaWithDerivatives(ctx context.Context, mediaID uuid.UUID
 	}, nil
 }
 
-func (s *Service) ListMediaByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*MediaPage, error) {
+func (s *Service) ListMediaByOwner(ctx context.Context, callerID, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*MediaPage, error) {
+	if callerID != uuid.Nil && callerID != ownerID {
+		return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
+	}
+
 	lister, ok := s.mediaRepo.(mediaLister)
 	if !ok {
 		return nil, status.Error(codes.Internal, "media listing is not supported")
 	}
+
 	page, err := lister.ListByOwner(ctx, ownerID, pageSize, cursor)
 	if err != nil {
-		s.log.Error("list media by owner failed", slog.Any("error", err), slog.String("owner_id", ownerID.String()))
+		s.log.Error(
+			"list media by owner failed",
+			slog.Any("error", err),
+			slog.String("owner_id", ownerID.String()),
+		)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 	if page == nil {
@@ -249,21 +258,34 @@ func (s *Service) ListMediaByOwner(ctx context.Context, ownerID uuid.UUID, pageS
 	for _, m := range page.Items {
 		ids = append(ids, m.ID)
 	}
+
 	derivLister, ok := s.derivRepo.(derivativeLister)
 	if !ok {
 		return nil, status.Error(codes.Internal, "derivative listing is not supported")
 	}
+
 	derivatives, err := derivLister.ListByMediaIDs(ctx, ids)
 	if err != nil {
-		s.log.Error("list media derivatives failed", slog.Any("error", err), slog.String("owner_id", ownerID.String()))
+		s.log.Error(
+			"list media derivatives failed",
+			slog.Any("error", err),
+			slog.String("owner_id", ownerID.String()),
+		)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
 	items := make([]*MediaItem, 0, len(page.Items))
 	for _, m := range page.Items {
-		items = append(items, &MediaItem{Media: m, Derivatives: derivatives[m.ID]})
+		items = append(items, &MediaItem{
+			Media:       m,
+			Derivatives: derivatives[m.ID],
+		})
 	}
-	return &MediaPage{Items: items, HasMore: page.HasMore}, nil
+
+	return &MediaPage{
+		Items:   items,
+		HasMore: page.HasMore,
+	}, nil
 }
 
 // AttachMedia создаёт привязку media к owner через таблицу media_attachments.

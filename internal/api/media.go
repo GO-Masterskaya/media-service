@@ -187,18 +187,14 @@ func (s *MediaServer) GetMedia(ctx context.Context, req *mediav1.GetMediaRequest
 		return nil, status.Error(codes.InvalidArgument, "invalid media_id")
 	}
 
-	item, err := s.svc.GetMediaWithDerivatives(ctx, mediaID)
+	callerID, err := s.resolveCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	item, err := s.svc.GetMediaWithDerivatives(ctx, callerID, mediaID)
 	if err != nil {
 		return nil, mapMediaError(err)
-	}
-	if s.strictOwnerCheck {
-		callerID, err := s.resolveCaller(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if callerID != item.Media.OwnerID {
-			return nil, status.Error(codes.PermissionDenied, media.ErrAccessDenied.Error())
-		}
 	}
 	out, err := toProtoMedia(item)
 	if err != nil {
@@ -218,14 +214,9 @@ func (s *MediaServer) ListMediaByOwner(ctx context.Context, req *mediav1.ListMed
 	if req.PageSize > 1000 {
 		return nil, status.Error(codes.InvalidArgument, "page_size must be <= 1000")
 	}
-	if s.strictOwnerCheck {
-		callerID, err := s.resolveCaller(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if callerID != ownerID {
-			return nil, status.Error(codes.PermissionDenied, media.ErrAccessDenied.Error())
-		}
+	callerID, err := s.resolveCaller(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	cursor, err := decodeMediaPageToken(req.PageToken, ownerID)
@@ -233,7 +224,7 @@ func (s *MediaServer) ListMediaByOwner(ctx context.Context, req *mediav1.ListMed
 		return nil, status.Error(codes.InvalidArgument, "invalid page_token")
 	}
 
-	page, err := s.svc.ListMediaByOwner(ctx, ownerID, int(req.PageSize), cursor)
+	page, err := s.svc.ListMediaByOwner(ctx, callerID, ownerID, int(req.PageSize), cursor)
 	if err != nil {
 		return nil, mapMediaError(err)
 	}
