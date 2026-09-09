@@ -45,6 +45,9 @@ type KafkaConsumerConfig struct {
 	// ReconnectMaxBackoff — потолок паузы между повторами после ошибки poll.
 	// 0 → defaultReconnectMaxBackoff.
 	ReconnectMaxBackoff time.Duration
+	// LogLevel — уровень логов самого franz-go: none/error/warn/info/debug.
+	// Пустая строка → DefaultKafkaLogLevel.
+	LogLevel string
 }
 
 type partitionWorkerState struct {
@@ -132,6 +135,14 @@ func NewKafkaConsumer(
 	// TLS и SASL добавляются последними и только если заданы: пустая
 	// Security оставляет клиента в PLAINTEXT для локального compose.
 	opts = append(opts, cfg.Security.clientOpts()...)
+
+	// Без этой опции franz-go пишет в no-op логгер, и недоступность
+	// брокера до входа в группу остаётся полностью незаметной (#80).
+	logOpt, err := kafkaLoggerOpt(log, cfg.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, logOpt)
 
 	client, err := kgo.NewClient(opts...)
 	if err != nil {

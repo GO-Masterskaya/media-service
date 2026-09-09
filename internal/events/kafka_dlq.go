@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,11 @@ type KafkaDLQConfig struct {
 	Brokers  []string
 	Topic    string
 	Security KafkaSecurity
+	// Log — куда писать сообщения самого franz-go. nil → slog.Default().
+	Log *slog.Logger
+	// LogLevel — none/error/warn/info/debug. Пустая строка →
+	// DefaultKafkaLogLevel.
+	LogLevel string
 }
 
 func NewKafkaDLQPublisher(cfg KafkaDLQConfig) (*KafkaDLQPublisher, error) {
@@ -45,6 +51,14 @@ func NewKafkaDLQPublisher(cfg KafkaDLQConfig) (*KafkaDLQPublisher, error) {
 		kgo.SeedBrokers(cfg.Brokers...),
 	}
 	opts = append(opts, cfg.Security.clientOpts()...)
+
+	// Продюсер DLQ — такой же клиент Kafka, и немым он быть не должен:
+	// молчащий продюсер означает потерю событий без единой строки в логе.
+	logOpt, err := kafkaLoggerOpt(cfg.Log, cfg.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, logOpt)
 
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
