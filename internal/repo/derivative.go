@@ -23,6 +23,7 @@ type Derivative struct {
 
 type DerivativeRepo interface {
 	GetByMediaAndVariant(ctx context.Context, mediaID uuid.UUID, variant string) (*Derivative, error)
+	ListByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]*Derivative, error)
 	Insert(ctx context.Context, d Derivative) (*Derivative, error)
 	UpsertDerivative(ctx context.Context, d *Derivative) (*Derivative, error)
 }

@@ -74,6 +74,7 @@ type MediaCursor struct {
 
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
+	ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *MediaCursor) (*MediaPage, error)
 	GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error)
 	InsertWithJobs(ctx context.Context, m Media, jobTypes []string) (*Media, error)
 

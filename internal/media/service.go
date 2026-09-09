@@ -210,12 +210,7 @@ func (s *Service) GetMediaWithDerivatives(ctx context.Context, callerID, mediaID
 		return nil, err
 	}
 
-	lister, ok := s.derivRepo.(derivativeLister)
-	if !ok {
-		return nil, status.Error(codes.Internal, "derivative listing is not supported")
-	}
-
-	derivatives, err := lister.ListByMediaIDs(ctx, []uuid.UUID{mediaID})
+	derivatives, err := s.derivRepo.ListByMediaIDs(ctx, []uuid.UUID{mediaID})
 	if err != nil {
 		s.log.Error(
 			"get media derivatives failed",
@@ -236,12 +231,7 @@ func (s *Service) ListMediaByOwner(ctx context.Context, callerID, ownerID uuid.U
 		return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
 	}
 
-	lister, ok := s.mediaRepo.(mediaLister)
-	if !ok {
-		return nil, status.Error(codes.Internal, "media listing is not supported")
-	}
-
-	page, err := lister.ListByOwner(ctx, ownerID, pageSize, cursor)
+	page, err := s.mediaRepo.ListByOwner(ctx, ownerID, pageSize, cursor)
 	if err != nil {
 		s.log.Error(
 			"list media by owner failed",
@@ -259,12 +249,7 @@ func (s *Service) ListMediaByOwner(ctx context.Context, callerID, ownerID uuid.U
 		ids = append(ids, m.ID)
 	}
 
-	derivLister, ok := s.derivRepo.(derivativeLister)
-	if !ok {
-		return nil, status.Error(codes.Internal, "derivative listing is not supported")
-	}
-
-	derivatives, err := derivLister.ListByMediaIDs(ctx, ids)
+	derivatives, err := s.derivRepo.ListByMediaIDs(ctx, ids)
 	if err != nil {
 		s.log.Error(
 			"list media derivatives failed",
