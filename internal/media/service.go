@@ -205,7 +205,7 @@ func (s *Service) GetMedia(ctx context.Context, callerID, mediaID uuid.UUID) (*r
 }
 
 func (s *Service) GetMediaWithDerivatives(ctx context.Context, mediaID uuid.UUID) (*MediaItem, error) {
-	m, err := s.GetMedia(ctx, mediaID)
+	m, err := s.GetMedia(ctx, uuid.Nil, mediaID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,12 +214,21 @@ func (s *Service) GetMediaWithDerivatives(ctx context.Context, mediaID uuid.UUID
 	if !ok {
 		return nil, status.Error(codes.Internal, "derivative listing is not supported")
 	}
+
 	derivatives, err := lister.ListByMediaIDs(ctx, []uuid.UUID{mediaID})
 	if err != nil {
-		s.log.Error("get media derivatives failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
+		s.log.Error(
+			"get media derivatives failed",
+			slog.Any("error", err),
+			slog.String("media_id", mediaID.String()),
+		)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
-	return &MediaItem{Media: m, Derivatives: derivatives[mediaID]}, nil
+
+	return &MediaItem{
+		Media:       m,
+		Derivatives: derivatives[mediaID],
+	}, nil
 }
 
 func (s *Service) ListMediaByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*MediaPage, error) {
