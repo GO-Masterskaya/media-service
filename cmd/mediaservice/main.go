@@ -115,7 +115,18 @@ func main() {
 		dlqPublisher  events.DLQPublisher
 	)
 	if cfg.KafkaEnabled {
-		dlqPublisher, err = events.NewKafkaDLQPublisher(cfg.KafkaBrokers, cfg.KafkaDLQTopic)
+		// Одна структура безопасности на оба клиента: консьюмер и DLQ.
+		kafkaSecurity := events.KafkaSecurity{
+			Username: cfg.KafkaUsername,
+			Password: cfg.KafkaPassword,
+			TLS:      cfg.KafkaTLS,
+		}
+
+		dlqPublisher, err = events.NewKafkaDLQPublisher(events.KafkaDLQConfig{
+			Brokers:  cfg.KafkaBrokers,
+			Topic:    cfg.KafkaDLQTopic,
+			Security: kafkaSecurity,
+		})
 		if err != nil {
 			slog.Error("dlq publisher init failed", "error", err)
 			os.Exit(1)
@@ -138,9 +149,12 @@ func main() {
 
 		kafkaConsumer, err = events.NewKafkaConsumer(
 			events.KafkaConsumerConfig{
-				Brokers: cfg.KafkaBrokers,
-				Topic:   cfg.KafkaTopic,
-				GroupID: cfg.KafkaGroup,
+				Brokers:             cfg.KafkaBrokers,
+				Topic:               cfg.KafkaTopic,
+				GroupID:             cfg.KafkaGroup,
+				Security:            kafkaSecurity,
+				PollTimeout:         cfg.KafkaPollTimeout,
+				ReconnectMaxBackoff: cfg.KafkaReconnectMaxBackoff,
 			},
 			handler.Handle,
 			slog.Default(),
@@ -171,6 +185,12 @@ func main() {
 			"topic", cfg.KafkaTopic,
 			"dlq_topic", cfg.KafkaDLQTopic,
 			"group", cfg.KafkaGroup,
+			// Булевы флаги, не значения: по логу видно, что креды
+			// подхватились, но сами креды не утекают.
+			"tls", cfg.KafkaTLS,
+			"sasl", cfg.KafkaUsername != "",
+			"poll_timeout", cfg.KafkaPollTimeout,
+			"reconnect_max_backoff", cfg.KafkaReconnectMaxBackoff,
 		)
 	}
 

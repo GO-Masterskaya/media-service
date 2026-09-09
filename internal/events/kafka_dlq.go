@@ -15,24 +15,45 @@ type KafkaDLQPublisher struct {
 	topic  string
 }
 
-func NewKafkaDLQPublisher(brokers []string, topic string) (*KafkaDLQPublisher, error) {
-	if len(brokers) == 0 {
+// KafkaDLQConfig — параметры продюсера DLQ.
+//
+// Раньше конструктор принимал brokers и topic по отдельности, и добавить
+// к ним ещё три параметра значило бы получить функцию на пять аргументов
+// одного типа. Структура заодно делает невозможным вызов, в котором про
+// Security просто забыли: поле видно в литерале.
+type KafkaDLQConfig struct {
+	Brokers  []string
+	Topic    string
+	Security KafkaSecurity
+}
+
+func NewKafkaDLQPublisher(cfg KafkaDLQConfig) (*KafkaDLQPublisher, error) {
+	if len(cfg.Brokers) == 0 {
 		return nil, fmt.Errorf("kafka brokers required")
 	}
-	if topic == "" {
+	if cfg.Topic == "" {
 		return nil, fmt.Errorf("dlq topic required")
 	}
+	if err := cfg.Security.Validate(); err != nil {
+		return nil, err
+	}
 
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(brokers...),
-	)
+	// Тот же набор опций, что и у консьюмера. Продюсер DLQ — полноценный
+	// клиент Kafka: если TLS и SASL применить только к консьюмеру,
+	// исходные payload'ы событий будут уходить в брокер открытым текстом.
+	opts := []kgo.Opt{
+		kgo.SeedBrokers(cfg.Brokers...),
+	}
+	opts = append(opts, cfg.Security.clientOpts()...)
+
+	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("create kafka producer: %w", err)
 	}
 
 	return &KafkaDLQPublisher{
 		client: client,
-		topic:  topic,
+		topic:  cfg.Topic,
 	}, nil
 }
 

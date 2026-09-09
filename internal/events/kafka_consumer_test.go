@@ -586,3 +586,177 @@ func TestRun_MultiplePartitionsParallel(t *testing.T) {
 	cancel()
 	runDone.Wait()
 }
+
+// ============================================================================
+// Poll timeout и reconnect backoff (#27)
+// ============================================================================
+
+// TestRun_PollDeadlineIsNotAConnectionError: истёкший дедлайн poll означает
+// "в топике сейчас нет новых записей", а не обрыв связи. Он не должен ни
+// включать backoff, ни порождать воркера для искусственной партиции -1,
+// которую franz-go подставляет вместе с ошибкой контекста.
+func TestRun_PollDeadlineIsNotAConnectionError(t *testing.T) {
+	mock := newMockKafkaClient([]string{"test-topic"})
+
+	processed := make(chan struct{}, 1)
+	handler := func(ctx context.Context, raw []byte) Result {
+		processed <- struct{}{}
+		return Result{Committable: true, EventID: uuid.New()}
+	}
+
+	c := &KafkaConsumer{
+		client:  mock,
+		handler: handler,
+		log:     slog.Default(),
+		stopCh:  make(chan struct{}),
+		// Если бы дедлайн ошибочно считался обрывом связи, восемь пауз
+		// подряд дали бы 100+200+400+800+1600+2000+2000+2000 ≈ 9.1s
+		// и тест не уложился бы в отведённые ниже 2 секунды.
+		reconnectMaxBackoff: 2 * time.Second,
+	}
+
+	for i := 0; i < 8; i++ {
+		mock.enqueueFetch(kgo.NewErrFetch(context.DeadlineExceeded))
+	}
+	mock.enqueueFetch(makeFetches(makeRecord("test-topic", 0, 10, []byte("a"))))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	go func() { _ = c.Run(ctx) }()
+
+	select {
+	case <-processed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("запись после серии poll-дедлайнов так и не обработана")
+	}
+
+	require.Less(t, time.Since(start), 2*time.Second,
+		"poll-дедлайн не должен включать reconnect backoff")
+
+	_, ok := c.partitionWorkers.Load(":-1")
+	require.False(t, ok, "искусственная партиция -1 не должна получать воркера")
+
+	cancel()
+}
+
+// TestRun_PollErrorBacksOff: настоящая ошибка poll без записей — это
+// недоступный брокер. Цикл обязан выдержать паузу, иначе PollFetches
+// вызывается вплотную друг к другу и получается busy-loop.
+func TestRun_PollErrorBacksOff(t *testing.T) {
+	mock := newMockKafkaClient([]string{"test-topic"})
+
+	processed := make(chan struct{}, 1)
+	handler := func(ctx context.Context, raw []byte) Result {
+		processed <- struct{}{}
+		return Result{Committable: true, EventID: uuid.New()}
+	}
+
+	c := &KafkaConsumer{
+		client:              mock,
+		handler:             handler,
+		log:                 slog.Default(),
+		stopCh:              make(chan struct{}),
+		reconnectMaxBackoff: 500 * time.Millisecond,
+	}
+
+	mock.enqueueFetch(kgo.NewErrFetch(errors.New("dial tcp 10.0.0.1:9092: connect: connection refused")))
+	mock.enqueueFetch(makeFetches(makeRecord("test-topic", 0, 10, []byte("a"))))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	go func() { _ = c.Run(ctx) }()
+
+	select {
+	case <-processed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("запись после ошибки poll не обработана")
+	}
+
+	// Проверяем нижнюю границу: между провалившимся poll и следующим
+	// прошла как минимум базовая пауза. Верхнюю границу не проверяем —
+	// она зависит от планировщика и делала бы тест нестабильным.
+	require.GreaterOrEqual(t, time.Since(start), reconnectBackoffBase,
+		"после ошибки poll обязана быть пауза")
+
+	cancel()
+}
+
+// TestRun_ErrorPartitionWithoutRecordsSpawnsNoWorker: в одном фетче могут
+// приехать и записи, и партиция с ошибкой без записей. Backoff здесь не
+// нужен — данные пришли, — но воркер для пустой партиции создавать нельзя:
+// он навсегда осел бы в partitionWorkers.
+func TestRun_ErrorPartitionWithoutRecordsSpawnsNoWorker(t *testing.T) {
+	mock := newMockKafkaClient([]string{"test-topic"})
+
+	processed := make(chan struct{}, 1)
+	handler := func(ctx context.Context, raw []byte) Result {
+		processed <- struct{}{}
+		return Result{Committable: true, EventID: uuid.New()}
+	}
+
+	c := &KafkaConsumer{
+		client:              mock,
+		handler:             handler,
+		log:                 slog.Default(),
+		stopCh:              make(chan struct{}),
+		reconnectMaxBackoff: time.Second,
+	}
+
+	fetches := makeFetches(makeRecord("test-topic", 0, 10, []byte("a")))
+	fetches[0].Topics = append(fetches[0].Topics, kgo.FetchTopic{
+		Topic: "test-topic",
+		Partitions: []kgo.FetchPartition{{
+			Partition: 7,
+			Err:       errors.New("leader not available"),
+		}},
+	})
+	mock.enqueueFetch(fetches)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() { _ = c.Run(ctx) }()
+
+	select {
+	case <-processed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("запись из здоровой партиции не обработана")
+	}
+
+	_, ok := c.partitionWorkers.Load("test-topic:7")
+	require.False(t, ok, "партиция без записей не должна получать воркера")
+
+	cancel()
+}
+
+func TestNextBackoff(t *testing.T) {
+	limit := time.Second
+
+	require.Equal(t, 200*time.Millisecond, nextBackoff(100*time.Millisecond, limit))
+	require.Equal(t, 800*time.Millisecond, nextBackoff(400*time.Millisecond, limit))
+	require.Equal(t, limit, nextBackoff(800*time.Millisecond, limit),
+		"удвоение не должно перепрыгивать потолок")
+	require.Equal(t, limit, nextBackoff(limit, limit),
+		"на потолке пауза перестаёт расти")
+}
+
+// TestNewKafkaConsumer_RejectsCredentialsWithoutTLS: конструктор обязан
+// падать на старте, а не поднимать клиента, который отправит креды
+// открытым текстом.
+func TestNewKafkaConsumer_RejectsCredentialsWithoutTLS(t *testing.T) {
+	_, err := NewKafkaConsumer(
+		KafkaConsumerConfig{
+			Brokers:  []string{"b:9092"},
+			Topic:    "t",
+			GroupID:  "g",
+			Security: KafkaSecurity{Username: "u", Password: "p"},
+		},
+		func(ctx context.Context, raw []byte) Result { return Result{} },
+		slog.Default(),
+	)
+	require.ErrorContains(t, err, "TLS is required")
+}

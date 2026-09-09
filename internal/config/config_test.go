@@ -282,3 +282,122 @@ func TestValidate_JobReapBatchSize(t *testing.T) {
 		t.Errorf("error should mention JOB_REAP_BATCH_SIZE, got: %v", err)
 	}
 }
+
+// TestValidate_KafkaSecurity мутирует глобальное окружение процесса.
+// Не использовать t.Parallel() в этом тесте и его subtests.
+func TestValidate_KafkaSecurity(t *testing.T) {
+	base := configFromDefaults(t)
+	base.KafkaEnabled = true
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:   "дефолты: брокер без авторизации",
+			mutate: func(c *Config) {},
+		},
+		{
+			name: "полный набор кредов с TLS",
+			mutate: func(c *Config) {
+				c.KafkaUsername = "media"
+				c.KafkaPassword = "secret"
+				c.KafkaTLS = true
+			},
+		},
+		{
+			name: "только username",
+			mutate: func(c *Config) {
+				c.KafkaUsername = "media"
+				c.KafkaTLS = true
+			},
+			wantErr: "KAFKA_USERNAME and KAFKA_PASSWORD must be set together",
+		},
+		{
+			name: "только password",
+			mutate: func(c *Config) {
+				c.KafkaPassword = "secret"
+				c.KafkaTLS = true
+			},
+			wantErr: "KAFKA_USERNAME and KAFKA_PASSWORD must be set together",
+		},
+		{
+			name: "креды без TLS",
+			mutate: func(c *Config) {
+				c.KafkaUsername = "media"
+				c.KafkaPassword = "secret"
+			},
+			wantErr: "KAFKA_TLS must be true",
+		},
+		{
+			name: "poll timeout ноль",
+			mutate: func(c *Config) {
+				c.KafkaPollTimeout = 0
+			},
+			wantErr: "KAFKA_POLL_TIMEOUT must be > 0",
+		},
+		{
+			name: "reconnect backoff ноль",
+			mutate: func(c *Config) {
+				c.KafkaReconnectMaxBackoff = 0
+			},
+			wantErr: "KAFKA_RECONNECT_MAX_BACKOFF must be > 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			tt.mutate(&cfg)
+			err := cfg.validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+// TestValidate_KafkaSecurityIgnoredWhenDisabled: при выключенной Kafka
+// сервис не создаёт клиента, поэтому кривая пара кредов не должна
+// мешать старту.
+func TestValidate_KafkaSecurityIgnoredWhenDisabled(t *testing.T) {
+	cfg := configFromDefaults(t)
+	cfg.KafkaEnabled = false
+	cfg.KafkaUsername = "media"
+	cfg.KafkaPassword = ""
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("при KAFKA_ENABLED=false конфиг обязан проходить валидацию: %v", err)
+	}
+}
+
+func TestConfigStringHidesKafkaCredentials(t *testing.T) {
+	cfg := Config{
+		KafkaUsername: "kafka-user",
+		KafkaPassword: "kafka-secret",
+		KafkaTLS:      true,
+		PostgresDSN:   "postgres://user:pass@dbhost:5432/media",
+	}
+
+	s := cfg.String()
+
+	if strings.Contains(s, "kafka-secret") {
+		t.Error("String() must not contain KafkaPassword")
+	}
+	if strings.Contains(s, "kafka-user") {
+		t.Error("String() must not contain KafkaUsername")
+	}
+	if !strings.Contains(s, "KafkaSASL:true") {
+		t.Error("String() should report that SASL is configured")
+	}
+}
