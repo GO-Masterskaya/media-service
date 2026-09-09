@@ -126,6 +126,8 @@ func main() {
 			Brokers:  cfg.KafkaBrokers,
 			Topic:    cfg.KafkaDLQTopic,
 			Security: kafkaSecurity,
+			Log:      slog.Default(),
+			LogLevel: cfg.KafkaLogLevel,
 		})
 		if err != nil {
 			slog.Error("dlq publisher init failed", "error", err)
@@ -155,6 +157,7 @@ func main() {
 				Security:            kafkaSecurity,
 				PollTimeout:         cfg.KafkaPollTimeout,
 				ReconnectMaxBackoff: cfg.KafkaReconnectMaxBackoff,
+				LogLevel:            cfg.KafkaLogLevel,
 			},
 			handler.Handle,
 			slog.Default(),
@@ -191,6 +194,7 @@ func main() {
 			"sasl", cfg.KafkaUsername != "",
 			"poll_timeout", cfg.KafkaPollTimeout,
 			"reconnect_max_backoff", cfg.KafkaReconnectMaxBackoff,
+			"client_log_level", cfg.KafkaLogLevel,
 		)
 	}
 

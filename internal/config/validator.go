@@ -5,6 +5,20 @@ import (
 	"time"
 )
 
+// kafkaLogLevels дублирует набор из internal/events намеренно.
+// Импортировать events сюда нельзя по соразмерности: config зависит
+// только от стандартной библиотеки, а events тянет franz-go, uuid и repo
+// ради проверки пяти строк. Тест TestKafkaLogLevelsMatchEvents сверяет
+// этот набор с events.KafkaLogLevelNames(), поэтому разъехаться молча
+// дубликат не может.
+var kafkaLogLevels = map[string]bool{
+	"none":  true,
+	"error": true,
+	"warn":  true,
+	"info":  true,
+	"debug": true,
+}
+
 // validate проверяет, что все параметры корректны.
 // Ошибка всегда содержит имя переменной окружения.
 func (c *Config) validate() error {
@@ -144,6 +158,11 @@ func (c *Config) validate() error {
 		}
 		if c.KafkaReconnectMaxBackoff <= 0 {
 			return fmt.Errorf("KAFKA_RECONNECT_MAX_BACKOFF must be > 0, got %s", c.KafkaReconnectMaxBackoff)
+		}
+		// Опечатку в уровне ловим на старте: иначе клиент молча уйдёт
+		// в none и мы вернёмся к той же немоте, ради которой всё делалось.
+		if !kafkaLogLevels[c.KafkaLogLevel] {
+			return fmt.Errorf("KAFKA_LOG_LEVEL must be one of none/error/warn/info/debug, got %q", c.KafkaLogLevel)
 		}
 		if c.RetentionInterval <= 0 {
 			return fmt.Errorf("RETENTION_INTERVAL must be > 0, got %s", c.RetentionInterval)

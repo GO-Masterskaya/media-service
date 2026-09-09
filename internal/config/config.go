@@ -100,6 +100,10 @@ type Config struct {
 	// KafkaReconnectMaxBackoff — потолок экспоненциальной паузы между
 	// повторными poll после ошибки (SPEC #27: bounded backoff).
 	KafkaReconnectMaxBackoff time.Duration `env:"KAFKA_RECONNECT_MAX_BACKOFF" env-default:"10s"`
+	// KafkaLogLevel — уровень логов клиента franz-go: none/error/warn/info/debug.
+	// На info библиотека пишет каждый запрос к брокеру, включая heartbeat
+	// раз в три секунды, поэтому дефолт — warn.
+	KafkaLogLevel string `env:"KAFKA_LOG_LEVEL"       env-default:"warn"`
 
 	// StrictOwnerCheck включает строгую проверку владельца.
 	// При true требуется валидный auth interceptor (TODO #5).
@@ -186,6 +190,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTLS:%v, ", c.KafkaTLS)
 	fmt.Fprintf(&b, "KafkaPollTimeout:%s, ", c.KafkaPollTimeout)
 	fmt.Fprintf(&b, "KafkaReconnectMaxBackoff:%s, ", c.KafkaReconnectMaxBackoff)
+	fmt.Fprintf(&b, "KafkaLogLevel:%q, ", c.KafkaLogLevel)
 	fmt.Fprintf(&b, "RetentionInterval:%s, ", c.RetentionInterval)
 	fmt.Fprintf(&b, "RetentionOlderThan:%s, ", c.RetentionOlderThan)
 	fmt.Fprintf(&b, "RetentionBatchSize:%d, ", c.RetentionBatchSize)

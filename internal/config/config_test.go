@@ -3,11 +3,15 @@ package config
 import (
 	"log/slog"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
+
+	"mediaservice/internal/events"
 )
 
 // withCleanEnv очищает окружение на время теста и восстанавливает его после.
@@ -399,5 +403,54 @@ func TestConfigStringHidesKafkaCredentials(t *testing.T) {
 	}
 	if !strings.Contains(s, "KafkaSASL:true") {
 		t.Error("String() should report that SASL is configured")
+	}
+}
+
+// TestKafkaLogLevelsMatchEvents страхует дубликат набора уровней.
+// В validator.go он продублирован, чтобы config не тянул за собой
+// franz-go, uuid и repo ради проверки пяти строк. Тест сверяет обе
+// стороны, поэтому новый уровень в events нельзя добавить, забыв про
+// валидатор: сборка останется зелёной, а этот тест упадёт.
+func TestKafkaLogLevelsMatchEvents(t *testing.T) {
+	fromConfig := make([]string, 0, len(kafkaLogLevels))
+	for name := range kafkaLogLevels {
+		fromConfig = append(fromConfig, name)
+	}
+	sort.Strings(fromConfig)
+
+	fromEvents := events.KafkaLogLevelNames()
+
+	if !reflect.DeepEqual(fromConfig, fromEvents) {
+		t.Fatalf("наборы уровней разошлись:\nvalidator.go: %v\nevents:       %v",
+			fromConfig, fromEvents)
+	}
+}
+
+func TestValidate_KafkaLogLevel(t *testing.T) {
+	base := configFromDefaults(t)
+	base.KafkaEnabled = true
+
+	for _, level := range events.KafkaLogLevelNames() {
+		t.Run("валидный/"+level, func(t *testing.T) {
+			cfg := base
+			cfg.KafkaLogLevel = level
+			if err := cfg.validate(); err != nil {
+				t.Fatalf("уровень %q должен приниматься: %v", level, err)
+			}
+		})
+	}
+
+	for _, level := range []string{"", "WARN", "verbose", "trace"} {
+		t.Run("невалидный/"+level, func(t *testing.T) {
+			cfg := base
+			cfg.KafkaLogLevel = level
+			err := cfg.validate()
+			if err == nil {
+				t.Fatalf("уровень %q должен отвергаться", level)
+			}
+			if !strings.Contains(err.Error(), "KAFKA_LOG_LEVEL") {
+				t.Fatalf("ошибка должна называть переменную окружения, получено: %v", err)
+			}
+		})
 	}
 }
