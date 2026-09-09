@@ -112,18 +112,15 @@ func decodeMediaPageToken(token string, ownerID uuid.UUID) (*repo.MediaCursor, e
 func toProtoMedia(item *media.MediaItem) (*mediav1.Media, error) {
 	m := item.Media
 	var metadata *structpb.Struct
+
+	metadata, _ = structpb.NewStruct(map[string]any{})
 	if len(m.Metadata) > 0 {
 		var obj map[string]any
-		if err := json.Unmarshal(m.Metadata, &obj); err != nil {
-			return nil, fmt.Errorf("invalid media metadata: %w", err)
+		if err := json.Unmarshal(m.Metadata, &obj); err == nil {
+			if parsed, err := structpb.NewStruct(obj); err == nil {
+				metadata = parsed
+			}
 		}
-		var err error
-		metadata, err = structpb.NewStruct(obj)
-		if err != nil {
-			return nil, fmt.Errorf("convert media metadata: %w", err)
-		}
-	} else {
-		metadata, _ = structpb.NewStruct(map[string]any{})
 	}
 
 	out := &mediav1.Media{

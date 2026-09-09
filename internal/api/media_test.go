@@ -240,6 +240,66 @@ func TestListMediaByOwner_UsesPageTokenAndKeepsOwnerInToken(t *testing.T) {
 	requireGRPCCode(t, err, codes.InvalidArgument)
 }
 
+func TestListMediaByOwner_InvalidMetadataDoesNotFailWholePage(t *testing.T) {
+	owner := ownerID()
+
+	first := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	second := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	mr := &stubMediaRepo{
+		listPage: &repo.MediaPage{
+			Items: []*repo.Media{
+				{
+					ID:        first,
+					OwnerID:   owner,
+					Kind:      repo.MediaKindImage,
+					Mime:      "image/png",
+					Status:    repo.MediaStatusStored,
+					Metadata:  []byte(`{"valid":true}`),
+					CreatedAt: time.Date(2026, 9, 4, 12, 0, 2, 0, time.UTC),
+				},
+				{
+					ID:        second,
+					OwnerID:   owner,
+					Kind:      repo.MediaKindImage,
+					Mime:      "image/png",
+					Status:    repo.MediaStatusStored,
+					Metadata:  []byte(`{"broken":`),
+					CreatedAt: time.Date(2026, 9, 4, 12, 0, 1, 0, time.UTC),
+				},
+			},
+		},
+	}
+
+	server := NewMediaServer(
+		media.NewService(
+			mr,
+			&stubDerivRepo{},
+			&stubStorage{},
+			time.Minute,
+			testLogger(),
+		),
+		false,
+	)
+
+	resp, err := server.ListMediaByOwner(
+		context.Background(),
+		&mediav1.ListMediaByOwnerRequest{
+			OwnerId:  owner.String(),
+			PageSize: 10,
+		},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, resp.Items, 2)
+
+	assert.Equal(t, first.String(), resp.Items[0].Id)
+	assert.Equal(t, second.String(), resp.Items[1].Id)
+
+	assert.True(t, resp.Items[0].Metadata.Fields["valid"].GetBoolValue())
+	assert.Empty(t, resp.Items[1].Metadata.Fields)
+}
+
 func TestGetDownloadURL_Success(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
 	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/presign", ExpiresAt: time.Now().Add(15 * time.Minute)}}
