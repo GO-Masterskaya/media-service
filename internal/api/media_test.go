@@ -213,6 +213,67 @@ func TestGetMedia_NotFound(t *testing.T) {
 	requireGRPCCode(t, err, codes.NotFound)
 }
 
+func TestGetMedia_ForeignOwnerDenied(t *testing.T) {
+	owner := ownerID()
+	caller := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+	mr := &stubMediaRepo{
+		media: &repo.Media{
+			ID:        uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+			OwnerID:   owner,
+			Kind:      repo.MediaKindImage,
+			Mime:      "image/png",
+			Status:    repo.MediaStatusStored,
+			CreatedAt: time.Now(),
+		},
+	}
+
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		true,
+	)
+
+	_, err := server.GetMedia(
+		ctxWithOwner(caller.String()),
+		&mediav1.GetMediaRequest{
+			MediaId: mr.media.ID.String(),
+		},
+	)
+
+	requireGRPCCode(t, err, codes.PermissionDenied)
+}
+
+func TestGetMedia_OwnerAllowed(t *testing.T) {
+	owner := ownerID()
+
+	mr := &stubMediaRepo{
+		media: &repo.Media{
+			ID:        uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+			OwnerID:   owner,
+			Kind:      repo.MediaKindImage,
+			Mime:      "image/png",
+			Status:    repo.MediaStatusStored,
+			CreatedAt: time.Now(),
+		},
+	}
+
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		true,
+	)
+
+	got, err := server.GetMedia(
+		ctxWithOwner(owner.String()),
+		&mediav1.GetMediaRequest{
+			MediaId: mr.media.ID.String(),
+		},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, owner.String(), got.OwnerId)
+}
+
 func TestListMediaByOwner_UsesPageTokenAndKeepsOwnerInToken(t *testing.T) {
 	first := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	second := uuid.MustParse("22222222-2222-2222-2222-222222222222")
