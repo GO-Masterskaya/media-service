@@ -216,7 +216,6 @@ func (s *Service) Upload(ctx context.Context, params UploadRequestParams, chunkR
 		if err := checkMagicBytes(params.MIME, magicHeader); err != nil {
 			return nil, err
 		}
-		magicChecked = true
 	}
 	if params.ExpectedSize > 0 && totalWritten != int64(params.ExpectedSize) {
 		return nil, fmt.Errorf("%w: actual size (%d) does not match expected size (%d)", ErrInvalidArgument, totalWritten, params.ExpectedSize)
