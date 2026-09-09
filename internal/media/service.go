@@ -18,14 +18,6 @@ import (
 
 type ChunkSender func([]byte) error
 
-type mediaLister interface {
-	ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error)
-}
-
-type derivativeLister interface {
-	ListByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]*repo.Derivative, error)
-}
-
 type MediaItem struct {
 	Media       *repo.Media
 	Derivatives []*repo.Derivative
