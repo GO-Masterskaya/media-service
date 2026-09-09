@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -19,13 +20,26 @@ type MediaServer struct {
 	mediav1.UnimplementedMediaServiceServer
 	svc              *media.Service
 	strictOwnerCheck bool
+	idleTimeout      time.Duration
 }
 
-func NewMediaServer(svc *media.Service, strictOwnerCheck bool) *MediaServer {
+func NewMediaServer(svc *media.Service, strictOwnerCheck bool, idleTimeout ...time.Duration) *MediaServer {
+	var timeout time.Duration
+	if len(idleTimeout) > 0 {
+		timeout = idleTimeout[0]
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	return &MediaServer{
 		svc:              svc,
 		strictOwnerCheck: strictOwnerCheck,
+		idleTimeout:      timeout,
 	}
+}
+
+func (s *MediaServer) SetIdleTimeout(d time.Duration) {
+	s.idleTimeout = d
 }
 
 // callerIDFromMetadata извлекает owner_id из gRPC metadata.
@@ -141,6 +155,8 @@ func mapMediaError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, media.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, media.ErrStorageQuotaExceeded):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	case errors.Is(err, context.Canceled):

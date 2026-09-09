@@ -99,6 +99,9 @@ func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerI
 func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
+func (s *svcStubMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	return 0, 0, nil
+}
 
 type svcStubDerivRepo struct {
 	deriv *repo.Derivative

@@ -102,6 +102,10 @@ func (s *persistMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerI
 	return 0, nil
 }
 
+func (s *persistMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	return 0, 0, nil
+}
+
 type countingStorage struct {
 	mu             sync.Mutex
 	puts           int
@@ -638,4 +642,8 @@ func (s *raceAfterPutRepo) CreateAttachment(ctx context.Context, mediaID, ownerI
 
 func (s *raceAfterPutRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
+}
+
+func (s *raceAfterPutRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	return 0, 0, nil
 }

@@ -27,8 +27,10 @@ type Config struct {
 	GRPCAuthToken string `env:"GRPC_AUTH_TOKEN"`
 
 	// Upload
-	MaxUploadBytes int64    `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
-	MIMEAllowlist  []string `env:"MIME_ALLOWLIST"        env-default:"image/*,video/*,audio/*" env-separator:","`
+	MaxUploadBytes    int64         `env:"MAX_UPLOAD_BYTES"      env-default:"524288000"` // 500MB
+	MIMEAllowlist     []string      `env:"MIME_ALLOWLIST"        env-default:"image/*,video/*,audio/*" env-separator:","`
+	StorageQuotaBytes int64         `env:"STORAGE_QUOTA_BYTES"   env-default:"0"` // 0 = unlimited by default
+	UploadIdleTimeout time.Duration `env:"UPLOAD_IDLE_TIMEOUT"   env-default:"30s"`
 
 	// Processing
 	WorkerConcurrency int           `env:"WORKER_CONCURRENCY"    env-default:"2"`
@@ -148,6 +150,8 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "GRPCAuthEnabled:%v, ", c.GRPCAuthEnabled)
 	fmt.Fprintf(&b, "MaxUploadBytes:%d, ", c.MaxUploadBytes)
 	fmt.Fprintf(&b, "MIMEAllowlist:%v, ", c.MIMEAllowlist)
+	fmt.Fprintf(&b, "StorageQuotaBytes:%d, ", c.StorageQuotaBytes)
+	fmt.Fprintf(&b, "UploadIdleTimeout:%s, ", c.UploadIdleTimeout)
 	fmt.Fprintf(&b, "WorkerConcurrency:%d, ", c.WorkerConcurrency)
 	fmt.Fprintf(&b, "QueueBuffer:%d, ", c.QueueBuffer)
 	fmt.Fprintf(&b, "JobTimeout:%s, ", c.JobTimeout)

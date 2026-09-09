@@ -37,6 +37,12 @@ func (c *Config) validate() error {
 	if len(c.MIMEAllowlist) == 0 {
 		return fmt.Errorf("MIME_ALLOWLIST is required")
 	}
+	if c.StorageQuotaBytes < 0 {
+		return fmt.Errorf("STORAGE_QUOTA_BYTES must be >= 0, got %d", c.StorageQuotaBytes)
+	}
+	if c.UploadIdleTimeout <= 0 {
+		return fmt.Errorf("UPLOAD_IDLE_TIMEOUT must be > 0, got %s", c.UploadIdleTimeout)
+	}
 	if c.WorkerConcurrency <= 0 {
 		return fmt.Errorf("WORKER_CONCURRENCY must be > 0, got %d", c.WorkerConcurrency)
 	}

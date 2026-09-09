@@ -85,6 +85,9 @@ func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID u
 func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
+func (s *mockMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	return 0, 0, nil
+}
 
 type mockDerivRepo struct {
 	deriv    *repo.Derivative

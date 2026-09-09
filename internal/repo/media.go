@@ -113,6 +113,11 @@ type MediaRepo interface {
 	// Идемпотентна: если привязка уже есть — возвращает nil.
 	CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error
 
+	// GetStorageUsage возвращает текущий объём занятого места (storage_used_bytes)
+	// и установленную квоту (storage_quota_bytes) для организации (owner_id).
+	// Если запись отсутствует, возвращает (0, 0, nil).
+	GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (usedBytes int64, quotaBytes int64, err error)
+
 	DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error)
 }
 
@@ -499,4 +504,22 @@ func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uui
 		return 0, fmt.Errorf("commit detach: %w", err)
 	}
 	return usages, nil
+}
+
+func (r *PgMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT storage_used_bytes, storage_quota_bytes
+		FROM storage_quotas
+		WHERE owner_id = $1
+	`, ownerID)
+
+	var used, quota int64
+	err := row.Scan(&used, &quota)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("get storage usage: %w", err)
+	}
+	return used, quota, nil
 }

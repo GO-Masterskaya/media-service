@@ -246,6 +246,20 @@ func TestValidate_RetentionKafkaEnabled(t *testing.T) {
 			},
 			wantErr: "RETENTION_BATCH_SIZE must be > 0",
 		},
+		{
+			name: "negative storage quota bytes",
+			mutate: func(c *Config) {
+				c.StorageQuotaBytes = -1
+			},
+			wantErr: "STORAGE_QUOTA_BYTES must be >= 0",
+		},
+		{
+			name: "zero upload idle timeout",
+			mutate: func(c *Config) {
+				c.UploadIdleTimeout = 0
+			},
+			wantErr: "UPLOAD_IDLE_TIMEOUT must be > 0",
+		},
 	}
 
 	for _, tt := range tests {

@@ -72,10 +72,12 @@ func (m *mockUploadProber) Probe(ctx context.Context, inputPath string) (*proces
 }
 
 type apiUploadMediaRepo struct {
-	mu     sync.Mutex
-	byKey  map[string]*repo.Media
-	byID   map[uuid.UUID]*repo.Media
-	jobsOf map[uuid.UUID][]string
+	mu           sync.Mutex
+	byKey        map[string]*repo.Media
+	byID         map[uuid.UUID]*repo.Media
+	jobsOf       map[uuid.UUID][]string
+	storageUsed  int64
+	storageQuota int64
 }
 
 func newAPIUploadMediaRepo() *apiUploadMediaRepo {
@@ -150,6 +152,11 @@ func (r *apiUploadMediaRepo) CreateAttachment(ctx context.Context, mediaID, owne
 }
 func (r *apiUploadMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (int, error) {
 	return 0, nil
+}
+func (r *apiUploadMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.storageUsed, r.storageQuota, nil
 }
 
 func setupAPITestServer(t *testing.T, prober media.Prober, strictOwner bool) (*MediaServer, *media.Service, *apiUploadMediaRepo, *stubStorage) {
@@ -363,4 +370,145 @@ func TestUpload_CallerIdentity(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	})
+}
+
+type delayedMockUploadServerStream struct {
+	grpc.ServerStream
+	ctx      context.Context
+	requests []*mediav1.UploadRequest
+	delays   []time.Duration
+	idx      int
+}
+
+func (m *delayedMockUploadServerStream) Context() context.Context {
+	if m.ctx == nil {
+		return context.Background()
+	}
+	return m.ctx
+}
+
+func (m *delayedMockUploadServerStream) Recv() (*mediav1.UploadRequest, error) {
+	if m.idx >= len(m.requests) {
+		return nil, io.EOF
+	}
+	if m.idx < len(m.delays) && m.delays[m.idx] > 0 {
+		time.Sleep(m.delays[m.idx])
+	}
+	req := m.requests[m.idx]
+	m.idx++
+	return req, nil
+}
+
+func (m *delayedMockUploadServerStream) SendAndClose(resp *mediav1.UploadResponse) error {
+	return nil
+}
+
+func TestUpload_IdleTimeout(t *testing.T) {
+	prober := &mockUploadProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	server, _, _, _ := setupAPITestServer(t, prober, false)
+	server.SetIdleTimeout(50 * time.Millisecond)
+
+	ownerID := uuid.New().String()
+	stream := &delayedMockUploadServerStream{
+		ctx: context.Background(),
+		requests: []*mediav1.UploadRequest{
+			{
+				Payload: &mediav1.UploadRequest_Init{
+					Init: &mediav1.UploadInit{
+						OwnerId:        ownerID,
+						Mime:           "image/png",
+						IdempotencyKey: "idle-timeout-test",
+					},
+				},
+			},
+			{
+				Payload: &mediav1.UploadRequest_Chunk{
+					Chunk: []byte("delayed chunk"),
+				},
+			},
+		},
+		delays: []time.Duration{
+			0,                      // init sent immediately
+			150 * time.Millisecond, // chunk delayed beyond 50ms idleTimeout
+		},
+	}
+
+	err := server.Upload(stream)
+	require.Error(t, err)
+	assert.Equal(t, codes.DeadlineExceeded, status.Code(err))
+	assert.Contains(t, err.Error(), "stream idle timeout")
+}
+
+func TestUpload_StorageQuotaExceeded(t *testing.T) {
+	prober := &mockUploadProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	server, _, mr, _ := setupAPITestServer(t, prober, false)
+
+	mr.storageUsed = 900
+	mr.storageQuota = 1000 // 100 bytes available
+
+	ownerID := uuid.New().String()
+	stream := newMockUploadServerStream(
+		context.Background(),
+		&mediav1.UploadRequest{
+			Payload: &mediav1.UploadRequest_Init{
+				Init: &mediav1.UploadInit{
+					OwnerId:        ownerID,
+					Mime:           "image/png",
+					IdempotencyKey: "quota-test",
+					ExpectedSize:   200, // 900 + 200 > 1000
+				},
+			},
+		},
+		&mediav1.UploadRequest{
+			Payload: &mediav1.UploadRequest_Chunk{
+				Chunk: []byte("chunk"),
+			},
+		},
+	)
+
+	err := server.Upload(stream)
+	require.Error(t, err)
+	assert.Equal(t, codes.ResourceExhausted, status.Code(err))
+	assert.Contains(t, err.Error(), "storage quota exceeded")
+}
+
+func TestUpload_EarlyIdempotencyReplay(t *testing.T) {
+	prober := &mockUploadProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	server, _, _, _ := setupAPITestServer(t, prober, false)
+
+	ownerID := uuid.New().String()
+	initMsg := &mediav1.UploadRequest{
+		Payload: &mediav1.UploadRequest_Init{
+			Init: &mediav1.UploadInit{
+				OwnerId:        ownerID,
+				Mime:           "image/png",
+				IdempotencyKey: "replay-api-key",
+				ExpectedSize:   10,
+			},
+		},
+	}
+
+	// 1st Upload
+	stream1 := newMockUploadServerStream(
+		context.Background(),
+		initMsg,
+		&mediav1.UploadRequest{
+			Payload: &mediav1.UploadRequest_Chunk{Chunk: []byte("0123456789")},
+		},
+	)
+	err := server.Upload(stream1)
+	require.NoError(t, err)
+	require.NotNil(t, stream1.response)
+	firstMediaID := stream1.response.MediaId
+
+	// 2nd Upload: same init message, should return replay immediately
+	stream2 := newMockUploadServerStream(
+		context.Background(),
+		initMsg,
+		// No chunks even need to be sent!
+	)
+	err = server.Upload(stream2)
+	require.NoError(t, err)
+	require.NotNil(t, stream2.response)
+	assert.Equal(t, firstMediaID, stream2.response.MediaId)
 }
