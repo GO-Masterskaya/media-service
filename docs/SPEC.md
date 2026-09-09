@@ -237,6 +237,11 @@ KAFKA_BROKERS=kafka:9092
 KAFKA_TOPIC=media.events
 KAFKA_DLQ_TOPIC=media.events.dlq
 KAFKA_GROUP=media-service
+KAFKA_USERNAME=
+KAFKA_PASSWORD=
+KAFKA_TLS=false
+KAFKA_POLL_TIMEOUT=1s
+KAFKA_RECONNECT_MAX_BACKOFF=10s
 ```
 
 ## 8. Kafka consumer (за тоглом)

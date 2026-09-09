@@ -179,7 +179,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "KafkaTopic:%q, ", c.KafkaTopic)
 	fmt.Fprintf(&b, "KafkaDLQTopic:%q, ", c.KafkaDLQTopic)
 	fmt.Fprintf(&b, "KafkaGroup:%q, ", c.KafkaGroup)
-	// Ни username, ни пароль в лог не идут: пишем только факт включённогgit о
+	// Ни username, ни пароль в лог не идут: пишем только факт включённого
 	// SASL. Этого достаточно, чтобы отличить "креды не подхватились"
 	// от "креды не заданы", и ничего не утечёт в аварийный дамп конфига.
 	fmt.Fprintf(&b, "KafkaSASL:%v, ", c.KafkaUsername != "")

@@ -111,8 +111,11 @@ services:
       KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-media.events.dlq}
     entrypoint: >
       /bin/sh -c "
-      rpk topic create $$KAFKA_TOPIC --brokers kafka:9092 || true;
-      rpk topic create $$KAFKA_DLQ_TOPIC --brokers kafka:9092 || true
+      set -e;
+      for t in $$KAFKA_TOPIC $$KAFKA_DLQ_TOPIC; do
+      rpk topic describe $$t -X brokers=kafka:9092 >/dev/null 2>&1 ||
+      rpk topic create $$t -p 1 -r 1 -X brokers=kafka:9092;
+      done
       "
     restart: "no"
 
