@@ -31,6 +31,8 @@ func (m *mockProber) Probe(ctx context.Context, inputPath string) (*processing.M
 type uploadMockRepo struct {
 	persistMediaRepo
 	insertedJobs map[uuid.UUID][]string
+	storageUsed  int64
+	storageQuota int64
 }
 
 func newUploadMockRepo() *uploadMockRepo {
@@ -38,6 +40,12 @@ func newUploadMockRepo() *uploadMockRepo {
 		persistMediaRepo: *newPersistMediaRepo(),
 		insertedJobs:     make(map[uuid.UUID][]string),
 	}
+}
+
+func (r *uploadMockRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.storageUsed, r.storageQuota, nil
 }
 
 func (r *uploadMockRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
@@ -424,6 +432,7 @@ func TestUpload_IdempotencyReplay_And_Conflict(t *testing.T) {
 		OwnerID:        ownerID,
 		Filename:       "orig.png",
 		MIME:           "image/png",
+		ExpectedSize:   uint64(len(data)),
 		IdempotencyKey: "replay-key-1",
 	}
 
@@ -432,15 +441,28 @@ func TestUpload_IdempotencyReplay_And_Conflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, res1.Replay)
 
-	// 2nd Upload (Replay with same body & params)
-	res2, err := svc.Upload(context.Background(), params, chunksToReceiver(data))
+	// 2nd Upload (Early Replay: returns immediately without reading chunks)
+	chunksRead := false
+	trackingReceiver := func() ([]byte, error) {
+		chunksRead = true
+		return data, io.EOF
+	}
+	res2, err := svc.Upload(context.Background(), params, trackingReceiver)
 	require.NoError(t, err)
 	assert.True(t, res2.Replay)
 	assert.Equal(t, res1.MediaID, res2.MediaID)
+	assert.False(t, chunksRead, "early idempotency check should avoid downloading chunks on replay")
 
-	// 3rd Upload (Conflict with different body)
-	differentData := []byte("different payload content")
-	_, err = svc.Upload(context.Background(), params, chunksToReceiver(differentData))
+	// 3rd Upload (Conflict with different params for same idempotency key)
+	conflictParams := params
+	conflictParams.MIME = "image/jpeg"
+	_, err = svc.Upload(context.Background(), conflictParams, trackingReceiver)
+	assert.ErrorIs(t, err, ErrAlreadyExists)
+
+	// 4th Upload (Conflict with different expected size)
+	conflictSizeParams := params
+	conflictSizeParams.ExpectedSize = 500
+	_, err = svc.Upload(context.Background(), conflictSizeParams, trackingReceiver)
 	assert.ErrorIs(t, err, ErrAlreadyExists)
 
 	assert.Equal(t, 0, tempStore.ActiveFiles())
@@ -459,11 +481,226 @@ func TestValidateMIME(t *testing.T) {
 	assert.False(t, ValidateMIME("application/json", allowlist))
 	assert.False(t, ValidateMIME("", allowlist))
 
-	// Empty allowlist allows everything
-	assert.True(t, ValidateMIME("any/thing", nil))
-	assert.True(t, ValidateMIME("any/thing", []string{}))
+	// Empty allowlist rejects everything (fail-closed, #78)
+	assert.False(t, ValidateMIME("any/thing", nil))
+	assert.False(t, ValidateMIME("any/thing", []string{}))
 
 	// Wildcard wildcard
 	assert.True(t, ValidateMIME("application/zip", []string{"*"}))
 	assert.True(t, ValidateMIME("application/zip", []string{"*/*"}))
+}
+
+func TestUpload_StreamInterruption_CleansTempFile(t *testing.T) {
+	prober := &mockProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	svc, _, _, tempStore := setupUploadTestService(t, prober, 1024*1024, []string{"image/*"})
+
+	params := UploadRequestParams{
+		OwnerID:        uuid.New(),
+		Filename:       "test.png",
+		MIME:           "image/png",
+		IdempotencyKey: "key-interrupted",
+	}
+
+	chunkCount := 0
+	failingReceiver := func() ([]byte, error) {
+		chunkCount++
+		if chunkCount == 1 {
+			return []byte("first valid chunk"), nil
+		}
+		return nil, errors.New("network connection reset by peer")
+	}
+
+	_, err := svc.Upload(context.Background(), params, failingReceiver)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network connection reset by peer")
+
+	// Critical check: temp file in tempStore must be cleaned up on error (#78)
+	assert.Equal(t, 0, tempStore.ActiveFiles())
+}
+
+func TestUpload_ContextCanceled_CleansTempFile(t *testing.T) {
+	prober := &mockProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	svc, _, _, tempStore := setupUploadTestService(t, prober, 1024*1024, []string{"image/*"})
+
+	params := UploadRequestParams{
+		OwnerID:        uuid.New(),
+		Filename:       "test.png",
+		MIME:           "image/png",
+		IdempotencyKey: "key-canceled",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	chunkCount := 0
+	cancelingReceiver := func() ([]byte, error) {
+		chunkCount++
+		if chunkCount == 1 {
+			cancel() // Cancel context after first chunk
+			return []byte("chunk before cancel"), nil
+		}
+		return []byte("chunk after cancel"), nil
+	}
+
+	_, err := svc.Upload(ctx, params, cancelingReceiver)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	// Critical check: temp file in tempStore must be cleaned up on context cancellation (#78)
+	assert.Equal(t, 0, tempStore.ActiveFiles())
+}
+
+func TestUpload_ExcessiveEmptyChunks(t *testing.T) {
+	prober := &mockProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	svc, _, _, tempStore := setupUploadTestService(t, prober, 1024*1024, []string{"image/*"})
+
+	params := UploadRequestParams{
+		OwnerID:        uuid.New(),
+		Filename:       "test.png",
+		MIME:           "image/png",
+		IdempotencyKey: "key-empty-chunks",
+	}
+
+	emptyCount := 0
+	emptySpamReceiver := func() ([]byte, error) {
+		emptyCount++
+		if emptyCount <= 10 {
+			return []byte{}, nil
+		}
+		return nil, io.EOF
+	}
+
+	_, err := svc.Upload(context.Background(), params, emptySpamReceiver)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidArgument)
+	assert.Contains(t, err.Error(), "excessive empty chunks")
+	assert.Equal(t, 0, tempStore.ActiveFiles())
+}
+
+func TestUpload_StorageQuota(t *testing.T) {
+	prober := &mockProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	svc, mr, st, tempStore := setupUploadTestService(t, prober, 10*1024*1024, []string{"image/*"})
+
+	ownerID := uuid.New()
+	mr.storageUsed = 800
+	mr.storageQuota = 1000 // 200 bytes available
+
+	t.Run("rejected by expected_size before writing", func(t *testing.T) {
+		params := UploadRequestParams{
+			OwnerID:        ownerID,
+			Filename:       "test.png",
+			MIME:           "image/png",
+			ExpectedSize:   300, // 800 + 300 > 1000
+			IdempotencyKey: "quota-expected",
+		}
+
+		chunksCalled := false
+		receiver := func() ([]byte, error) {
+			chunksCalled = true
+			return []byte("data"), io.EOF
+		}
+
+		_, err := svc.Upload(context.Background(), params, receiver)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrStorageQuotaExceeded)
+		assert.False(t, chunksCalled, "should not start reading stream if expected_size exceeds quota")
+		assert.Equal(t, 0, tempStore.ActiveFiles())
+	})
+
+	t.Run("rejected by actual size after streaming", func(t *testing.T) {
+		params := UploadRequestParams{
+			OwnerID:        ownerID,
+			Filename:       "test.png",
+			MIME:           "image/png",
+			ExpectedSize:   0, // Client didn't declare size
+			IdempotencyKey: "quota-actual",
+		}
+
+		data := make([]byte, 250) // 800 + 250 = 1050 > 1000
+		_, err := svc.Upload(context.Background(), params, chunksToReceiver(data))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrStorageQuotaExceeded)
+		assert.Equal(t, 0, st.puts, "PutObject must not be called when quota exceeded")
+		assert.Equal(t, 0, tempStore.ActiveFiles())
+	})
+
+	t.Run("allowed when within quota", func(t *testing.T) {
+		params := UploadRequestParams{
+			OwnerID:        ownerID,
+			Filename:       "test.png",
+			MIME:           "image/png",
+			ExpectedSize:   100, // 800 + 100 <= 1000
+			IdempotencyKey: "quota-ok",
+		}
+
+		data := make([]byte, 100)
+		res, err := svc.Upload(context.Background(), params, chunksToReceiver(data))
+		require.NoError(t, err)
+		assert.NotNil(t, res)
+		assert.Equal(t, 1, st.puts)
+		assert.Equal(t, 0, tempStore.ActiveFiles())
+	})
+}
+
+func TestUpload_MagicBytesSpoofing(t *testing.T) {
+	prober := &mockProber{info: &processing.MediaInfo{Kind: processing.KindImage}}
+	svc, _, st, tempStore := setupUploadTestService(t, prober, 1024*1024, []string{"image/*", "video/*"})
+
+	ownerID := uuid.New()
+
+	t.Run("declared PNG but body is JPEG magic bytes", func(t *testing.T) {
+		jpegHeader := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+		payload := append(jpegHeader, make([]byte, 600)...)
+
+		params := UploadRequestParams{
+			OwnerID:        ownerID,
+			Filename:       "fake.png",
+			MIME:           "image/png",
+			IdempotencyKey: "spoof-png-jpeg",
+		}
+
+		_, err := svc.Upload(context.Background(), params, chunksToReceiver(payload))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Contains(t, err.Error(), "does not match detected image type")
+		assert.Equal(t, 0, st.puts)
+		assert.Equal(t, 0, tempStore.ActiveFiles())
+	})
+
+	t.Run("declared JPEG but body is PNG magic bytes", func(t *testing.T) {
+		pngHeader := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+		payload := append(pngHeader, make([]byte, 600)...)
+
+		params := UploadRequestParams{
+			OwnerID:        ownerID,
+			Filename:       "fake.jpg",
+			MIME:           "image/jpeg",
+			IdempotencyKey: "spoof-jpeg-png",
+		}
+
+		_, err := svc.Upload(context.Background(), params, chunksToReceiver(payload))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Contains(t, err.Error(), "does not match detected image type")
+		assert.Equal(t, 0, st.puts)
+		assert.Equal(t, 0, tempStore.ActiveFiles())
+	})
+
+	t.Run("declared video/mp4 but body is JPEG magic bytes", func(t *testing.T) {
+		jpegHeader := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+		payload := append(jpegHeader, make([]byte, 600)...)
+
+		params := UploadRequestParams{
+			OwnerID:        ownerID,
+			Filename:       "fake.mp4",
+			MIME:           "video/mp4",
+			IdempotencyKey: "spoof-video-jpeg",
+		}
+
+		_, err := svc.Upload(context.Background(), params, chunksToReceiver(payload))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArgument)
+		assert.Contains(t, err.Error(), "does not match detected media type")
+		assert.Equal(t, 0, st.puts)
+		assert.Equal(t, 0, tempStore.ActiveFiles())
+	})
 }

@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path"
 	"time"
@@ -25,19 +26,21 @@ var (
 	ErrAccessDenied       = errors.New("access denied")
 	// ErrAlreadyExists — тот же (owner_id, idempotency_key) с другим fingerprint
 	// (или media_id занят другим idempotency_key). gRPC: codes.AlreadyExists.
-	ErrAlreadyExists = errors.New("already exists")
+	ErrAlreadyExists        = errors.New("already exists")
+	ErrStorageQuotaExceeded = errors.New("storage quota exceeded")
 )
 
 type Service struct {
-	mediaRepo      repo.MediaRepo
-	derivRepo      repo.DerivativeRepo
-	storage        storage.Interface
-	tempStore      *upload.TempStore
-	prober         Prober
-	maxUploadBytes int64
-	mimeAllowlist  []string
-	presignTTL     time.Duration
-	log            *slog.Logger
+	mediaRepo           repo.MediaRepo
+	derivRepo           repo.DerivativeRepo
+	storage             storage.Interface
+	tempStore           *upload.TempStore
+	prober              Prober
+	maxUploadBytes      int64
+	mimeAllowlist       []string
+	defaultStorageQuota int64
+	presignTTL          time.Duration
+	log                 *slog.Logger
 }
 
 func NewService(
@@ -51,29 +54,50 @@ func NewService(
 		log = slog.Default()
 	}
 	return &Service{
-		mediaRepo:      mediaRepo,
-		derivRepo:      derivRepo,
-		storage:        storage,
-		prober:         DefaultProber{},
-		maxUploadBytes: 524288000,
-		mimeAllowlist:  []string{"image/*", "video/*", "audio/*"},
-		presignTTL:     presignTTL,
-		log:            log,
+		mediaRepo:  mediaRepo,
+		derivRepo:  derivRepo,
+		storage:    storage,
+		prober:     DefaultProber{},
+		presignTTL: presignTTL,
+		log:        log,
 	}
 }
 
 // SetUploadConfig настраивает параметры для Upload RPC.
-func (s *Service) SetUploadConfig(tempStore *upload.TempStore, prober Prober, maxUploadBytes int64, mimeAllowlist []string) {
+func (s *Service) SetUploadConfig(tempStore *upload.TempStore, prober Prober, maxUploadBytes int64, mimeAllowlist []string, defaultStorageQuota ...int64) {
 	s.tempStore = tempStore
 	if prober != nil {
 		s.prober = prober
 	}
-	if maxUploadBytes > 0 {
-		s.maxUploadBytes = maxUploadBytes
+	s.maxUploadBytes = maxUploadBytes
+	s.mimeAllowlist = mimeAllowlist
+	if len(defaultStorageQuota) > 0 {
+		s.defaultStorageQuota = defaultStorageQuota[0]
 	}
-	if len(mimeAllowlist) > 0 {
-		s.mimeAllowlist = mimeAllowlist
+}
+
+// SetDefaultStorageQuota устанавливает дефолтную дисковую квоту для организаций.
+func (s *Service) SetDefaultStorageQuota(quota int64) {
+	s.defaultStorageQuota = quota
+}
+
+func (s *Service) checkQuota(ctx context.Context, ownerID uuid.UUID, additionalBytes int64) error {
+	if additionalBytes <= 0 {
+		return nil
 	}
+	used, quota, err := s.mediaRepo.GetStorageUsage(ctx, ownerID)
+	if err != nil {
+		return fmt.Errorf("check storage quota: %w", err)
+	}
+	effectiveQuota := quota
+	if effectiveQuota <= 0 && s.defaultStorageQuota > 0 {
+		effectiveQuota = s.defaultStorageQuota
+	}
+	if effectiveQuota > 0 && used+additionalBytes > effectiveQuota {
+		return fmt.Errorf("%w: quota %d bytes, current %d bytes, requested %d bytes",
+			ErrStorageQuotaExceeded, effectiveQuota, used, additionalBytes)
+	}
+	return nil
 }
 
 func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant storage.Variant) (*storage.PresignedURL, error) {

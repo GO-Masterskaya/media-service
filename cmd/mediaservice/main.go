@@ -206,7 +206,7 @@ func main() {
 		slog.Error("create upload temp store", "error", err)
 		os.Exit(1)
 	}
-	mediaSvc.SetUploadConfig(uploadStore, media.DefaultProber{}, cfg.MaxUploadBytes, cfg.MIMEAllowlist)
+	mediaSvc.SetUploadConfig(uploadStore, media.DefaultProber{}, cfg.MaxUploadBytes, cfg.MIMEAllowlist, cfg.StorageQuotaBytes)
 
 	// 9. gRPC server с цепочкой interceptors.
 	// MaxRecvMsgSize — лимит одного protobuf-сообщения (чанк), не всего upload.
@@ -236,7 +236,7 @@ func main() {
 		),
 	)
 	healthServer := api.NewHealthServer(pool)
-	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck))
+	mediav1.RegisterMediaServiceServer(grpcServer, api.NewMediaServer(mediaSvc, cfg.StrictOwnerCheck, cfg.UploadIdleTimeout))
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 
 	// +++ ADDED: TTL reaper (#17, ревью PR #13/#17: dry-run/kill-switch/метрики

@@ -70,6 +70,9 @@ func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerI
 func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
+func (s *recStubMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
+	return 0, 0, nil
+}
 
 type recStubStorage struct {
 	objects []storage.ObjectInfo

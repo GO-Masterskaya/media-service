@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -60,10 +61,10 @@ func ValidateMIME(mime string, allowlist []string) bool {
 	if mime == "" {
 		return false
 	}
-	mime = strings.ToLower(strings.TrimSpace(mime))
 	if len(allowlist) == 0 {
-		return true
+		return false
 	}
+	mime = strings.ToLower(strings.TrimSpace(mime))
 	for _, pattern := range allowlist {
 		pattern = strings.ToLower(strings.TrimSpace(pattern))
 		if pattern == "*" || pattern == "*/*" || pattern == mime {
@@ -108,6 +109,38 @@ func (s *Service) Upload(ctx context.Context, params UploadRequestParams, chunkR
 		return nil, errors.New("temp store is not configured")
 	}
 
+	// Ранняя проверка идемпотентности (#78):
+	// Проверяем пару (owner_id, idempotency_key) сразу после приёма первого пакета,
+	// до создания временного файла, выкачивания байтов и запуска ffprobe.
+	existing, err := s.mediaRepo.GetByOwnerIdempotency(ctx, params.OwnerID, params.IdempotencyKey)
+	if err == nil {
+		if existing.Status == repo.MediaStatusDeleting {
+			return nil, fmt.Errorf("%w: media is deleting", ErrAlreadyExists)
+		}
+		currentParamsFP := ParamsFingerprint(params.MIME, params.MakeThumbnail, params.Transcode, params.ExpiresAt)
+		if existing.ParamsFingerprint != "" && existing.ParamsFingerprint != currentParamsFP {
+			return nil, fmt.Errorf("%w: params mismatch for idempotency key", ErrAlreadyExists)
+		}
+		if params.ExpectedSize > 0 && existing.SizeBytes != int64(params.ExpectedSize) {
+			return nil, fmt.Errorf("%w: expected size mismatch for idempotency key", ErrAlreadyExists)
+		}
+		return &UploadResult{
+			MediaID: existing.ID,
+			Status:  existing.Status,
+			Replay:  true,
+		}, nil
+	}
+	if !errors.Is(err, repo.ErrNotFound) {
+		return nil, fmt.Errorf("early idempotency check: %w", err)
+	}
+
+	// Проверка квоты перед началом загрузки по expected_size (#78)
+	if params.ExpectedSize > 0 {
+		if err := s.checkQuota(ctx, params.OwnerID, int64(params.ExpectedSize)); err != nil {
+			return nil, err
+		}
+	}
+
 	// 2. Создание временного файла (#22)
 	tf, err := s.tempStore.Create(ctx)
 	if err != nil {
@@ -120,6 +153,12 @@ func (s *Service) Upload(ctx context.Context, params UploadRequestParams, chunkR
 
 	hasher := sha256.New()
 	var totalWritten int64
+
+	const maxConsecutiveEmptyChunks = 3
+	consecutiveEmptyChunks := 0
+
+	var magicHeader []byte
+	magicChecked := false
 
 	// 3. Стриминг чанков во временный файл с расчетом SHA256 на лету
 	for {
@@ -134,7 +173,26 @@ func (s *Service) Upload(ctx context.Context, params UploadRequestParams, chunkR
 			return nil, recvErr
 		}
 		if len(chunk) == 0 {
+			consecutiveEmptyChunks++
+			if consecutiveEmptyChunks > maxConsecutiveEmptyChunks {
+				return nil, fmt.Errorf("%w: excessive empty chunks received", ErrInvalidArgument)
+			}
 			continue
+		}
+		consecutiveEmptyChunks = 0
+
+		if !magicChecked {
+			toCopy := 512 - len(magicHeader)
+			if toCopy > len(chunk) {
+				toCopy = len(chunk)
+			}
+			magicHeader = append(magicHeader, chunk[:toCopy]...)
+			if len(magicHeader) >= 512 {
+				if err := checkMagicBytes(params.MIME, magicHeader); err != nil {
+					return nil, err
+				}
+				magicChecked = true
+			}
 		}
 
 		n, writeErr := tf.WriteChunk(chunk)
@@ -154,8 +212,19 @@ func (s *Service) Upload(ctx context.Context, params UploadRequestParams, chunkR
 	if totalWritten == 0 {
 		return nil, fmt.Errorf("%w: empty upload body", ErrInvalidArgument)
 	}
+	if !magicChecked && len(magicHeader) > 0 {
+		if err := checkMagicBytes(params.MIME, magicHeader); err != nil {
+			return nil, err
+		}
+		magicChecked = true
+	}
 	if params.ExpectedSize > 0 && totalWritten != int64(params.ExpectedSize) {
 		return nil, fmt.Errorf("%w: actual size (%d) does not match expected size (%d)", ErrInvalidArgument, totalWritten, params.ExpectedSize)
+	}
+
+	// Проверка квоты по фактическому размеру (#78)
+	if err := s.checkQuota(ctx, params.OwnerID, totalWritten); err != nil {
+		return nil, err
 	}
 
 	// Закрываем дескриптор записи перед ffprobe и чтением
@@ -305,4 +374,43 @@ func buildProbeMetadata(info *processing.MediaInfo) (json.RawMessage, error) {
 		m.DurationSec = info.Duration.Seconds()
 	}
 	return json.Marshal(m)
+}
+
+func checkMagicBytes(declaredMIME string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	detected := http.DetectContentType(data)
+	parts := strings.Split(detected, ";")
+	detectedType := strings.ToLower(strings.TrimSpace(parts[0]))
+	declaredType := strings.ToLower(strings.TrimSpace(strings.Split(declaredMIME, ";")[0]))
+
+	// Отсекаем подмену типов, когда http.DetectContentType точно распознал медиа-формат (#78):
+	// например, image/png с телом JPEG или video с телом image.
+	if strings.HasPrefix(detectedType, "image/") || strings.HasPrefix(detectedType, "video/") || strings.HasPrefix(detectedType, "audio/") {
+		detectedMajor := strings.SplitN(detectedType, "/", 2)[0]
+		declaredMajor := strings.SplitN(declaredType, "/", 2)[0]
+
+		if detectedMajor != declaredMajor {
+			return fmt.Errorf("%w: declared mime %q does not match detected media type %q",
+				ErrInvalidArgument, declaredMIME, detectedType)
+		}
+
+		if detectedMajor == "image" && !isImageMIMECompatible(declaredType, detectedType) {
+			return fmt.Errorf("%w: declared mime %q does not match detected image type %q",
+				ErrInvalidArgument, declaredMIME, detectedType)
+		}
+	}
+	return nil
+}
+
+func isImageMIMECompatible(declared, detected string) bool {
+	if declared == detected {
+		return true
+	}
+	if (declared == "image/jpeg" && detected == "image/jpg") ||
+		(declared == "image/jpg" && detected == "image/jpeg") {
+		return true
+	}
+	return false
 }
