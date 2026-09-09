@@ -197,7 +197,6 @@ func TestListByOwner_KeysetPagination(t *testing.T) {
 
 	owner := uuid.New()
 
-	var inserted []Media
 	for i := 0; i < 3; i++ {
 		m := sampleMedia(
 			owner,
@@ -205,11 +204,10 @@ func TestListByOwner_KeysetPagination(t *testing.T) {
 			fmt.Sprintf("body-%d", i),
 			fmt.Sprintf("params-%d", i),
 		)
-		created, err := mediaRepo.InsertWithJobs(ctx, m, nil)
+		_, err := mediaRepo.InsertWithJobs(ctx, m, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inserted = append(inserted, *created)
 	}
 
 	page1, err := mediaRepo.ListByOwner(ctx, owner, 2, nil)
