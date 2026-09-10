@@ -234,6 +234,10 @@ func (s *MediaServer) ListMediaByOwner(ctx context.Context, req *mediav1.ListMed
 	for _, item := range page.Items {
 		m, err := toProtoMedia(item)
 		if err != nil {
+			slog.Warn("skip media with invalid metadata",
+				"media_id", item.Media.ID,
+				"error", err,
+			)
 			continue
 		}
 		resp.Items = append(resp.Items, m)
