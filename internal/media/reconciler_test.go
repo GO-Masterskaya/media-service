@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -67,11 +68,11 @@ func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
+func (s *recStubMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (usedBytes int64, quotaBytes int64, err error) {
+	return 0, 0, nil
+}
 func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
-}
-func (s *recStubMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (int64, int64, error) {
-	return 0, 0, nil
 }
 
 type recStubStorage struct {
@@ -279,4 +280,31 @@ func TestReconciler_Shutdown(t *testing.T) {
 	require.NoError(t, err)
 
 	cancel()
+}
+
+// TestReconciler_Reconcile_SurvivesPanicAndLogsStack — по аналогии с
+// TestReaper_Run_SurvivesPanicAndLogsStack (тикет по итогам ревью #13/#17):
+// паника где-то в reconcileDeleting/reconcileOrphans раньше роняла бы весь
+// процесс (main запускает go rec.Run(ctx)). Проверяем, что recover() реально
+// перехватывает панику и пишет стек в лог, а не просто "не падает".
+//
+// nil-указатель в mediaList — самый естественный способ вызвать настоящую
+// панику внутри processDeletingMedia (обращение к полям nil *repo.Media),
+// без добавления отдельного "panic-injection" поля в стаб.
+func TestReconciler_Reconcile_SurvivesPanicAndLogsStack(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	mr := &recStubMediaRepo{
+		mediaList: []*repo.Media{nil},
+	}
+	sr := &recStubStorage{}
+
+	rec := NewReconciler(mr, sr, ReconcilerConfig{GracePeriod: time.Minute, BatchSize: 100}, logger)
+
+	require.NotPanics(t, func() { rec.reconcile(context.Background()) })
+
+	logged := logBuf.String()
+	assert.Contains(t, logged, "panic in reconciler tick", "panic message must be logged")
+	assert.Contains(t, logged, "goroutine", "a real stack trace (debug.Stack output) must be logged")
 }
