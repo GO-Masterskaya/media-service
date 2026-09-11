@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"mediaservice/internal/api"
+	"mediaservice/internal/api/interceptors"
 	"mediaservice/internal/config"
 	"mediaservice/internal/events"
 	"mediaservice/internal/media"
@@ -227,16 +228,18 @@ func main() {
 			PermitWithoutStream: true,
 		}),
 		grpc.ChainUnaryInterceptor(
-			api.RecoveryInterceptor(),
-			api.CorrelationIDInterceptor(),
-			api.TokenInterceptor(cfg.GRPCAuthEnabled, cfg.GRPCAuthToken),
-			api.ValidationInterceptor(validator),
+			interceptors.UnaryInterceptors(
+				cfg.GRPCAuthEnabled,
+				cfg.GRPCAuthToken,
+				validator,
+			)...,
 		),
 		grpc.ChainStreamInterceptor(
-			api.RecoveryStreamInterceptor(),
-			api.CorrelationIDStreamInterceptor(),
-			api.TokenStreamInterceptor(cfg.GRPCAuthEnabled, cfg.GRPCAuthToken),
-			api.ValidationStreamInterceptor(validator),
+			interceptors.StreamInterceptors(
+				cfg.GRPCAuthEnabled,
+				cfg.GRPCAuthToken,
+				validator,
+			)...,
 		),
 	)
 	healthServer := api.NewHealthServer(pool)
@@ -373,7 +376,10 @@ func main() {
 		healthServer.SetServingStatus("media.v1.MediaService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
-		wait := api.LBDrainWait(drainWindow, api.InFlightRPCs())
+		wait := api.LBDrainWait(
+			drainWindow,
+			interceptors.InFlightRPCs(),
+		)
 		if wait > 0 {
 			timer := time.NewTimer(wait)
 			select {
