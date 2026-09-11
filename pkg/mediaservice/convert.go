@@ -42,9 +42,9 @@ func (v Variant) toInternal() (storage.Variant, error) {
 //
 // Наружу отдаётся не всё. StorageKey остаётся внутренней деталью раскладки
 // хранилища. IdempotencyKey, BodyFingerprint и ParamsFingerprint влияют
-// только на запись и сам объект не описывают. OrigFilename и ExpiresAt
-// не отдаются, потому что их нет в message Media: два публичных API одного
-// сервиса не должны расходиться по составу полей.
+// только на запись и сам объект не описывают. ExpiresAt не отдаётся,
+// потому что его нет в message Media: два публичных API одного сервиса
+// не должны расходиться по составу полей.
 //
 // Derivatives остаются пустыми: repo.Media их не содержит, производные лежат
 // отдельной таблицей, а media.Service.GetMedia их пока не подтягивает.
@@ -94,6 +94,7 @@ func toPublicMedia(m *repo.Media) (*Media, error) {
 		Derivatives: nil,
 		Error:       m.Error,
 		CreatedAt:   m.CreatedAt,
+		Filename:    m.OrigFilename,
 	}, nil
 }
 
