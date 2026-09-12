@@ -35,7 +35,7 @@ services:
       start_period: 30s
 
   createbucket:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: pgsty/mc:RELEASE.2026-09-03T07-13-05Z
     container_name: media-createbucket
     depends_on:
       minio:
