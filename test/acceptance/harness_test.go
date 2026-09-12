@@ -470,7 +470,7 @@ func httpGetBytes(t *testing.T, url string) []byte {
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "presigned GET status")
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
