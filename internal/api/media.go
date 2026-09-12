@@ -137,6 +137,7 @@ func toProtoMedia(item *media.MediaItem) (*mediav1.Media, error) {
 		Metadata:  metadata,
 		Error:     m.Error,
 		CreatedAt: timestamppb.New(m.CreatedAt),
+		Filename:  m.OrigFilename,
 	}
 	out.Derivatives = make([]*mediav1.Derivative, 0, len(item.Derivatives))
 	for _, d := range item.Derivatives {

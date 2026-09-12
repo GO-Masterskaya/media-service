@@ -602,3 +602,22 @@ func TestDeleteByOwner_Disabled(t *testing.T) {
 
 	requireGRPCCode(t, err, codes.Unimplemented)
 }
+
+func TestGetMedia_ReturnsFilename(t *testing.T) {
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	// Пробел и кириллица намеренно: имя отдаётся как пришло, без нормализации.
+	const filename = "отчёт за квартал.pdf"
+
+	mr := &stubMediaRepo{media: &repo.Media{
+		ID: id, OwnerID: ownerID(), Kind: repo.MediaKindImage, Mime: "image/png",
+		OrigFilename: filename, Status: repo.MediaStatusStored, CreatedAt: time.Now(),
+	}}
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		false,
+	)
+
+	got, err := server.GetMedia(context.Background(), &mediav1.GetMediaRequest{MediaId: id.String()})
+	require.NoError(t, err)
+	assert.Equal(t, filename, got.Filename)
+}
