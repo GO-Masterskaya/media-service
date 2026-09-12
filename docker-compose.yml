@@ -16,7 +16,9 @@ services:
       retries: 5
       start_period: 10s
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Upstream minio/minio images are no longer published on Docker Hub;
+    # pgsty/minio is a drop-in community fork (same S3 API / env / cmd).
+    image: pgsty/minio:RELEASE.2026-06-18T00-00-00Z
     container_name: media-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
