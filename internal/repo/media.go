@@ -321,6 +321,21 @@ func (r *PgMediaRepo) InsertWithJobs(ctx context.Context, m Media, jobTypes []st
 		}
 	}
 
+	// Владелец upload'а сразу получает attachment (как backfill 000005):
+	// без этого DeleteMedia после чистого Upload не находит привязку.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO media_attachments (media_id, owner_id)
+		VALUES ($1, $2)
+		ON CONFLICT (media_id, owner_id) DO NOTHING
+	`, created.ID, created.OwnerID); err != nil {
+		return nil, fmt.Errorf("insert owner attachment: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE media SET usages_count = 1 WHERE id = $1 AND usages_count = 0
+	`, created.ID); err != nil {
+		return nil, fmt.Errorf("set initial usages_count: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit insert media: %w", err)
 	}
