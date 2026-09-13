@@ -123,13 +123,16 @@ func (s *ClientSuite) TestUpload_IdempotentReplay() {
 	require.Equal(t, 1, count)
 }
 
-// TestUpload_SameKeyDifferentBody - тот же ключ с другим содержимым
-// это конфликт, а не повтор.
+// TestUpload_SameKeyDifferentParams - тот же ключ с другими параметрами
+// загрузки это конфликт, а не повтор.
 //
-// Идемпотентность означает "тот же запрос даёт тот же результат".
-// Другое тело под тем же ключом - уже другой запрос, и молча вернуть
-// старый объект значило бы потерять новый файл.
-func (s *ClientSuite) TestUpload_SameKeyDifferentBody() {
+// Ранняя проверка идемпотентности сверяет отпечаток параметров (MIME,
+// флаги обработки, TTL) и заявленный размер. Расхождение любого из них
+// означает, что запрос другой, и отдавать по нему старый объект нельзя.
+//
+// Флаги обработки для этой проверки не годятся: библиотека гасит их,
+// пока движок не поднят, поэтому отпечаток не изменится. Берём MIME.
+func (s *ClientSuite) TestUpload_SameKeyDifferentParams() {
 	s.requireFFprobe()
 
 	t := s.T()
@@ -138,14 +141,69 @@ func (s *ClientSuite) TestUpload_SameKeyDifferentBody() {
 
 	owner := uuid.New()
 	key := uuid.NewString()
+	body := testPNG(t, 16, color.RGBA{R: 255, A: 255})
 
-	_, err := s.uploadPNG(client, owner, key,
-		testPNG(t, 16, color.RGBA{R: 255, A: 255}))
+	_, err := s.uploadPNG(client, owner, key, body)
 	require.NoError(t, err)
 
-	_, err = s.uploadPNG(client, owner, key,
-		testPNG(t, 32, color.RGBA{B: 255, A: 255}))
-	require.ErrorIs(t, err, mediaservice.ErrAlreadyExists)
+	s.Run("другой заявленный размер", func() {
+		bigger := testPNG(s.T(), 32, color.RGBA{B: 255, A: 255})
+		_, err := s.uploadPNG(client, owner, key, bigger)
+		require.ErrorIs(s.T(), err, mediaservice.ErrAlreadyExists)
+	})
+
+	s.Run("другой MIME", func() {
+		_, err := client.Upload(s.ctx, mediaservice.UploadParams{
+			OwnerID:        owner,
+			Filename:       "picture.png",
+			MIMEType:       "image/jpeg",
+			ExpectedSize:   uint64(len(body)),
+			IdempotencyKey: key,
+		}, bytes.NewReader(body))
+		require.ErrorIs(s.T(), err, mediaservice.ErrAlreadyExists)
+	})
+}
+
+// TestUpload_SameKeyDifferentBodySameSize - содержимое при повторе
+// не сверяется.
+//
+// Это ограничение, а не желаемое поведение, и тест закрепляет его
+// намеренно. Ранняя проверка идемпотентности отвечает до приёма тела,
+// поэтому сравнить отпечаток содержимого не с чем: при совпадении
+// параметров и заявленного размера вернётся существующий объект,
+// какие бы байты ни прислали.
+//
+// Тест покраснеет в тот день, когда ядро начнёт сверять тело. Это и есть
+// его задача: сейчас он документирует поведение, тогда просигналит,
+// что поведение сменилось и доку ErrAlreadyExists пора переписывать.
+func (s *ClientSuite) TestUpload_SameKeyDifferentBodySameSize() {
+	s.requireFFprobe()
+
+	t := s.T()
+	client := s.newClient()
+	defer func() { _ = client.Close() }()
+
+	owner := uuid.New()
+	key := uuid.NewString()
+	body := testPNG(t, 16, color.RGBA{G: 200, A: 255})
+
+	first, err := s.uploadPNG(client, owner, key, body)
+	require.NoError(t, err)
+
+	// Заведомо не картинка, но того же размера. До чтения дело не дойдёт:
+	// ответ отдаётся раньше, чем создаётся временный файл, поэтому ни
+	// magic bytes, ни ffprobe до этих байтов не добираются.
+	garbage := bytes.Repeat([]byte{0xFF}, len(body))
+
+	second, err := client.Upload(s.ctx, mediaservice.UploadParams{
+		OwnerID:        owner,
+		Filename:       "picture.png",
+		MIMEType:       "image/png",
+		ExpectedSize:   uint64(len(body)),
+		IdempotencyKey: key,
+	}, bytes.NewReader(garbage))
+	require.NoError(t, err, "содержимое не сверяется, это ожидаемый повтор")
+	require.Equal(t, first.ID, second.ID)
 }
 
 // TestUpload_RejectsBadInput - проверки аргументов срабатывают до того,
