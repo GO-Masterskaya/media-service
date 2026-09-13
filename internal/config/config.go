@@ -68,8 +68,10 @@ type Config struct {
 	// MAX_CONCURRENT_STREAMS — зарезервирован под прикладной лимит одновременных
 	// upload/download стримов per-caller (#21). Пока нигде не применяется;
 	// не путать с grpc.MaxConcurrentStreams (HTTP/2).
-	RateLimitRPS         int `env:"RATE_LIMIT_RPS"        env-default:"50"`
-	MaxConcurrentStreams int `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
+	RateLimitRPS         int      `env:"RATE_LIMIT_RPS"         env-default:"50"`
+	MaxConcurrentStreams int      `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
+	RateLimitBurst       int      `env:"RATE_LIMIT_BURST"       env-default:"50"`
+	CallerIDAllowlist    []string `env:"CALLER_ID_ALLOWLIST"    env-separator:","`
 
 	// Postgres
 	PostgresDSN            string        `env:"POSTGRES_DSN"              env-default:"postgres://media:media@postgres:5432/media?sslmode=disable"`
