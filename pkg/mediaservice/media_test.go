@@ -40,7 +40,7 @@ func (s *ClientSuite) TestGetMedia_MapsAllFields() {
 	require.Equal(t, mediaservice.StatusStored, got.Status)
 	require.Equal(t, filename, got.Filename)
 	require.Empty(t, got.Metadata, "вставка не задавала metadata, база подставила {}")
-	require.Empty(t, got.Derivatives, "GetMedia не подтягивает производные")
+	require.Empty(t, got.Derivatives, "у записи нет производных")
 	require.Empty(t, got.Error)
 	require.False(t, got.CreatedAt.IsZero())
 }
@@ -61,6 +61,63 @@ func (s *ClientSuite) TestGetMedia_EmptyFilename() {
 	got, err := client.GetMedia(s.ctx, owner, id)
 	require.NoError(t, err)
 	require.Empty(t, got.Filename)
+}
+
+// TestGetMedia_ReturnsDerivatives - производные приезжают вместе с записью.
+//
+// Раньше поле Derivatives всегда было пустым: ядро не отдавало производных
+// этим методом, и в доке было написано, что пустота ничего не означает.
+// После перехода на GetMediaWithDerivatives пустой список означает ровно
+// то, что производных нет.
+//
+// Строки кладутся напрямую, без движка обработки: здесь проверяется
+// чтение и конверсия, а не конвейер.
+func (s *ClientSuite) TestGetMedia_ReturnsDerivatives() {
+	t := s.T()
+	client := s.newClient()
+	defer func() { _ = client.Close() }()
+
+	owner := uuid.New()
+	id := s.insertMedia(owner, "ready")
+	s.insertDerivative(id, "thumb", "image/jpeg", 2048)
+	s.insertDerivative(id, "preview", "image/jpeg", 8192)
+
+	got, err := client.GetMedia(s.ctx, owner, id)
+	require.NoError(t, err)
+	require.Len(t, got.Derivatives, 2)
+
+	byVariant := make(map[mediaservice.Variant]mediaservice.Derivative, len(got.Derivatives))
+	for _, d := range got.Derivatives {
+		byVariant[d.Variant] = d
+	}
+
+	thumb, ok := byVariant[mediaservice.VariantThumb]
+	require.True(t, ok)
+	require.Equal(t, "image/jpeg", thumb.MIMEType)
+	require.Equal(t, uint64(2048), thumb.SizeBytes)
+
+	_, ok = byVariant[mediaservice.VariantPreview]
+	require.True(t, ok)
+}
+
+// TestGetMedia_EmptyDerivativesIsSlice - отсутствие производных даёт
+// пустой срез, а не nil.
+//
+// Разница видна тому, кто сериализует Media в JSON: nil даёт null,
+// пустой срез даёт []. Вызывающий не должен получать два разных
+// представления одного и того же "производных нет".
+func (s *ClientSuite) TestGetMedia_EmptyDerivativesIsSlice() {
+	t := s.T()
+	client := s.newClient()
+	defer func() { _ = client.Close() }()
+
+	owner := uuid.New()
+	id := s.insertMedia(owner, "stored")
+
+	got, err := client.GetMedia(s.ctx, owner, id)
+	require.NoError(t, err)
+	require.NotNil(t, got.Derivatives)
+	require.Empty(t, got.Derivatives)
 }
 
 // protoToPublicMediaField связывает поля message Media с полями публичной

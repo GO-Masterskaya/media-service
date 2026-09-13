@@ -159,7 +159,10 @@ func (s *ClientSuite) TestErrors_ContextCanceled() {
 // --- вспомогательное ---
 
 // newClient создаёт клиента на внешних ресурсах сюиты.
-func (s *ClientSuite) newClient() *mediaservice.Client {
+//
+// Опции прокидываются насквозь: тестам обработки нужен клиент
+// с поднятым движком, остальным - обычный.
+func (s *ClientSuite) newClient(opts ...mediaservice.Option) *mediaservice.Client {
 	s.T().Helper()
 
 	pool := s.newExternalPool()
@@ -172,9 +175,25 @@ func (s *ClientSuite) newClient() *mediaservice.Client {
 		Pool:   pool,
 		MinIO:  s.newExternalMinIO(),
 		Bucket: testBucket,
-	})
+	}, opts...)
 	require.NoError(s.T(), err)
 	return client
+}
+
+// insertDerivative кладёт производную напрямую в базу.
+//
+// Нужна там, где проверяется чтение производных, а поднимать ради этого
+// движок обработки незачем: он проверяется отдельно и требует ffmpeg.
+func (s *ClientSuite) insertDerivative(mediaID uuid.UUID, variant, mime string, size int64) {
+	s.T().Helper()
+
+	_, err := s.admin.Exec(s.ctx, `
+		INSERT INTO media_derivative
+			(id, media_id, variant, mime, size_bytes, storage_key)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		uuid.New(), mediaID, variant, mime, size,
+		"media/"+mediaID.String()+"/"+variant)
+	require.NoError(s.T(), err)
 }
 
 // insertMedia кладёт запись напрямую в базу и возвращает её идентификатор.
