@@ -50,7 +50,7 @@ func (s *MinIOSuite) SetupSuite() {
 	s.bucket = "media"
 
 	req := testcontainers.ContainerRequest{
-		Image:        "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+		Image:        "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
 		ExposedPorts: []string{"9000/tcp"},
 		Cmd:          []string{"server", "/data"},
 		Env: map[string]string{

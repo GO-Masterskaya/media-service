@@ -2,6 +2,7 @@ package mediaservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -9,8 +10,10 @@ import (
 	"github.com/minio/minio-go/v7"
 
 	"mediaservice/internal/media"
+	"mediaservice/internal/processing"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
+	"mediaservice/internal/upload"
 )
 
 // Client - основной клиент mediaservice, предоставляющий публичный API библиотеки.
@@ -37,6 +40,23 @@ type Client struct {
 	// Хранится в том числе ради Close(): освобождение ресурса зависит
 	// от того, кто его создал.
 	storage storage.Interface
+
+	// tempStore - каталог временных файлов, в который пишутся принимаемые
+	// байты до момента переноса в хранилище. Создаётся библиотекой всегда
+	// и всегда ей же принадлежит: флага владения тут нет, потому что извне
+	// его передать нельзя.
+	//
+	// Держит фоновую горутину уборки, поэтому Close() обязан её остановить.
+	tempStore *upload.TempStore
+
+	// engine - движок асинхронной обработки. nil, если клиент создан
+	// без WithProcessing: тогда задачи не создаются и разбирать нечего.
+	//
+	// engineCancel отменяет контекст, под которым движок запущен. Держится
+	// рядом, потому что контекст движка не связан с контекстом конструктора
+	// и отменить его больше некому.
+	engine       *processing.Engine
+	engineCancel context.CancelFunc
 
 	// ownsPool указывает, должен ли клиент закрыть пул соединений при вызове Close().
 	// true - если пул был создан внутри New(), false - если передан через NewWithDeps().
@@ -103,7 +123,7 @@ type Deps struct {
 //
 // Общая часть обоих публичных конструкторов. Вынесена, чтобы добавление
 // нового поля в Client требовало правки в одном месте, а не в двух.
-func newClient(pool *pgxpool.Pool, st storage.Interface, o *clientOptions, ownsPool bool, ownsStorage bool) *Client {
+func newClient(pool *pgxpool.Pool, st storage.Interface, o *clientOptions, ownsPool bool, ownsStorage bool) (*Client, error) {
 	mediaRepo := repo.NewPgMediaRepo(pool)
 	deriveRepo := repo.NewPgDerivativeRepo(pool)
 
@@ -111,16 +131,54 @@ func newClient(pool *pgxpool.Pool, st storage.Interface, o *clientOptions, ownsP
 	// переданные интерфейсы. Владение - забота клиента, см. Close().
 	core := media.NewService(mediaRepo, deriveRepo, st, o.presignTTL, o.log)
 
+	// Временное хранилище создаётся всегда, даже если вызывающий ничего
+	// не загружает. Причина в диагностике: неверный каталог или нехватка
+	// прав должны выясняться на конструкторе, где ошибку видно сразу,
+	// а не на первой загрузке посреди рабочего дня.
+	tempStore, err := upload.New(upload.Config{
+		Dir:         o.uploadTempDir,
+		MaxFileSize: o.maxUploadBytes,
+	}, upload.NewMetrics(o.metricsReg), o.log)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create upload temp store: %v", ErrInternal, err)
+	}
+
+	// Без этого вызова Upload нерабочий: ядро стартует с пустым списком
+	// разрешённых типов и без временного хранилища, то есть отвергает
+	// любую загрузку. В сервисе тот же вызов делает main.
+	core.SetUploadConfig(tempStore, media.DefaultProber{}, o.maxUploadBytes, o.mimeAllowlist, o.storageQuota)
+
+	// Движок поднимается последним: он начинает разбирать очередь сразу,
+	// и до этого момента всё остальное должно быть готово принять его
+	// обращения.
+	var (
+		engine       *processing.Engine
+		engineCancel context.CancelFunc
+	)
+	if o.withProcessing {
+		engine, engineCancel, err = startProcessing(pool, st, mediaRepo, deriveRepo, o)
+		if err != nil {
+			// Временное хранилище уже создано и держит горутину. Остальное
+			// вызывающий закроет сам: пул и адаптер принадлежат ему либо
+			// подчищаются в New.
+			tempStore.Stop()
+			return nil, err
+		}
+	}
+
 	return &Client{
-		core:        core,
-		pool:        pool,
-		storage:     st,
-		ownsPool:    ownsPool,
-		ownsStorage: ownsStorage,
-		options:     o,
+		core:         core,
+		pool:         pool,
+		storage:      st,
+		tempStore:    tempStore,
+		engine:       engine,
+		engineCancel: engineCancel,
+		ownsPool:     ownsPool,
+		ownsStorage:  ownsStorage,
+		options:      o,
 		// mutex и closed остаются нулевыми значениями: незаблокированный
 		// мьютекс и false - корректное начальное состояние.
-	}
+	}, nil
 }
 
 // New создаёт клиент по параметрам подключения: библиотека сама поднимает пул
@@ -208,7 +266,15 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	}
 
 	// Оба флага в true: ресурсы созданы здесь, значит Close() их закроет.
-	return newClient(pool, st, o, true, true), nil
+	c, err := newClient(pool, st, o, true, true)
+	if err != nil {
+		// Пул и адаптер уже созданы: если просто вернуть ошибку, ссылки
+		// на них будут потеряны и закрыть их станет некому.
+		_ = st.Close()
+		pool.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 // NewWithDeps создаёт клиент поверх готовых соединений встраивающего проекта.
@@ -244,7 +310,7 @@ func NewWithDeps(_ context.Context, deps Deps, opts ...Option) (*Client, error) 
 
 	st := storage.NewMinIOFromClient(deps.MinIO, deps.Bucket, o.log)
 
-	return newClient(deps.Pool, st, o, false, false), nil
+	return newClient(deps.Pool, st, o, false, false)
 }
 
 // Close освобождает ресурсы, созданные самой библиотекой.
@@ -280,12 +346,38 @@ func (c *Client) Close() error {
 		defer c.pool.Close()
 	}
 
-	if c.ownsStorage {
-		if err := c.storage.Close(); err != nil {
-			return fmt.Errorf("mediaservice.Close(): %w", err)
+	// Временное хранилище держит горутину периодической уборки. Останавливаем
+	// её тоже отложенно и до возможного выхода по ошибке хранилища: иначе
+	// горутина пережила бы клиента и продолжала бы ходить в каталог.
+	// Stop блокирует до выхода горутины и безопасен при повторном вызове.
+	defer c.tempStore.Stop()
+
+	// Движок останавливается первым и не через defer: его воркеры ходят
+	// в базу и в хранилище, и делать это после закрытия пула им нельзя.
+	// Порядок здесь обратный порядку создания.
+	var engineErr error
+	if c.engine != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), engineShutdownTimeout)
+		engineErr = c.engine.Shutdown(ctx)
+		cancel()
+
+		// Отменяем и собственный контекст движка: Shutdown отменяет только
+		// производный от него, а этот держал бы ресурсы до сборки мусора.
+		c.engineCancel()
+
+		if engineErr != nil {
+			engineErr = fmt.Errorf("mediaservice.Close(): %w", engineErr)
 		}
 	}
-	return nil
+
+	if c.ownsStorage {
+		if err := c.storage.Close(); err != nil {
+			// Ошибки объединяются, а не подменяют друг друга: обе описывают
+			// разные незакрытые ресурсы, и терять одну ради другой нельзя.
+			return errors.Join(engineErr, fmt.Errorf("mediaservice.Close(): %w", err))
+		}
+	}
+	return engineErr
 }
 
 // acquire отмечает начало операции над клиентом: берёт блокировку на чтение
@@ -320,4 +412,15 @@ func (c *Client) acquire() (release func(), err error) {
 		return nil, ErrClosed
 	}
 	return c.mutex.RUnlock, nil
+}
+
+// isClosed сообщает, был ли вызван Close.
+//
+// Отдельно от acquire: нужен там, где блокировку брать на всю операцию
+// нельзя. Единственный такой случай - чтение из потока DownloadStream,
+// которое идёт после возврата из метода и может длиться сколько угодно.
+func (c *Client) isClosed() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.closed
 }

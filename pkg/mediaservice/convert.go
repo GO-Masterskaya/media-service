@@ -3,6 +3,8 @@ package mediaservice
 import (
 	"encoding/json"
 	"fmt"
+
+	"mediaservice/internal/media"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
 )
@@ -38,7 +40,11 @@ func (v Variant) toInternal() (storage.Variant, error) {
 	}
 }
 
-// toPublicMedia преобразует внутреннюю модель repo.Media в публичную Media.
+// toPublicMedia преобразует внутреннюю модель media.MediaItem в публичную Media.
+//
+// На вход принимается item целиком, а не одна repo.Media: производные лежат
+// отдельной таблицей и приезжают из ядра рядом с записью. Собирать их
+// в разных местах значило бы дать двум вызывающим шанс собрать разный Media.
 //
 // Наружу отдаётся не всё. StorageKey остаётся внутренней деталью раскладки
 // хранилища. IdempotencyKey, BodyFingerprint и ParamsFingerprint влияют
@@ -46,12 +52,14 @@ func (v Variant) toInternal() (storage.Variant, error) {
 // потому что его нет в message Media: два публичных API одного сервиса
 // не должны расходиться по составу полей.
 //
-// Derivatives остаются пустыми: repo.Media их не содержит, производные лежат
-// отдельной таблицей, а media.Service.GetMedia их пока не подтягивает.
-//
 // Ошибку возвращает только на невалидных данных из ядра: nil-запись,
 // битый JSON в metadata, отрицательный size_bytes.
-func toPublicMedia(m *repo.Media) (*Media, error) {
+func toPublicMedia(item *media.MediaItem) (*Media, error) {
+	if item == nil {
+		return nil, fmt.Errorf("%w: nil media item from core", ErrInternal)
+	}
+	m := item.Media
+
 	// Отсутствие записи ядро уже превращает в NotFound, поэтому nil здесь
 	// означает баг внутри. Выдавать его за ErrNotFound нельзя: пользователь
 	// получит правдоподобный ответ и никто не заметит поломку.
@@ -80,6 +88,11 @@ func toPublicMedia(m *repo.Media) (*Media, error) {
 		return nil, fmt.Errorf("%w: negative size_bytes: %d", ErrInternal, m.SizeBytes)
 	}
 
+	derivatives, err := toPublicDerivatives(item.Derivatives)
+	if err != nil {
+		return nil, err
+	}
+
 	// Значения MediaKind и MediaStatus совпадают с публичными дословно,
 	// поэтому достаточно приведения типа. Порядок полей повторяет
 	// объявление Media - так видно, что ничего не пропущено.
@@ -91,11 +104,43 @@ func toPublicMedia(m *repo.Media) (*Media, error) {
 		SizeBytes:   uint64(m.SizeBytes),
 		Status:      Status(m.Status),
 		Metadata:    metadata,
-		Derivatives: nil,
+		Derivatives: derivatives,
 		Error:       m.Error,
 		CreatedAt:   m.CreatedAt,
 		Filename:    m.OrigFilename,
 	}, nil
+}
+
+// toPublicDerivatives переводит производные файлы во внешние типы.
+//
+// Всегда возвращает непустой срез (возможно, нулевой длины), а не nil:
+// вызывающий, сериализующий Media в JSON, получит [] в обоих случаях,
+// и отсутствие производных не будет выглядеть по-разному в зависимости
+// от того, пришла запись из GetMedia или из ListByOwner.
+//
+// Variant переносится приведением без проверки по известному набору.
+// Это данные, а не вход: значение уже записано конвейером обработки,
+// и отвергать его сейчас означало бы сделать чтение невозможным из-за
+// варианта, который библиотека просто не знает.
+func toPublicDerivatives(in []*repo.Derivative) ([]Derivative, error) {
+	out := make([]Derivative, 0, len(in))
+	for _, d := range in {
+		if d == nil {
+			return nil, fmt.Errorf("%w: nil derivative from core", ErrInternal)
+		}
+		// Та же причина, что и для size_bytes у самой записи: внутри int64,
+		// снаружи uint64, и отрицательное значение превратилось бы
+		// в гигантское положительное.
+		if d.SizeBytes < 0 {
+			return nil, fmt.Errorf("%w: negative derivative size_bytes: %d", ErrInternal, d.SizeBytes)
+		}
+		out = append(out, Derivative{
+			Variant:   Variant(d.Variant),
+			MIMEType:  d.Mime,
+			SizeBytes: uint64(d.SizeBytes),
+		})
+	}
+	return out, nil
 }
 
 // toPublicPresignedURL переводит внутреннюю ссылку в публичную.

@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/exec"
+	"time"
 
 	"github.com/google/uuid"
+
+	"mediaservice/internal/media"
 )
 
 // Upload сохраняет медиафайл в хранилище и привязывает его к владельцу
@@ -25,15 +29,77 @@ import (
 // Тот же ключ с другим файлом или другими параметрами - нарушение контракта
 // идемпотентности, оно даёт ErrAlreadyExists.
 //
-// Ошибки: ErrClosed, ErrInvalidArgument, ErrAlreadyExists, ErrInternal,
-// ErrNotImplemented.
+// Требует ffprobe в PATH: тип и метаданные файла определяются анализом
+// содержимого, а не заявленным MIME. Если ffprobe не найден, метод вернёт
+// ErrInternal, не начав читать reader.
+//
+// Ошибки: ErrClosed, ErrInvalidArgument, ErrAlreadyExists, ErrQuotaExceeded,
+// ErrStorageFull, ErrInternal.
 func (c *Client) Upload(ctx context.Context, params UploadParams, reader io.Reader) (UploadResult, error) {
 	release, err := c.acquire()
 	if err != nil {
 		return UploadResult{}, err
 	}
 	defer release()
-	return UploadResult{}, ErrNotImplemented // TODO жду мерж #9
+
+	if params.OwnerID == uuid.Nil {
+		return UploadResult{}, fmt.Errorf("%w: owner_id is required", ErrInvalidArgument)
+	}
+	if params.IdempotencyKey == "" {
+		return UploadResult{}, fmt.Errorf("%w: idempotency_key is required", ErrInvalidArgument)
+	}
+	if reader == nil {
+		return UploadResult{}, fmt.Errorf("%w: reader is required", ErrInvalidArgument)
+	}
+	if params.TTL < 0 {
+		return UploadResult{}, fmt.Errorf("%w: ttl must not be negative", ErrInvalidArgument)
+	}
+
+	// Ядро запускает ffprobe на каждом файле, а неудачу запуска трактует как
+	// повреждённое содержимое. Без этой проверки отсутствие ffmpeg выглядело
+	// бы как ErrInvalidArgument на исправном файле, и чинили бы не то.
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return UploadResult{}, fmt.Errorf(
+			"%w: ffprobe not found in PATH, Upload requires ffmpeg", ErrInternal)
+	}
+
+	// Наружу срок жизни задаётся длительностью, внутрь уходит момент времени.
+	// Перевод делается здесь, потому что точка отсчёта - момент вызова,
+	// и вычислять её глубже значило бы считать от неизвестного момента.
+	var expiresAt *time.Time
+	if params.TTL > 0 {
+		t := time.Now().Add(params.TTL)
+		expiresAt = &t
+	}
+
+	in := media.UploadRequestParams{
+		OwnerID: params.OwnerID,
+		// Библиотека всегда работает от имени владельца: анонимного режима,
+		// который есть у gRPC, здесь нет.
+		CallerID:       params.OwnerID,
+		Filename:       params.Filename,
+		MIME:           params.MIMEType,
+		ExpectedSize:   params.ExpectedSize,
+		IdempotencyKey: params.IdempotencyKey,
+		// Флаги гасятся, если движок обработки не поднят. Пропустить их
+		// дальше нельзя: ядро создало бы задачи и перевело объект
+		// в Processing, а выполнять их было бы некому. Такой объект
+		// остаётся в этом статусе навсегда и вдобавок перестаёт удаляться
+		// через Delete.
+		MakeThumbnail: params.Processing.MakeThumbnail && c.options.withProcessing,
+		Transcode:     params.Processing.Transcode && c.options.withProcessing,
+		ExpiresAt:     expiresAt,
+	}
+
+	res, err := c.core.Upload(ctx, in, readerChunks(reader))
+	if err != nil {
+		return UploadResult{}, mapCoreError(err)
+	}
+
+	return UploadResult{
+		ID:     res.MediaID,
+		Status: Status(res.Status),
+	}, nil
 }
 
 // GetMedia возвращает метаданные медиаобъекта.
@@ -43,10 +109,10 @@ func (c *Client) Upload(ctx context.Context, params UploadParams, reader io.Read
 // настройкой, библиотека применяет её всегда - встраивающее приложение
 // знает, от чьего имени работает, и анонимный режим ему не нужен.
 //
-// Поле Derivatives всегда пустое: производные лежат в отдельной таблице,
-// и ядро не отдаёт их этим методом. Пустое значение не означает, что
-// производных нет - доступность конкретной производной проверяется
-// вызовом GetDownloadURL или DownloadStream.
+// Поле Derivatives содержит созданные производные файлы. Пустой список
+// означает, что их действительно нет: клиент создан без WithProcessing,
+// обработка не запрашивалась, ещё не закончилась или закончилась ошибкой.
+// Причину в последнем случае показывает Status вместе с Error.
 //
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrNotFound, ErrAccessDenied, ErrInternal.
 func (c *Client) GetMedia(ctx context.Context, ownerID, mediaID uuid.UUID) (*Media, error) {
@@ -63,11 +129,11 @@ func (c *Client) GetMedia(ctx context.Context, ownerID, mediaID uuid.UUID) (*Med
 		return nil, fmt.Errorf("%w: media_id is required", ErrInvalidArgument)
 	}
 
-	m, err := c.core.GetMedia(ctx, ownerID, mediaID)
+	item, err := c.core.GetMediaWithDerivatives(ctx, ownerID, mediaID)
 	if err != nil {
 		return nil, mapCoreError(err)
 	}
-	return toPublicMedia(m)
+	return toPublicMedia(item)
 }
 
 // ListByOwner возвращает страницу медиаобъектов владельца params.OwnerID.
@@ -75,18 +141,70 @@ func (c *Client) GetMedia(ctx context.Context, ownerID, mediaID uuid.UUID) (*Med
 // Правила пагинации:
 //   - Пустой PageToken означает запрос первой страницы.
 //   - Пустой NextPageToken в ответе означает, что страниц больше нет.
-//   - PageSize == 0 означает, что размер страницы выбирает сервер.
-//     Значения выше допустимого потолка срезаются до него. Конкретные числа
-//     появятся вместе с реализацией и будут указаны здесь.
+//   - PageSize == 0 означает DefaultPageSize. Значение больше MaxPageSize
+//     даёт ErrInvalidArgument: молча отдать меньше запрошенного значит
+//     оставить вызывающего в уверенности, что он увидел всё.
 //
-// Ошибки: ErrClosed, ErrInvalidArgument, ErrInternal, ErrNotImplemented.
+// Записи идут от новых к старым, по паре (CreatedAt, ID). Пара, а не одно
+// время: две записи могут быть созданы в одну микросекунду, и по времени
+// граница страницы получилась бы неоднозначной.
+//
+// Токен непрозрачен и привязан к владельцу: разбирать его снаружи не нужно,
+// а попытка продолжить им выборку другого владельца даёт ErrInvalidArgument.
+// С токеном gRPC-контракта он не взаимозаменяем.
+//
+// Курсорная пагинация устойчива к изменениям между запросами: запись,
+// добавленная во время обхода, не сдвинет границу и не приведёт к пропуску
+// или повтору соседей, как это происходит с OFFSET.
+//
+// Ошибки: ErrClosed, ErrInvalidArgument, ErrInternal.
 func (c *Client) ListByOwner(ctx context.Context, params ListParams) (ListResult, error) {
 	release, err := c.acquire()
 	if err != nil {
 		return ListResult{}, err
 	}
 	defer release()
-	return ListResult{}, ErrNotImplemented // TODO жду мерж #10
+
+	if params.OwnerID == uuid.Nil {
+		return ListResult{}, fmt.Errorf("%w: owner_id is required", ErrInvalidArgument)
+	}
+	if params.PageSize > MaxPageSize {
+		return ListResult{}, fmt.Errorf("%w: page_size must be <= %d", ErrInvalidArgument, MaxPageSize)
+	}
+
+	cursor, err := decodePageToken(params.PageToken, params.OwnerID)
+	if err != nil {
+		return ListResult{}, err
+	}
+
+	// Оба идентификатора одинаковые: библиотека всегда листает от имени
+	// владельца, чужие ленты ей запрашивать не для кого.
+	page, err := c.core.ListMediaByOwner(ctx, params.OwnerID, params.OwnerID, int(params.PageSize), cursor)
+	if err != nil {
+		return ListResult{}, mapCoreError(err)
+	}
+
+	items := make([]Media, 0, len(page.Items))
+	for _, item := range page.Items {
+		m, err := toPublicMedia(item)
+		if err != nil {
+			return ListResult{}, err
+		}
+		items = append(items, *m)
+	}
+
+	// Токен строится из последней отданной записи, а не из первой следующей:
+	// следующей у нас нет, ядро сообщает только сам факт её существования.
+	var next string
+	if page.HasMore && len(page.Items) > 0 {
+		last := page.Items[len(page.Items)-1].Media
+		next, err = encodePageToken(params.OwnerID, last.CreatedAt, last.ID)
+		if err != nil {
+			return ListResult{}, fmt.Errorf("%w: %v", ErrInternal, err)
+		}
+	}
+
+	return ListResult{Items: items, NextPageToken: next}, nil
 }
 
 // GetDownloadURL возвращает временную ссылку на скачивание медиаобъекта.
@@ -94,9 +212,9 @@ func (c *Client) ListByOwner(ctx context.Context, params ListParams) (ListResult
 // Срок жизни ссылки задаётся при создании клиента опцией WithPresignTTL
 // и одинаков для всех вызовов.
 //
-// Пустой variant означает VariantOriginal. В текущей версии сервис отдаёт
-// ссылки только на VariantOriginal, VariantThumb и VariantR720;
-// VariantPreview и VariantR360 зарезервированы и вернут ErrInvalidArgument.
+// Пустой variant означает VariantOriginal. Принимаются VariantOriginal,
+// VariantThumb, VariantPreview и VariantR720. VariantR360 конвейером
+// не создаётся и даёт ErrInvalidArgument, а не вечный ErrNotFound.
 //
 // Для оригинала ссылка выдаётся в любом статусе, кроме Failed и Deleting.
 // Для производных объект должен быть в статусе Ready, иначе вернётся
@@ -139,13 +257,13 @@ func (c *Client) GetDownloadURL(ctx context.Context, ownerID, mediaID uuid.UUID,
 // поэтому поток без ошибки означает, что доступ подтверждён, а сбой при
 // чтении относится к сети или хранилищу.
 //
-// Пустой variant означает VariantOriginal. В отличие от GetDownloadURL, этот
-// метод принимает все объявленные варианты, но для VariantPreview и
-// VariantR360 производные в текущей версии не создаются, и вернётся
-// ErrNotFound.
+// Пустой variant означает VariantOriginal. Набор принимаемых вариантов
+// тот же, что у GetDownloadURL: VariantR360 даёт ErrInvalidArgument,
+// а отсутствующая производная - ErrNotFound.
 //
-// Поток читает из хранилища напрямую и переживает Close клиента, однако
-// полагаться на это не стоит: закрывайте поток до закрытия клиента.
+// Поток привязан к клиенту: после Close чтение возвращает ErrClosed.
+// Закрыть сам поток всё равно нужно - иначе останется незакрытым
+// соединение с хранилищем.
 //
 // Ошибки: ErrClosed, ErrInvalidArgument, ErrNotFound, ErrAccessDenied,
 // ErrNotReady, ErrInternal.
@@ -176,7 +294,7 @@ func (c *Client) DownloadStream(ctx context.Context, ownerID, mediaID uuid.UUID,
 	if err != nil {
 		return nil, mapCoreError(err)
 	}
-	return rc, nil
+	return &clientBoundStream{rc: rc, client: c}, nil
 }
 
 // Delete снимает привязку медиаобъекта к владельцу ownerID.
@@ -230,7 +348,11 @@ func (c *Client) Delete(ctx context.Context, ownerID, mediaID uuid.UUID) error {
 //
 // Число значимо и при ошибке: часть объектов может быть уже удалена. Сбой на
 // отдельном объекте не останавливает остальные - такая запись остаётся
-// помеченной на удаление и подхватывается фоновой сверкой.
+// помеченной на удаление.
+//
+// Дочистить её во встроенном режиме некому: реконсилятор, который подбирает
+// зависшие записи, поднимается только запущенным сервисом. Повторный вызов
+// метода их тоже не заберёт - выборка отсекает записи в состоянии удаления.
 //
 // Отмена контекста прерывает обработку между объектами: возвращается
 // накопленное число и ошибка контекста, а не ErrInternal.
