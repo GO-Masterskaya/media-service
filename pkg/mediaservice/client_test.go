@@ -325,7 +325,7 @@ func (s *ClientSuite) startPostgres() string {
 
 func (s *ClientSuite) startMinIO() string {
 	req := testcontainers.ContainerRequest{
-		Image:        "minio/minio:latest",
+		Image:        "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
 		ExposedPorts: []string{"9000/tcp"},
 		Cmd:          []string{"server", "/data"},
 		Env: map[string]string{
