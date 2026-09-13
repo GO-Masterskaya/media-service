@@ -188,6 +188,56 @@ func TestListByOwner(t *testing.T) {
 	}
 }
 
+func TestListByOwner_ExcludesDeleting(t *testing.T) {
+	pool := setupPostgres(t)
+	mediaRepo := NewPgMediaRepo(pool)
+	ctx := context.Background()
+
+	resetDB(t, pool)
+
+	owner := uuid.New()
+
+	stored := sampleMedia(owner, "stored", "body-stored", "params-stored")
+	failed := sampleMedia(owner, "failed", "body-failed", "params-failed")
+	deleting := sampleMedia(owner, "deleting", "body-deleting", "params-deleting")
+
+	failed.Status = MediaStatusFailed
+	deleting.Status = MediaStatusDeleting
+
+	for _, m := range []Media{stored, failed, deleting} {
+		if _, err := mediaRepo.InsertWithJobs(ctx, m, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := mediaRepo.ListByOwner(ctx, owner, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(page.Items) != 2 {
+		t.Fatalf("got %d items, want 2", len(page.Items))
+	}
+
+	for _, item := range page.Items {
+		if item.Status == MediaStatusDeleting {
+			t.Fatal("deleting media returned by ListByOwner")
+		}
+	}
+
+	foundFailed := false
+	for _, item := range page.Items {
+		if item.ID == failed.ID {
+			foundFailed = true
+			break
+		}
+	}
+
+	if !foundFailed {
+		t.Fatal("failed media not returned by ListByOwner")
+	}
+}
+
 func TestListByOwner_KeysetPagination(t *testing.T) {
 	pool := setupPostgres(t)
 	mediaRepo := NewPgMediaRepo(pool)
