@@ -41,7 +41,7 @@ func (s *AcceptanceSuite) TestKafka_DuplicateEventID_NoBreak() {
 	// Повтор того же event_id — already processed, сервис не падает.
 	s.produceKafka(t, kafkaTopic, []byte(eventID.String()), raw)
 
-	// Контроль: новый upload всё ещё работает.
+	// Контроль, что консьюмер жив: новый media + новый detach доходит.
 	up2 := s.upload(t, uploadOpts{
 		filename: "pixel2.png",
 		mime:     "image/png",
@@ -49,6 +49,10 @@ func (s *AcceptanceSuite) TestKafka_DuplicateEventID_NoBreak() {
 	})
 	require.NotEmpty(t, up2.MediaId)
 	s.waitStatus(t, up2.MediaId, mediav1.MediaStatus_STORED)
+
+	mediaID2 := uuid.MustParse(up2.MediaId)
+	s.produceDetach(t, uuid.New(), mediaID2, s.ownerID)
+	s.waitMediaGone(t, up2.MediaId)
 }
 
 func (s *AcceptanceSuite) TestKafka_InvalidEnvelope_GoesToDLQ() {
