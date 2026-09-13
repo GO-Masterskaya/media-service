@@ -201,13 +201,24 @@ func TestListByOwner_ExcludesDeleting(t *testing.T) {
 	failed := sampleMedia(owner, "failed", "body-failed", "params-failed")
 	deleting := sampleMedia(owner, "deleting", "body-deleting", "params-deleting")
 
-	failed.Status = MediaStatusFailed
-	deleting.Status = MediaStatusDeleting
-
 	for _, m := range []Media{stored, failed, deleting} {
 		if _, err := mediaRepo.InsertWithJobs(ctx, m, nil); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE media SET status = $1 WHERE id = $2`,
+		MediaStatusFailed, failed.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE media SET status = $1 WHERE id = $2`,
+		MediaStatusDeleting, deleting.ID,
+	); err != nil {
+		t.Fatal(err)
 	}
 
 	page, err := mediaRepo.ListByOwner(ctx, owner, 10, nil)
