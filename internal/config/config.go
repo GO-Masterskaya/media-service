@@ -65,9 +65,9 @@ type Config struct {
 	UploadCleanupInterval time.Duration `env:"UPLOAD_CLEANUP_INTERVAL"  env-default:"10m"`
 
 	// Limits
-	// MAX_CONCURRENT_STREAMS — зарезервирован под прикладной лимит одновременных
-	// upload/download стримов per-caller (#21). Пока нигде не применяется;
-	// не путать с grpc.MaxConcurrentStreams (HTTP/2).
+	// MAX_CONCURRENT_STREAMS — прикладной лимит одновременных
+	// upload/download стримов per-caller (#21).
+	// Не путать с grpc.MaxConcurrentStreams (HTTP/2).
 	RateLimitRPS         int      `env:"RATE_LIMIT_RPS"         env-default:"50"`
 	MaxConcurrentStreams int      `env:"MAX_CONCURRENT_STREAMS" env-default:"8"`
 	RateLimitBurst       int      `env:"RATE_LIMIT_BURST"       env-default:"50"`

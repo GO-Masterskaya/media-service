@@ -2,6 +2,7 @@ package interceptors
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -75,6 +76,12 @@ func callerFromMetadata(
 	}
 
 	if _, ok := allowed[callerID]; !ok {
+		slog.WarnContext(
+			ctx,
+			"unknown caller ID, using fallback bucket",
+			"caller_id", callerID,
+		)
+
 		return Caller{ID: fallbackCallerID}
 	}
 

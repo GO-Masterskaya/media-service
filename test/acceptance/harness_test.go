@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"mediaservice/internal/api"
+	"mediaservice/internal/api/interceptors"
 	"mediaservice/internal/config"
 	"mediaservice/internal/events"
 	"mediaservice/internal/media"
@@ -339,16 +340,16 @@ func (s *AcceptanceSuite) startServer() {
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(16<<20),
 		grpc.ChainUnaryInterceptor(
-			api.RecoveryInterceptor(),
-			api.CorrelationIDInterceptor(),
-			api.TokenInterceptor(true, authToken),
-			api.ValidationInterceptor(validator),
+			interceptors.RecoveryInterceptor(),
+			interceptors.CorrelationIDInterceptor(),
+			interceptors.TokenInterceptor(true, authToken),
+			interceptors.ValidationInterceptor(validator),
 		),
 		grpc.ChainStreamInterceptor(
-			api.RecoveryStreamInterceptor(),
-			api.CorrelationIDStreamInterceptor(),
-			api.TokenStreamInterceptor(true, authToken),
-			api.ValidationStreamInterceptor(validator),
+			interceptors.RecoveryStreamInterceptor(),
+			interceptors.CorrelationIDStreamInterceptor(),
+			interceptors.TokenStreamInterceptor(true, authToken),
+			interceptors.ValidationStreamInterceptor(validator),
 		),
 	)
 	mediav1.RegisterMediaServiceServer(s.grpcServer, api.NewMediaServer(mediaSvc, false, 30*time.Second))
