@@ -6,7 +6,7 @@
 ---
 
 ## 1. Стек
-- Go 1.22+, `module mediaservice`.
+- Go 1.22+, `module github.com/GO-Masterskaya/media-service`.
 - gRPC: `google.golang.org/grpc`, `protoc-gen-go`, `protoc-gen-go-grpc`. Валидация — `protovalidate` (или buf validate).
 - MinIO: `github.com/minio/minio-go/v7`.
 - Postgres: `pgx/v5` + `pgxpool`; миграции — `goose` или `golang-migrate`.
