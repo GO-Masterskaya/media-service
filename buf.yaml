@@ -4,6 +4,11 @@ deps:
 breaking:
   use:
     - FILE
+  ignore_only:
+    # Одноразовое: путь модуля сменился в #93. Сравнение new-vs-new проходит и
+    # без этого блока - снять можно любым следующим PR, трогающим buf.yaml.
+    FILE_SAME_GO_PACKAGE:
+      - proto/media/v1/media.proto
 lint:
   use:
     - STANDARD

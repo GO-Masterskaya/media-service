@@ -1234,9 +1234,9 @@ const file_proto_media_v1_media_proto_rawDesc = "" +
 	"\x0eGetDownloadURL\x12\x1f.media.v1.GetDownloadURLRequest\x1a .media.v1.GetDownloadURLResponse\x12L\n" +
 	"\x0eDownloadStream\x12\x1f.media.v1.DownloadStreamRequest\x1a\x17.media.v1.DownloadChunk0\x01\x12J\n" +
 	"\vDeleteMedia\x12\x1c.media.v1.DeleteMediaRequest\x1a\x1d.media.v1.DeleteMediaResponse\x12P\n" +
-	"\rDeleteByOwner\x12\x1e.media.v1.DeleteByOwnerRequest\x1a\x1f.media.v1.DeleteByOwnerResponseB\x80\x01\n" +
+	"\rDeleteByOwner\x12\x1e.media.v1.DeleteByOwnerRequest\x1a\x1f.media.v1.DeleteByOwnerResponseB\x9b\x01\n" +
 	"\fcom.media.v1B\n" +
-	"MediaProtoP\x01Z#mediaservice/proto/media/v1;mediav1\xa2\x02\x03MXX\xaa\x02\bMedia.V1\xca\x02\bMedia\\V1\xe2\x02\x14Media\\V1\\GPBMetadata\xea\x02\tMedia::V1b\x06proto3"
+	"MediaProtoP\x01Z>github.com/GO-Masterskaya/media-service/proto/media/v1;mediav1\xa2\x02\x03MXX\xaa\x02\bMedia.V1\xca\x02\bMedia\\V1\xe2\x02\x14Media\\V1\\GPBMetadata\xea\x02\tMedia::V1b\x06proto3"
 
 var (
 	file_proto_media_v1_media_proto_rawDescOnce sync.Once

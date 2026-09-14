@@ -65,7 +65,7 @@ docker-compose.yml
 ```proto
 syntax = "proto3";
 package media.v1;
-option go_package = "mediaservice/proto/media/v1;mediav1";
+option go_package = "github.com/GO-Masterskaya/media-service/proto/media/v1;mediav1";
 
 service MediaService {
   rpc Upload(stream UploadRequest) returns (UploadResponse);          // client-streaming
