@@ -74,6 +74,9 @@ type MediaCursor struct {
 
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
+
+	// ListByOwner возвращает media владельца, исключая записи в статусе deleting.
+	// Media со статусом failed остаются в выдаче.
 	ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *MediaCursor) (*MediaPage, error)
 	GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error)
 	InsertWithJobs(ctx context.Context, m Media, jobTypes []string) (*Media, error)
@@ -205,6 +208,7 @@ func (r *PgMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSi
 		       m.expires_at, COALESCE(m.error, ''), m.created_at
 		FROM media m
 		WHERE m.owner_id = $1
+		  AND m.status <> 'deleting'
 		  AND ($2::timestamptz IS NULL OR (m.created_at, m.id) < ($2, $3))
 		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT $4
