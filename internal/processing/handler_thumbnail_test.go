@@ -5,15 +5,16 @@ import (
 	"context"
 	"errors"
 	"io"
-	"github.com/GO-Masterskaya/media-service/internal/config"
-	"github.com/GO-Masterskaya/media-service/internal/repo"
-	"github.com/GO-Masterskaya/media-service/internal/storage"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 type memoryStorage struct {

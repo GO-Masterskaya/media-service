@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"github.com/GO-Masterskaya/media-service/internal/repo"
-	"github.com/GO-Masterskaya/media-service/internal/storage"
-	"github.com/GO-Masterskaya/media-service/internal/upload"
 	"path"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 )
 
 type ChunkSender func([]byte) error

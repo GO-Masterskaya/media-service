@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"github.com/GO-Masterskaya/media-service/internal/config"
-	"github.com/GO-Masterskaya/media-service/internal/repo"
-	"github.com/GO-Masterskaya/media-service/internal/storage"
 	"os"
 	"path/filepath"
 
 	"github.com/google/uuid"
+
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 const maxSourceSizeBytes = 500 * 1024 * 1024 // Защита от переполнения: лимит 500 МБ на скачивание исходника

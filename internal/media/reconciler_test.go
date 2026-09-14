@@ -4,8 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"github.com/GO-Masterskaya/media-service/internal/repo"
-	"github.com/GO-Masterskaya/media-service/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -13,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 type recStubMediaRepo struct {

@@ -6,9 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"github.com/GO-Masterskaya/media-service/internal/media"
-	"github.com/GO-Masterskaya/media-service/internal/repo"
-	"github.com/GO-Masterskaya/media-service/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -20,6 +17,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 	v1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 

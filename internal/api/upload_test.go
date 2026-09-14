@@ -3,10 +3,6 @@ package api
 import (
 	"context"
 	"io"
-	"github.com/GO-Masterskaya/media-service/internal/media"
-	"github.com/GO-Masterskaya/media-service/internal/processing"
-	"github.com/GO-Masterskaya/media-service/internal/repo"
-	"github.com/GO-Masterskaya/media-service/internal/upload"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +16,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
