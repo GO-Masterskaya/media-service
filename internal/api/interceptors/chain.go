@@ -4,7 +4,7 @@ import (
 	"buf.build/go/protovalidate"
 	"google.golang.org/grpc"
 
-	"mediaservice/internal/metrics"
+	"github.com/GO-Masterskaya/media-service/internal/metrics"
 )
 
 func UnaryInterceptors(

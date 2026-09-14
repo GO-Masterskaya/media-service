@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 
-	"mediaservice/internal/metrics"
+	"github.com/GO-Masterskaya/media-service/internal/metrics"
 )
 
 func MetricsUnaryInterceptor(

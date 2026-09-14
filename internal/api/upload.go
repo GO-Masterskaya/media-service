@@ -11,10 +11,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"mediaservice/internal/media"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
-	mediav1 "mediaservice/proto/media/v1"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 // Upload реализует client-streaming RPC для загрузки медиафайлов.

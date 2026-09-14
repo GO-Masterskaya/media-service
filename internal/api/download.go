@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	mediav1 "mediaservice/proto/media/v1"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 // DownloadStream отдаёт файл клиенту чанками (server-streaming).

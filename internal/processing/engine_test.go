@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"mediaservice/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
 )
 
 // MockJobRepository — потокобезопасный мок репозитория для unit-тестов.

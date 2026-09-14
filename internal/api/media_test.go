@@ -4,9 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"mediaservice/internal/media"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 	"testing"
 	"time"
 
@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	mediav1 "mediaservice/proto/media/v1"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 // ---------- stubs (копия из service_test.go) ----------

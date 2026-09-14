@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	mediav1 "mediaservice/proto/media/v1"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 func (s *AcceptanceSuite) TestVideo_ProcessingToReady() {

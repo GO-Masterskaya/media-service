@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"mediaservice/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
 )
 
 func testBackoff() processing.BackoffConfig {

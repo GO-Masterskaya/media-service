@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 
-	"mediaservice/internal/repo"
-	"mediaservice/migrations"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/migrations"
 )
 
 // Migrations возвращает файлы миграций схемы для применения внешним

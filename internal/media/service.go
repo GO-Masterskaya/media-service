@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
-	"mediaservice/internal/upload"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 	"path"
 	"time"
 

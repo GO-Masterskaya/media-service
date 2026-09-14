@@ -3,10 +3,10 @@ package api
 import (
 	"context"
 	"io"
-	"mediaservice/internal/media"
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	mediav1 "mediaservice/proto/media/v1"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 type mockUploadServerStream struct {

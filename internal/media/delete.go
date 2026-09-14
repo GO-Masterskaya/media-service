@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 // defaultDeleteBatchSize используется, если вызывающий код передал batchSize<=0.

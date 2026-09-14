@@ -7,8 +7,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"mediaservice/internal/api/interceptors"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/api/interceptors"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 // LBDrainWait — сколько ждать после NOT_SERVING перед GracefulStop.

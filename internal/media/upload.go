@@ -15,9 +15,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 )
 
 // Prober извлекает технические метаданные медиафайла.

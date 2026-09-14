@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"mediaservice/pkg/mediaservice"
-	mediav1 "mediaservice/proto/media/v1"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"

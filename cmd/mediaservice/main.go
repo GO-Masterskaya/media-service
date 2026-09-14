@@ -22,17 +22,17 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 
-	"mediaservice/internal/api"
-	"mediaservice/internal/api/interceptors"
-	"mediaservice/internal/config"
-	"mediaservice/internal/events"
-	"mediaservice/internal/media"
-	"mediaservice/internal/metrics"
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
-	"mediaservice/internal/upload"
-	mediav1 "mediaservice/proto/media/v1"
+	"github.com/GO-Masterskaya/media-service/internal/api"
+	"github.com/GO-Masterskaya/media-service/internal/api/interceptors"
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/internal/events"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/metrics"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 func main() {

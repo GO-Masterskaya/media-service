@@ -11,7 +11,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"mediaservice/migrations"
+	"github.com/GO-Masterskaya/media-service/migrations"
 )
 
 // RunMigrationsContext применяет встроенные миграции схемы к базе по dsn.

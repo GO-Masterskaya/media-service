@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"mediaservice/internal/media"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 // toInternal преобразует публичный Variant во внутренний storage.Variant,

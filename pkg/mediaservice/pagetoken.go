@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"mediaservice/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
 )
 
 // pageTokenVersion - версия формата токена. Пишется внутрь и проверяется при
