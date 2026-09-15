@@ -16,14 +16,18 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 
 	"mediaservice/internal/api"
+	"mediaservice/internal/api/interceptors"
 	"mediaservice/internal/config"
 	"mediaservice/internal/events"
 	"mediaservice/internal/media"
+	"mediaservice/internal/metrics"
 	"mediaservice/internal/processing"
 	"mediaservice/internal/repo"
 	"mediaservice/internal/storage"
@@ -212,6 +216,32 @@ func main() {
 	}
 	mediaSvc.SetUploadConfig(uploadStore, media.DefaultProber{}, cfg.MaxUploadBytes, cfg.MIMEAllowlist, cfg.StorageQuotaBytes)
 
+	// #21: per-caller limits and gRPC observability setup
+	callerAllowlist := interceptors.NewCallerAllowlist(cfg.CallerIDAllowlist)
+
+	grpcMetrics := metrics.NewGRPCMetrics(prometheus.DefaultRegisterer)
+
+	rateLimiter := interceptors.NewRateLimiter(
+		rate.Limit(cfg.RateLimitRPS),
+		cfg.RateLimitBurst,
+	)
+
+	const (
+		rateLimiterCleanupInterval = time.Minute
+		rateLimiterInactiveAfter   = 10 * time.Minute
+	)
+
+	go interceptors.StartRateLimiterCleanup(
+		ctx,
+		rateLimiter,
+		rateLimiterCleanupInterval,
+		rateLimiterInactiveAfter,
+	)
+
+	streamLimiter := interceptors.NewStreamLimiter(
+		cfg.MaxConcurrentStreams,
+	)
+
 	// 9. gRPC server с цепочкой interceptors.
 	// MaxRecvMsgSize — лимит одного protobuf-сообщения (чанк), не всего upload.
 	const maxRecvMsgSize = 16 << 20 // 16 MiB
@@ -227,16 +257,25 @@ func main() {
 			PermitWithoutStream: true,
 		}),
 		grpc.ChainUnaryInterceptor(
-			api.RecoveryInterceptor(),
-			api.CorrelationIDInterceptor(),
-			api.TokenInterceptor(cfg.GRPCAuthEnabled, cfg.GRPCAuthToken),
-			api.ValidationInterceptor(validator),
+			interceptors.UnaryInterceptors(
+				cfg.GRPCAuthEnabled,
+				cfg.GRPCAuthToken,
+				validator,
+				grpcMetrics,
+				rateLimiter,
+				callerAllowlist,
+			)...,
 		),
 		grpc.ChainStreamInterceptor(
-			api.RecoveryStreamInterceptor(),
-			api.CorrelationIDStreamInterceptor(),
-			api.TokenStreamInterceptor(cfg.GRPCAuthEnabled, cfg.GRPCAuthToken),
-			api.ValidationStreamInterceptor(validator),
+			interceptors.StreamInterceptors(
+				cfg.GRPCAuthEnabled,
+				cfg.GRPCAuthToken,
+				validator,
+				grpcMetrics,
+				rateLimiter,
+				streamLimiter,
+				callerAllowlist,
+			)...,
 		),
 	)
 	healthServer := api.NewHealthServer(pool)
@@ -270,15 +309,16 @@ func main() {
 		}
 	}()
 
-	// HTTP health server (readyz разделяет drain-флаг с gRPC health).
+	// HTTP health and metrics server (readyz разделяет drain-флаг с gRPC health).
 	healthMux := api.HTTPHealthHandlers(pool, healthServer)
+	healthMux.Handle("/metrics", promhttp.Handler())
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           healthMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
-		slog.Info("http health server listening", "addr", cfg.HTTPAddr)
+		slog.Info("http health and metrics server listening", "addr", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fatalErr <- fmt.Errorf("http health server: %w", err)
 		}
@@ -373,7 +413,10 @@ func main() {
 		healthServer.SetServingStatus("media.v1.MediaService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
-		wait := api.LBDrainWait(drainWindow, api.InFlightRPCs())
+		wait := api.LBDrainWait(
+			drainWindow,
+			interceptors.InFlightRPCs(),
+		)
 		if wait > 0 {
 			timer := time.NewTimer(wait)
 			select {

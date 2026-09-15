@@ -71,6 +71,10 @@ message Media {
   repeated Derivative derivatives = 8;
   string error = 9;
   google.protobuf.Timestamp created_at = 10;
+  // Имя файла из UploadInit.filename, сохранённое как есть (колонка
+  // orig_filename). Может быть пустым: в UploadInit поле необязательное.
+  // В ключ хранилища не попадает, см. storage.BuildKey.
+  string filename = 11;
 }
 
 message Derivative {

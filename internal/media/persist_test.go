@@ -5,15 +5,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mediaservice/internal/repo"
+	"mediaservice/internal/storage"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 )
 
 type persistMediaRepo struct {
@@ -28,6 +27,13 @@ func newPersistMediaRepo() *persistMediaRepo {
 
 func (r *persistMediaRepo) key(owner uuid.UUID, idem string) string {
 	return owner.String() + "|" + idem
+}
+
+func (r *persistMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error) {
+	return &repo.MediaPage{
+		Items:   nil,
+		HasMore: false,
+	}, nil
 }
 
 func (r *persistMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
@@ -87,9 +93,11 @@ func (r *persistMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 func (r *persistMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 	return nil, repo.ClaimNone, nil
 }
+
 func (r *persistMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }
+
 func (r *persistMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }
@@ -140,9 +148,11 @@ func (s *countingStorage) PutObject(ctx context.Context, key string, reader io.R
 func (s *countingStorage) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
 	return nil, errors.New("not implemented")
 }
+
 func (s *countingStorage) PresignGetObject(ctx context.Context, key string, ttl time.Duration) (*storage.PresignedURL, error) {
 	return nil, errors.New("not implemented")
 }
+
 func (s *countingStorage) DeleteObject(ctx context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -594,6 +604,13 @@ type raceAfterPutRepo struct {
 	afterInsert bool
 }
 
+func (r *raceAfterPutRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error) {
+	return &repo.MediaPage{
+		Items:   nil,
+		HasMore: false,
+	}, nil
+}
+
 func (r *raceAfterPutRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	if !r.afterInsert || r.winner.ID != id {
 		return nil, repo.ErrNotFound
@@ -629,9 +646,11 @@ func (r *raceAfterPutRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 func (r *raceAfterPutRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 	return nil, repo.ClaimNone, nil
 }
+
 func (r *raceAfterPutRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }
+
 func (r *raceAfterPutRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }

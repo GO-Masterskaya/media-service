@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -152,16 +153,25 @@ func (r *Reaper) Run(ctx context.Context) {
 			r.log.Info("reaper stopped (shutdown requested)")
 			return
 		case <-ticker.C:
-			// Обёртка в анонимную функцию нужна НЕ из-за конкуррентности
-			// (runOnce вызывается синхронно, не в go func) — а чтобы defer
-			// r.wg.Done() сработал именно после этого runOnce, а не после
-			// возврата из самого Run(): защита от паники внутри runOnce.
-			// Без defer паника пропустила бы wg.Done(), и Shutdown завис бы
-			// навсегда на wg.Wait() (см. ревью PR #13/#17 — предыдущее
-			// "упрощение" без defer было ошибкой, не просто лишней indirection).
+			// wg.Add/wg.Done + defer защищают Shutdown от зависания при
+			// панике (см. комментарий выше историю в ревью PR #13/#17).
+			// recover() защищает сам процесс: без него паника в runOnce
+			// убивала бы весь сервис целиком (main запускает go reaper.Run,
+			// до wg.Wait дело просто не доходило бы) — reaper должен её
+			// пережить и продолжить со следующего тика, залогировав стек.
+			// Тот же паттерн, что у Engine.safeHandle (internal/processing/engine.go).
 			r.wg.Add(1)
 			func() {
 				defer r.wg.Done()
+				defer func() {
+					if rec := recover(); rec != nil {
+						stack := debug.Stack()
+						r.log.Error("panic in reaper runOnce",
+							slog.Any("panic", rec),
+							slog.String("stack", string(stack)),
+						)
+					}
+				}()
 				r.runOnce(ctx)
 			}()
 		}

@@ -32,6 +32,10 @@ lint: ## Прогнать линтер и go vet
 test: ## Прогнать тесты с race-детектором
 	go test -race -count=1 $(PKG)
 
+.PHONY: test-acceptance
+test-acceptance: ## Приёмочные интеграционные тесты (#19); нужен Docker + ffmpeg
+	go test -race -count=1 -timeout 15m ./test/acceptance/
+
 .PHONY: test-cover
 test-cover: ## Тесты с отчётом о покрытии
 	go test -race -count=1 -coverprofile=coverage.out $(PKG)

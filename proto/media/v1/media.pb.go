@@ -414,17 +414,21 @@ func (x *UploadResponse) GetStatus() MediaStatus {
 }
 
 type Media struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	OwnerId       string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	Kind          MediaKind              `protobuf:"varint,3,opt,name=kind,proto3,enum=media.v1.MediaKind" json:"kind,omitempty"`
-	Mime          string                 `protobuf:"bytes,4,opt,name=mime,proto3" json:"mime,omitempty"`
-	SizeBytes     uint64                 `protobuf:"varint,5,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	Status        MediaStatus            `protobuf:"varint,6,opt,name=status,proto3,enum=media.v1.MediaStatus" json:"status,omitempty"`
-	Metadata      *structpb.Struct       `protobuf:"bytes,7,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	Derivatives   []*Derivative          `protobuf:"bytes,8,rep,name=derivatives,proto3" json:"derivatives,omitempty"`
-	Error         string                 `protobuf:"bytes,9,opt,name=error,proto3" json:"error,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	OwnerId     string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Kind        MediaKind              `protobuf:"varint,3,opt,name=kind,proto3,enum=media.v1.MediaKind" json:"kind,omitempty"`
+	Mime        string                 `protobuf:"bytes,4,opt,name=mime,proto3" json:"mime,omitempty"`
+	SizeBytes   uint64                 `protobuf:"varint,5,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Status      MediaStatus            `protobuf:"varint,6,opt,name=status,proto3,enum=media.v1.MediaStatus" json:"status,omitempty"`
+	Metadata    *structpb.Struct       `protobuf:"bytes,7,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Derivatives []*Derivative          `protobuf:"bytes,8,rep,name=derivatives,proto3" json:"derivatives,omitempty"`
+	Error       string                 `protobuf:"bytes,9,opt,name=error,proto3" json:"error,omitempty"`
+	CreatedAt   *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// Имя файла из UploadInit.filename, сохранённое как есть (колонка
+	// orig_filename). Может быть пустым: в UploadInit поле необязательное.
+	// В ключ хранилища не попадает, см. storage.BuildKey.
+	Filename      string `protobuf:"bytes,11,opt,name=filename,proto3" json:"filename,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -527,6 +531,13 @@ func (x *Media) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *Media) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
 }
 
 type Derivative struct {
@@ -1149,7 +1160,7 @@ const file_proto_media_v1_media_proto_rawDesc = "" +
 	"\ttranscode\x18\x02 \x01(\bR\ttranscode\"Z\n" +
 	"\x0eUploadResponse\x12\x19\n" +
 	"\bmedia_id\x18\x01 \x01(\tR\amediaId\x12-\n" +
-	"\x06status\x18\x02 \x01(\x0e2\x15.media.v1.MediaStatusR\x06status\"\xfb\x02\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x15.media.v1.MediaStatusR\x06status\"\x97\x03\n" +
 	"\x05Media\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12'\n" +
@@ -1163,7 +1174,8 @@ const file_proto_media_v1_media_proto_rawDesc = "" +
 	"\x05error\x18\t \x01(\tR\x05error\x129\n" +
 	"\n" +
 	"created_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"Y\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1a\n" +
+	"\bfilename\x18\v \x01(\tR\bfilename\"Y\n" +
 	"\n" +
 	"Derivative\x12\x18\n" +
 	"\avariant\x18\x01 \x01(\tR\avariant\x12\x12\n" +

@@ -111,6 +111,7 @@ message Media {
   repeated Derivative derivatives = 8;
   string error = 9;
   google.protobuf.Timestamp created_at = 10;
+  string filename = 11;                        // имя из UploadInit; может быть пустым
 }
 
 message Derivative { string variant=1; string mime=2; uint64 size_bytes=3; }

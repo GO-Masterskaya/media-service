@@ -159,7 +159,10 @@ func (s *ClientSuite) TestErrors_ContextCanceled() {
 // --- вспомогательное ---
 
 // newClient создаёт клиента на внешних ресурсах сюиты.
-func (s *ClientSuite) newClient() *mediaservice.Client {
+//
+// Опции прокидываются насквозь: тестам обработки нужен клиент
+// с поднятым движком, остальным - обычный.
+func (s *ClientSuite) newClient(opts ...mediaservice.Option) *mediaservice.Client {
 	s.T().Helper()
 
 	pool := s.newExternalPool()
@@ -172,17 +175,41 @@ func (s *ClientSuite) newClient() *mediaservice.Client {
 		Pool:   pool,
 		MinIO:  s.newExternalMinIO(),
 		Bucket: testBucket,
-	})
+	}, opts...)
 	require.NoError(s.T(), err)
 	return client
 }
 
+// insertDerivative кладёт производную напрямую в базу.
+//
+// Нужна там, где проверяется чтение производных, а поднимать ради этого
+// движок обработки незачем: он проверяется отдельно и требует ffmpeg.
+func (s *ClientSuite) insertDerivative(mediaID uuid.UUID, variant, mime string, size int64) {
+	s.T().Helper()
+
+	_, err := s.admin.Exec(s.ctx, `
+		INSERT INTO media_derivative
+			(id, media_id, variant, mime, size_bytes, storage_key)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		uuid.New(), mediaID, variant, mime, size,
+		"media/"+mediaID.String()+"/"+variant)
+	require.NoError(s.T(), err)
+}
+
 // insertMedia кладёт запись напрямую в базу и возвращает её идентификатор.
+func (s *ClientSuite) insertMedia(ownerID uuid.UUID, status string) uuid.UUID {
+	s.T().Helper()
+	return s.insertMediaWithFilename(ownerID, status, "test.jpg")
+}
+
+// insertMediaWithFilename - та же вставка с явным orig_filename.
+// Отдельный вариант нужен там, где имя файла и есть предмет проверки:
+// значение из общего помощника пришлось бы искать в другом файле.
 //
 // Перечислены только колонки без DEFAULT: остальные база заполнит сама.
 // Ключ идемпотентности случайный - на паре (owner_id, idempotency_key)
 // стоит уникальный индекс.
-func (s *ClientSuite) insertMedia(ownerID uuid.UUID, status string) uuid.UUID {
+func (s *ClientSuite) insertMediaWithFilename(ownerID uuid.UUID, status, filename string) uuid.UUID {
 	s.T().Helper()
 
 	id := uuid.New()
@@ -190,9 +217,9 @@ func (s *ClientSuite) insertMedia(ownerID uuid.UUID, status string) uuid.UUID {
 		INSERT INTO media
 			(id, owner_id, kind, orig_filename, mime, size_bytes,
 			 status, storage_key, idempotency_key)
-		VALUES ($1, $2, 'image', 'test.jpg', 'image/jpeg', 1024,
-			 $3, $4, $5)`,
-		id, ownerID, status, "media/"+id.String()+"/original", uuid.NewString())
+		VALUES ($1, $2, 'image', $3, 'image/jpeg', 1024,
+			 $4, $5, $6)`,
+		id, ownerID, filename, status, "media/"+id.String()+"/original", uuid.NewString())
 	require.NoError(s.T(), err)
 
 	return id

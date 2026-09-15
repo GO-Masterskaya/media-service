@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mediaservice/internal/repo"
+	"mediaservice/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -14,9 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 )
 
 // ---------- stubs (уникальные имена, чтобы не конфликтовать с reconciler_test) ----------
@@ -46,15 +45,23 @@ type svcStubMediaRepo struct {
 func (s *svcStubMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	return s.media, s.err
 }
+
 func (s *svcStubMediaRepo) GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*repo.Media, error) {
 	return s.media, s.err
 }
+
 func (s *svcStubMediaRepo) InsertWithJobs(ctx context.Context, m repo.Media, jobTypes []string) (*repo.Media, error) {
 	return &m, s.err
 }
+
+func (s *svcStubMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error) {
+	return &repo.MediaPage{}, nil
+}
+
 func (s *svcStubMediaRepo) ListDeleting(ctx context.Context, olderThan time.Time, limit int) ([]*repo.Media, error) {
 	return nil, nil
 }
+
 func (s *svcStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return nil, nil
 }
@@ -96,6 +103,7 @@ func (s *svcStubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uui
 func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
+
 func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
@@ -114,6 +122,10 @@ func (s *svcStubDerivRepo) GetByMediaAndVariant(ctx context.Context, mediaID uui
 
 func (s *svcStubDerivRepo) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
 	return &d, s.err
+}
+
+func (s *svcStubDerivRepo) ListByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]*repo.Derivative, error) {
+	return map[uuid.UUID][]*repo.Derivative{}, nil
 }
 
 func (s *svcStubStorage) Insert(ctx context.Context, d repo.Derivative) (*repo.Derivative, error) {
@@ -142,9 +154,11 @@ type svcStubStorage struct {
 func (s *svcStubStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 	return nil
 }
+
 func (s *svcStubStorage) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
 	return nil, nil
 }
+
 func (s *svcStubStorage) PresignGetObject(ctx context.Context, key string, ttl time.Duration) (*storage.PresignedURL, error) {
 	return s.url, s.err
 }
@@ -155,6 +169,7 @@ func (s *svcStubStorage) DeletePrefix(ctx context.Context, prefix string) error 
 	}
 	return nil
 }
+
 func (s *svcStubStorage) ForEachObject(ctx context.Context, prefix string, fn func(storage.ObjectInfo) error) error {
 	return nil
 }

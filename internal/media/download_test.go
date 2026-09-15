@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"mediaservice/internal/repo"
+	"mediaservice/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -12,9 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 )
 
 func newTestService(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface) *Service {
@@ -37,6 +36,10 @@ func (m *mockMediaRepo) GetByOwnerIdempotency(_ context.Context, _ uuid.UUID, _ 
 
 func (m *mockMediaRepo) InsertWithJobs(_ context.Context, media repo.Media, _ []string) (*repo.Media, error) {
 	return &media, nil
+}
+
+func (m *mockMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error) {
+	return &repo.MediaPage{}, nil
 }
 
 func (m *mockMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
@@ -66,6 +69,7 @@ func (m *mockMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.U
 func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
+
 func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
@@ -86,6 +90,10 @@ func (m *mockDerivRepo) Insert(_ context.Context, d repo.Derivative) (*repo.Deri
 	return &d, nil
 }
 
+func (m *mockDerivRepo) ListByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]*repo.Derivative, error) {
+	return map[uuid.UUID][]*repo.Derivative{}, nil
+}
+
 func (m *mockDerivRepo) UpsertDerivative(ctx context.Context, d *repo.Derivative) (*repo.Derivative, error) {
 	if m.derivErr != nil {
 		return nil, m.derivErr
@@ -104,9 +112,11 @@ type mockStorage struct {
 func (m *mockStorage) PutObject(_ context.Context, _ string, _ io.Reader, _ int64, _ string) error {
 	return nil
 }
+
 func (m *mockStorage) GetObject(_ context.Context, _ string) (io.ReadCloser, error) {
 	return m.reader, m.err
 }
+
 func (m *mockStorage) PresignGetObject(_ context.Context, _ string, _ time.Duration) (*storage.PresignedURL, error) {
 	return nil, nil
 }
@@ -290,6 +300,7 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	r.offset += n
 	return n, nil
 }
+
 func (r *slowReader) Close() error {
 	r.closed = true
 	return nil

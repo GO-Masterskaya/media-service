@@ -5,19 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mediaservice/internal/repo"
+	"mediaservice/internal/storage"
+	"mediaservice/internal/upload"
 	"path"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
-	"mediaservice/internal/upload"
 )
 
 type ChunkSender func([]byte) error
+
+type MediaItem struct {
+	Media       *repo.Media
+	Derivatives []*repo.Derivative
+}
+
+type MediaPage struct {
+	Items   []*MediaItem
+	HasMore bool
+}
 
 var (
 	ErrNotFound           = errors.New("media not found")
@@ -187,6 +196,75 @@ func (s *Service) GetMedia(ctx context.Context, callerID, mediaID uuid.UUID) (*r
 	return m, nil
 }
 
+func (s *Service) GetMediaWithDerivatives(ctx context.Context, callerID, mediaID uuid.UUID) (*MediaItem, error) {
+	m, err := s.GetMedia(ctx, callerID, mediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	derivatives, err := s.derivRepo.ListByMediaIDs(ctx, []uuid.UUID{mediaID})
+	if err != nil {
+		s.log.Error(
+			"get media derivatives failed",
+			slog.Any("error", err),
+			slog.String("media_id", mediaID.String()),
+		)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &MediaItem{
+		Media:       m,
+		Derivatives: derivatives[mediaID],
+	}, nil
+}
+
+func (s *Service) ListMediaByOwner(ctx context.Context, callerID, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*MediaPage, error) {
+	if callerID != uuid.Nil && callerID != ownerID {
+		return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
+	}
+
+	page, err := s.mediaRepo.ListByOwner(ctx, ownerID, pageSize, cursor)
+	if err != nil {
+		s.log.Error(
+			"list media by owner failed",
+			slog.Any("error", err),
+			slog.String("owner_id", ownerID.String()),
+		)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	if page == nil {
+		page = &repo.MediaPage{}
+	}
+
+	ids := make([]uuid.UUID, 0, len(page.Items))
+	for _, m := range page.Items {
+		ids = append(ids, m.ID)
+	}
+
+	derivatives, err := s.derivRepo.ListByMediaIDs(ctx, ids)
+	if err != nil {
+		s.log.Error(
+			"list media derivatives failed",
+			slog.Any("error", err),
+			slog.String("owner_id", ownerID.String()),
+		)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	items := make([]*MediaItem, 0, len(page.Items))
+	for _, m := range page.Items {
+		items = append(items, &MediaItem{
+			Media:       m,
+			Derivatives: derivatives[m.ID],
+		})
+	}
+
+	return &MediaPage{
+		Items:   items,
+		HasMore: page.HasMore,
+	}, nil
+}
+
 // AttachMedia создаёт привязку media к owner через таблицу media_attachments.
 // Идемпотентна: повторный attach того же owner возвращает nil.
 func (s *Service) AttachMedia(ctx context.Context, mediaID uuid.UUID, ownerID uuid.UUID) error {
@@ -234,7 +312,8 @@ func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) 
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
-			return status.Error(codes.NotFound, "media not found")
+			// ТЗ §7: повтор DeleteMedia на уже удалённом — идемпотентный OK.
+			return nil
 		}
 		s.log.Error("get media for delete", slog.Any("error", err))
 		return status.Error(codes.Internal, "internal error")
@@ -246,7 +325,7 @@ func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) 
 		return status.Errorf(codes.FailedPrecondition, "media is processing, cannot delete")
 	}
 
-	// Удаляем конкретную привязку. Если её нет — NotFound (handler превратит в nil).
+	// Удаляем конкретную привязку. Если её нет — NotFound.
 	usages, err := s.mediaRepo.DeleteAttachment(ctx, mediaID, callerID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {

@@ -3,6 +3,10 @@ package api
 import (
 	"context"
 	"io"
+	"mediaservice/internal/media"
+	"mediaservice/internal/processing"
+	"mediaservice/internal/repo"
+	"mediaservice/internal/upload"
 	"sync"
 	"testing"
 	"time"
@@ -16,10 +20,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"mediaservice/internal/media"
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
 	mediav1 "mediaservice/proto/media/v1"
 )
 
@@ -88,6 +88,36 @@ func newAPIUploadMediaRepo() *apiUploadMediaRepo {
 	}
 }
 
+func (r *apiUploadMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *repo.MediaCursor) (*repo.MediaPage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var items []*repo.Media
+
+	for _, m := range r.byID {
+		if m.OwnerID != ownerID {
+			continue
+		}
+
+		cp := *m
+		items = append(items, &cp)
+	}
+
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+
+	return &repo.MediaPage{
+		Items:   items,
+		HasMore: hasMore,
+	}, nil
+}
+
 func (r *apiUploadMediaRepo) GetByID(ctx context.Context, id uuid.UUID) (*repo.Media, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -138,18 +168,23 @@ func (r *apiUploadMediaRepo) HardDelete(ctx context.Context, id uuid.UUID) error
 func (r *apiUploadMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	return map[uuid.UUID]struct{}{}, nil
 }
+
 func (r *apiUploadMediaRepo) MarkDeleting(ctx context.Context, id uuid.UUID) (*repo.Media, repo.ClaimState, error) {
 	return nil, repo.ClaimNone, nil
 }
+
 func (r *apiUploadMediaRepo) ListDeletableByOwner(ctx context.Context, ownerID uuid.UUID, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }
+
 func (r *apiUploadMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	return nil, nil
 }
+
 func (r *apiUploadMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
+
 func (r *apiUploadMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (int, error) {
 	return 0, nil
 }
