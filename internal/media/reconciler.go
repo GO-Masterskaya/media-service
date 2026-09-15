@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -112,6 +113,24 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}()
 
 	for {
+		// Приоритетная неблокирующая проверка: если стоп-сигнал уже пришёл
+		// одновременно с тиком, обычный select ниже выбрал бы между ними
+		// псевдослучайно (гарантий приоритета у Go select нет). Без неё
+		// тикер мог бы запустить ещё одну go func()-горутину с wg.Add(1)
+		// уже ПОСЛЕ того, как Shutdown() увидел бы wg=0 и начал возвращаться —
+		// это гонка Add/Wait на sync.WaitGroup (документированно неопределённое
+		// поведение вплоть до "sync: WaitGroup misuse" паники), а не просто
+		// лишний тик. Тот же фикс, что и в Reaper.Run() (см. тикет по #13/#17).
+		select {
+		case <-ctx.Done():
+			r.log.Info("reconciler stopped (context done)")
+			return
+		case <-r.stopCh:
+			r.log.Info("reconciler stopped (shutdown requested)")
+			return
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
 			r.log.Info("reconciler stopped (context done)")
@@ -157,6 +176,20 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		return
 	}
 	defer r.tickRunning.Store(false)
+
+	// recover() защищает сам процесс: main запускает go rec.Run(ctx), и без
+	// этого паника где-то в reconcileDeleting/reconcileOrphans роняла бы
+	// весь сервис, а не только один тик реконсилятора. Тот же паттерн, что
+	// у Reaper.runOnce и Engine.safeHandle (тикет по аналогии с #75).
+	defer func() {
+		if rec := recover(); rec != nil {
+			stack := debug.Stack()
+			r.log.Error("panic in reconciler tick",
+				slog.Any("panic", rec),
+				slog.String("stack", string(stack)),
+			)
+		}
+	}()
 
 	r.log.Info("reconciler tick started", slog.Bool("dry_run", r.cfg.DryRun))
 	r.reconcileDeleting(ctx)
