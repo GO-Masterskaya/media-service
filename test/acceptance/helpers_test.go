@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	mediav1 "mediaservice/proto/media/v1"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 //go:embed testdata/pixel64.png

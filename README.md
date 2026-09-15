@@ -94,7 +94,7 @@ go get buf.build/go/protovalidate
 ```go
 import (
     "google.golang.org/grpc"
-    mediav1 "mediaservice/proto/media/v1"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 conn, _ := grpc.Dial("localhost:9090", grpc.WithTransportCredentials(...))

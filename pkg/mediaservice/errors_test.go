@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"mediaservice/internal/media"
-	"mediaservice/internal/repo"
-	"mediaservice/pkg/mediaservice"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"

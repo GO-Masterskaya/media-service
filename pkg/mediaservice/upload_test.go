@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"mediaservice/pkg/mediaservice"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
 )
 
 // testPNG собирает валидный PNG заданного размера и цвета.

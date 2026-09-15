@@ -7,8 +7,8 @@ import (
 	"github.com/ilyakaznacheev/cleanenv"
 	"github.com/stretchr/testify/require"
 
-	"mediaservice/internal/config"
-	"mediaservice/pkg/mediaservice"
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
 )
 
 // TestDefaultsMatchServiceConfig - умолчания библиотеки совпадают

@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 
 	"github.com/google/uuid"
 )

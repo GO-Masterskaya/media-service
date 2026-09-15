@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"mediaservice/internal/media"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

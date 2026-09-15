@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"mediaservice/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/media"
 )
 
 // Upload сохраняет медиафайл в хранилище и привязывает его к владельцу

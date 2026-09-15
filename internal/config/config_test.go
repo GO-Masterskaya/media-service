@@ -11,7 +11,7 @@ import (
 
 	"github.com/ilyakaznacheev/cleanenv"
 
-	"mediaservice/internal/events"
+	"github.com/GO-Masterskaya/media-service/internal/events"
 )
 
 // withCleanEnv очищает окружение на время теста и восстанавливает его после.

@@ -6,7 +6,7 @@
 ---
 
 ## 1. Стек
-- Go 1.22+, `module mediaservice`.
+- Go 1.22+, `module github.com/GO-Masterskaya/media-service`.
 - gRPC: `google.golang.org/grpc`, `protoc-gen-go`, `protoc-gen-go-grpc`. Валидация — `protovalidate` (или buf validate).
 - MinIO: `github.com/minio/minio-go/v7`.
 - Postgres: `pgx/v5` + `pgxpool`; миграции — `goose` или `golang-migrate`.
@@ -65,7 +65,7 @@ docker-compose.yml
 ```proto
 syntax = "proto3";
 package media.v1;
-option go_package = "mediaservice/proto/media/v1;mediav1";
+option go_package = "github.com/GO-Masterskaya/media-service/proto/media/v1;mediav1";
 
 service MediaService {
   rpc Upload(stream UploadRequest) returns (UploadResponse);          // client-streaming

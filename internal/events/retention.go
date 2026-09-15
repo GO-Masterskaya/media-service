@@ -8,7 +8,7 @@ import (
 
 	"sync/atomic"
 
-	"mediaservice/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
 
 	"github.com/prometheus/client_golang/prometheus"
 )

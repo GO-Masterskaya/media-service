@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mediaservice/internal/config"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 	"os"
 	"path/filepath"
 
 	"github.com/google/uuid"
+
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 type TranscodeHandler struct {

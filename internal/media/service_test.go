@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -16,6 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 // ---------- stubs (уникальные имена, чтобы не конфликтовать с reconciler_test) ----------

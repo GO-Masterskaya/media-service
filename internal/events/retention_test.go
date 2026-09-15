@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"mediaservice/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
 
 	"github.com/prometheus/client_golang/prometheus"
 )

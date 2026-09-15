@@ -10,11 +10,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 
-	"mediaservice/internal/media"
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
-	"mediaservice/internal/upload"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 )
 
 // Client - основной клиент mediaservice, предоставляющий публичный API библиотеки.

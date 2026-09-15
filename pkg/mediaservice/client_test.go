@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"mediaservice/pkg/mediaservice"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"

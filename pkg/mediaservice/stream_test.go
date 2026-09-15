@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"mediaservice/pkg/mediaservice"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
 )
 
 // TestDownloadStream_ErrClosedAfterClientClose - чтение после закрытия

@@ -11,10 +11,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"mediaservice/internal/config"
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 // engineShutdownTimeout - сколько Close() ждёт завершения задач, начатых
