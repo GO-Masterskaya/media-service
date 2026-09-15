@@ -159,4 +159,3 @@ func (s *AcceptanceSuite) TestListMediaByOwner_Paginates() {
 		require.True(t, ok, "uploaded media %s missing from list pages", id)
 	}
 }
-

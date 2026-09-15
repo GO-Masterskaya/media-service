@@ -110,6 +110,75 @@ func (s *AcceptanceSuite) waitStatus(t *testing.T, mediaID string, want ...media
 	return nil
 }
 
+func (s *AcceptanceSuite) waitFailed(t *testing.T, mediaID string) *mediav1.Media {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	var last *mediav1.Media
+	for time.Now().Before(deadline) {
+		m, err := s.client.GetMedia(s.authCtx(), &mediav1.GetMediaRequest{MediaId: mediaID})
+		require.NoError(t, err)
+		last = m
+		if m.Status == mediav1.MediaStatus_FAILED {
+			require.NotEmpty(t, m.Error, "FAILED must include reason")
+			return m
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for FAILED, last=%v", last.GetStatus())
+	return nil
+}
+
+func (s *AcceptanceSuite) uploadExpectError(t *testing.T, opts uploadOpts) error {
+	t.Helper()
+	if opts.body == nil {
+		opts.body = png64
+	}
+	if opts.filename == "" {
+		opts.filename = "pixel.png"
+	}
+	if opts.mime == "" {
+		opts.mime = "image/png"
+	}
+	if opts.idempotencyKey == "" {
+		opts.idempotencyKey = uuid.NewString()
+	}
+
+	stream, err := s.client.Upload(s.authCtx())
+	require.NoError(t, err)
+
+	initMsg := &mediav1.UploadRequest{
+		Payload: &mediav1.UploadRequest_Init{Init: &mediav1.UploadInit{
+			OwnerId:        s.ownerID.String(),
+			Filename:       opts.filename,
+			Mime:           opts.mime,
+			ExpectedSize:   uint64(len(opts.body)),
+			IdempotencyKey: opts.idempotencyKey,
+			Processing: &mediav1.ProcessingOptions{
+				MakeThumbnail: opts.makeThumbnail,
+				Transcode:     opts.transcode,
+			},
+		}},
+	}
+	if opts.ttl > 0 {
+		initMsg.GetInit().Ttl = durationpb.New(opts.ttl)
+	}
+	require.NoError(t, stream.Send(initMsg))
+
+	const chunkSize = 16 * 1024
+	for off := 0; off < len(opts.body); off += chunkSize {
+		end := off + chunkSize
+		if end > len(opts.body) {
+			end = len(opts.body)
+		}
+		require.NoError(t, stream.Send(&mediav1.UploadRequest{
+			Payload: &mediav1.UploadRequest_Chunk{Chunk: opts.body[off:end]},
+		}))
+	}
+
+	_, err = stream.CloseAndRecv()
+	return err
+}
+
 func (s *AcceptanceSuite) downloadStreamAll(t *testing.T, mediaID, variant string) []byte {
 	t.Helper()
 	stream, err := s.client.DownloadStream(s.authCtx(), &mediav1.DownloadStreamRequest{
