@@ -267,8 +267,10 @@ docker compose logs mediaservice | grep -E \
 
 - `JOB_LEASE` заметно больше типичного времени обработки, иначе живую задачу
   подберёт второй воркер и один файл обработается дважды.
-- `JOB_TIMEOUT` больше `FFMPEG_TIMEOUT`, иначе внешний таймаут сработает
-  раньше внутреннего и причина не попадёт в `last_error`.
+- `JOB_TIMEOUT` покрывает самый долгий ожидаемый транскод: это единственная
+  граница на работу ffmpeg. Константы 2m/10m в `ffmpeg.go` включаются только
+  при вызове без дедлайна, а движок дедлайн ставит всегда; `FFMPEG_TIMEOUT`
+  не читается вовсе.
 - Помнить про `uq_processing_jobs_media_id_type`: на пару (media, тип) задача
   ровно одна, повторная постановка идемпотентна.
 
@@ -417,8 +419,13 @@ curl -fsS localhost:8080/metrics | grep '^grpc_active_streams'
 Проверить, что в конфиге:
 
 ```bash
-docker compose logs mediaservice | grep -m1 "CallerIDAllowlist"
+docker compose exec mediaservice env \
+  | grep -E 'CALLER_ID_ALLOWLIST|RATE_LIMIT_BURST'
 ```
+
+Пустой вывод означает, что переменные не заданы. В дампе конфига из логов их
+не видно: `Config.String()` печатает `RateLimitRPS` и `MaxConcurrentStreams`,
+но `CallerIDAllowlist` и `RateLimitBurst` пропускает.
 
 ### Действие
 

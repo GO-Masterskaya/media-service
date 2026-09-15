@@ -139,9 +139,10 @@ KEY=$(uuidgen)
 `expires_at`. По его истечении reaper удаляет объект.
 
 Обработка запрашивается для конкретных видов: `make_thumbnail` для audio и
-`transcode` для image отвергаются с `INVALID_ARGUMENT`. Без запроса обработки
-объект остаётся в статусе `STORED` и никогда не станет `READY` - это не
-ошибка, а конечное состояние.
+`transcode` для image отвергаются с `INVALID_ARGUMENT` - но уже после приёма
+байтов: вид определяет `ffprobe`, а он работает по готовому файлу. Без запроса
+обработки объект остаётся в статусе `STORED` и никогда не станет `READY` - это
+не ошибка, а конечное состояние.
 
 ### Что происходит с байтами
 
@@ -213,8 +214,7 @@ KEY=$(uuidgen)
 - пустой `mime` или `idempotency_key`;
 - MIME вне `MIME_ALLOWLIST`;
 - `expected_size` больше `MAX_UPLOAD_BYTES`;
-- `ttl <= 0`;
-- `make_thumbnail` для audio или `transcode` для image.
+- `ttl <= 0`.
 
 Содержимое, по ходу приёма и после него:
 
@@ -222,7 +222,9 @@ KEY=$(uuidgen)
 - фактический размер не совпал с `expected_size`;
 - magic bytes не соответствуют заявленному MIME;
 - `ffprobe` не разобрал файл;
-- класс заявленного MIME не совпал с определённым видом.
+- класс заявленного MIME не совпал с определённым видом;
+- `make_thumbnail` для audio или `transcode` для image: вид известен только
+  после `ffprobe`, поэтому отказ приходит по уже принятому файлу.
 
 ---
 
@@ -460,7 +462,7 @@ grpc_health_probe -addr=localhost:9090
 ```
 
 Метрики уровня RPC: `grpc_requests_total{method,code}`,
-`grpc_request_duration_seconds{method}`, `grpc_active_streams{method}`. Рядом
+`grpc_request_duration_seconds{method}`, `grpc_active_streams` без меток. Рядом
 живут внутренние счётчики с префиксами `media_upload_*`, `media_processing_*`,
 `media_reaper_*`, `media_retention_*` и `reconciler_*`.
 
