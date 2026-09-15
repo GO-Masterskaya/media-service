@@ -186,7 +186,13 @@ func (s *AcceptanceSuite) TestEngine_CrashRecoveryRequeuesStaleLease() {
 	_, err = s.pool.Exec(s.ctx, `UPDATE media SET status = 'processing' WHERE id = $1`, mediaID)
 	require.NoError(t, err)
 
-	reaped, err := s.jobRepo.ReapExpiredLeases(s.ctx, 3, repo.DefaultJobBackoff(), 100)
+	// Короткий backoff как у engine в harness — DefaultJobBackoff (Base 30s)
+	// раздувает suite на полминуты ожидания run_after.
+	reaped, err := s.jobRepo.ReapExpiredLeases(s.ctx, 3, repo.JobBackoffConfig{
+		Base:   time.Second,
+		Max:    30 * time.Second,
+		Jitter: 0.1,
+	}, 100)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, reaped, int64(1))
 
