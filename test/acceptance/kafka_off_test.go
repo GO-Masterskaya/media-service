@@ -27,14 +27,14 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 
-	"mediaservice/internal/api"
-	"mediaservice/internal/api/interceptors"
-	"mediaservice/internal/media"
-	"mediaservice/internal/metrics"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
-	"mediaservice/internal/upload"
-	mediav1 "mediaservice/proto/media/v1"
+	"github.com/GO-Masterskaya/media-service/internal/api"
+	"github.com/GO-Masterskaya/media-service/internal/api/interceptors"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/metrics"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 // NoKafkaSuite — KAFKA_ENABLED=false: без Redpanda/consumer, gRPC upload работает.
