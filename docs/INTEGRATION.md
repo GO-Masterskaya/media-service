@@ -161,10 +161,6 @@ $GRPCURL "${AUTH[@]}" -d "{\"owner_id\":\"$OWNER\",\"page_size\":50}" \
 показывать их вызывающему нечестно. Объекты в статусе `failed` остаются -
 владелец должен видеть, что загрузка не удалась.
 
-> **Опережает main.** Исключение статуса `deleting` приезжает с
-> [#91](https://github.com/GO-Masterskaya/media-service/issues/91) (PR #92, в
-> ревью). В текущем main такие записи в выдаче остаются.
-
 **5. Удалить.**
 
 ```bash
@@ -239,10 +235,6 @@ m, err := client.GetMedia(ctx, &mediav1.GetMediaRequest{MediaId: mediaID})
 - `HTTP_ADDR` не публиковать: `/metrics` отдаётся без аутентификации и
   раскрывает имена методов, коды ошибок и профиль нагрузки.
 
-> **Опережает main.** Два последних пункта, `/metrics` и вся тема лимитов,
-> приезжают с [#21](https://github.com/GO-Masterskaya/media-service/issues/21)
-> (PR #95, без ревью, конфликт в `go.mod`).
-
 ---
 
 ## Путь 2: встраиваемая библиотека
@@ -251,19 +243,11 @@ m, err := client.GetMedia(ctx, &mediav1.GetMediaRequest{MediaId: mediaID})
 типы наружу не протекают: публичны только структуры библиотеки и её сентинельные
 ошибки.
 
-> **Опережает main.** В `go.mod` сейчас объявлен `module mediaservice`, поэтому
-> импорты вида `github.com/GO-Masterskaya/media-service/...` в этом документе
-> и в примерах ниже станут рабочими только после закрытия
-> [#93](https://github.com/GO-Masterskaya/media-service/issues/93)
-> (переименование модуля). До тех пор подставляйте `mediaservice/...` либо
-> добавьте `replace mediaservice => ../media-service` в свой `go.mod`.
->
-> Переименование обязательно: путь `mediaservice` не резолвится как адрес
-> репозитория, и `go get` на него не работает - то есть снаружи библиотека
-> сейчас не подключается вовсе. Это же касается и `proto/media/v1` из примера
-> выше.
-
 ### Минимальное подключение
+
+```bash
+go get github.com/GO-Masterskaya/media-service
+```
 
 ```go
 import (
