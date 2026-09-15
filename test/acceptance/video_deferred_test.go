@@ -41,7 +41,12 @@ func (s *AcceptanceSuite) TestVideo_ProcessingToReady() {
 	m := s.waitStatus(t, up.MediaId, mediav1.MediaStatus_READY)
 	require.NotNil(t, m.Metadata)
 
+	seen := map[string]bool{}
+	for _, d := range m.Derivatives {
+		seen[d.Variant] = true
+	}
 	for _, variant := range []string{"thumb", "r_720"} {
+		require.True(t, seen[variant], "missing derivative %s (atomic ready/dedup)", variant)
 		urlResp, err := s.client.GetDownloadURL(s.authCtx(), &mediav1.GetDownloadURLRequest{
 			MediaId: up.MediaId,
 			Variant: variant,
@@ -66,8 +71,4 @@ func (s *AcceptanceSuite) TestTTL_ReaperDeletesExpiredMedia() {
 
 	// expires_at = now+1s; reaper тикает каждые 200ms.
 	s.waitMediaGone(t, up.MediaId)
-}
-
-func (s *AcceptanceSuite) TestDeferred_EngineConcurrencyAndCrashRecovery() {
-	s.T().Skip("engine concurrency/crash-recovery acceptance is a dedicated follow-up")
 }

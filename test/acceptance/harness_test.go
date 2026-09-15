@@ -82,17 +82,23 @@ type AcceptanceSuite struct {
 	kafkaBroker   string
 	tempDir       string
 
-	pool       *pgxpool.Pool
-	mediaSvc   *media.Service
-	grpcServer *grpc.Server
-	httpServer *http.Server
-	client     mediav1.MediaServiceClient
-	conn       *grpc.ClientConn
-	lis        *bufconn.Listener
-	engine     *processing.Engine
-	reaper     *media.Reaper
-	promReg    *prometheus.Registry
-	metricsURL string
+	pool        *pgxpool.Pool
+	mediaSvc    *media.Service
+	mediaRepo   repo.MediaRepo
+	jobRepo     repo.JobRepo
+	sto         storage.Interface
+	grpcServer  *grpc.Server
+	httpServer  *http.Server
+	health      *api.HealthServer
+	client      mediav1.MediaServiceClient
+	conn        *grpc.ClientConn
+	lis         *bufconn.Listener
+	engine      *processing.Engine
+	reaper      *media.Reaper
+	reconciler  *media.Reconciler
+	promReg     *prometheus.Registry
+	metricsURL  string
+	httpBaseURL string
 
 	kafkaConsumer *events.KafkaConsumer
 	dlqPublisher  events.DLQPublisher
@@ -147,6 +153,11 @@ func (s *AcceptanceSuite) TearDownSuite() {
 	if s.reaper != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = s.reaper.Shutdown(shutdownCtx)
+		cancel()
+	}
+	if s.reconciler != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = s.reconciler.Shutdown(shutdownCtx)
 		cancel()
 	}
 	if s.cancel != nil {
@@ -273,6 +284,69 @@ func (s *AcceptanceSuite) newLimitedClient(t *testing.T, opts limitedClientOpts)
 	return mediav1.NewMediaServiceClient(conn)
 }
 
+// newQuotaLimitedClient — отдельный MediaService с крошечной квотой (#22/#19 ENOSPC/quota).
+func (s *AcceptanceSuite) newQuotaLimitedClient(t *testing.T, quotaBytes int64) mediav1.MediaServiceClient {
+	t.Helper()
+	require.NotNil(t, s.mediaRepo)
+	require.NotNil(t, s.sto)
+
+	svc := media.NewService(s.mediaRepo, repo.NewPgDerivativeRepo(s.pool), s.sto, 15*time.Minute, slog.Default())
+	uploadMetrics := upload.NewMetrics(prometheus.NewRegistry())
+	uploadStore, err := upload.New(upload.Config{
+		Dir:             filepath.Join(s.tempDir, "uploads-quota"),
+		MaxFileSize:     50 << 20,
+		ReserveBytes:    1 << 20,
+		StaleGrace:      time.Hour,
+		CleanupInterval: time.Hour,
+	}, uploadMetrics, slog.Default())
+	require.NoError(t, err)
+	svc.SetUploadConfig(uploadStore, media.DefaultProber{}, 50<<20,
+		[]string{"image/*", "video/*", "audio/*"}, quotaBytes)
+
+	validator, err := protovalidate.New()
+	require.NoError(t, err)
+	reg := prometheus.NewRegistry()
+	grpcMetrics := metrics.NewGRPCMetrics(reg)
+	allowlist := interceptors.NewCallerAllowlist([]string{"caller-a"})
+	rateLimiter := interceptors.NewRateLimiter(rate.Limit(1000), 1000)
+	streamLimiter := interceptors.NewStreamLimiter(32)
+
+	srv := grpc.NewServer(
+		grpc.MaxRecvMsgSize(16<<20),
+		grpc.ChainUnaryInterceptor(
+			interceptors.UnaryInterceptors(
+				true, authToken, validator, grpcMetrics, rateLimiter, allowlist,
+			)...,
+		),
+		grpc.ChainStreamInterceptor(
+			interceptors.StreamInterceptors(
+				true, authToken, validator, grpcMetrics, rateLimiter, streamLimiter, allowlist,
+			)...,
+		),
+	)
+	mediav1.RegisterMediaServiceServer(srv, api.NewMediaServer(svc, false, 30*time.Second))
+
+	lis := bufconn.Listen(bufSize)
+	go func() { _ = srv.Serve(lis) }()
+
+	dialer := func(context.Context, string) (net.Conn, error) {
+		return lis.Dial()
+	}
+	conn, err := grpc.NewClient("passthrough:///bufnet-quota",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		srv.Stop()
+		_ = conn.Close()
+		_ = lis.Close()
+	})
+
+	return mediav1.NewMediaServiceClient(conn)
+}
+
 func (s *AcceptanceSuite) startServer() {
 	t := s.T()
 
@@ -296,6 +370,8 @@ func (s *AcceptanceSuite) startServer() {
 	mediaRepo := repo.NewPgMediaRepo(pool)
 	derivRepo := repo.NewPgDerivativeRepo(pool)
 	eventRepo := repo.NewPgProcessedEventRepo(pool)
+	s.mediaRepo = mediaRepo
+	s.sto = sto
 	s.mediaSvc = media.NewService(mediaRepo, derivRepo, sto, 15*time.Minute, slog.Default())
 	mediaSvc := s.mediaSvc
 
@@ -330,6 +406,7 @@ func (s *AcceptanceSuite) startServer() {
 		MaxAttempts:       3,
 	}
 	jobRepo := repo.NewPgJobRepo(pool)
+	s.jobRepo = jobRepo
 	engineOwner := uuid.NewString()
 	repoAdapter := processing.NewRepoAdapter(jobRepo, engineOwner, engineCfg.LeaseDuration, engineCfg.MaxAttempts, processing.BackoffConfig{
 		Base:   time.Second,
@@ -379,6 +456,15 @@ func (s *AcceptanceSuite) startServer() {
 		DryRun:    false,
 	}, slog.Default(), reg)
 	go s.reaper.Run(s.ctx)
+
+	// Delete reconciler / orphans (#24) — короткий grace для acceptance.
+	s.reconciler = media.NewReconciler(mediaRepo, sto, media.ReconcilerConfig{
+		Interval:    200 * time.Millisecond,
+		GracePeriod: time.Second,
+		BatchSize:   50,
+		DryRun:      false,
+	}, slog.Default())
+	go s.reconciler.Run(s.ctx)
 
 	// Kafka path (KAFKA_ENABLED=true).
 	dlq, err := events.NewKafkaDLQPublisher(events.KafkaDLQConfig{
@@ -447,6 +533,7 @@ func (s *AcceptanceSuite) startServer() {
 			)...,
 		),
 	)
+	s.health = api.NewHealthServer(pool)
 	mediav1.RegisterMediaServiceServer(s.grpcServer, api.NewMediaServer(mediaSvc, false, 30*time.Second))
 
 	s.lis = bufconn.Listen(bufSize)
@@ -454,15 +541,16 @@ func (s *AcceptanceSuite) startServer() {
 		_ = s.grpcServer.Serve(s.lis)
 	}()
 
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	healthMux := api.HTTPHealthHandlers(pool, s.health)
+	healthMux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	httpLis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	s.httpServer = &http.Server{
-		Handler:           metricsMux,
+		Handler:           healthMux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	s.metricsURL = "http://" + httpLis.Addr().String() + "/metrics"
+	s.httpBaseURL = "http://" + httpLis.Addr().String()
+	s.metricsURL = s.httpBaseURL + "/metrics"
 	go func() {
 		_ = s.httpServer.Serve(httpLis)
 	}()
