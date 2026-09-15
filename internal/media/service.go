@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
-	"mediaservice/internal/upload"
 	"path"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 )
 
 type ChunkSender func([]byte) error
@@ -312,7 +313,8 @@ func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) 
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
-			return status.Error(codes.NotFound, "media not found")
+			// ТЗ §7: повтор DeleteMedia на уже удалённом — идемпотентный OK.
+			return nil
 		}
 		s.log.Error("get media for delete", slog.Any("error", err))
 		return status.Error(codes.Internal, "internal error")
@@ -324,7 +326,7 @@ func (s *Service) DeleteMedia(ctx context.Context, callerID, mediaID uuid.UUID) 
 		return status.Errorf(codes.FailedPrecondition, "media is processing, cannot delete")
 	}
 
-	// Удаляем конкретную привязку. Если её нет — NotFound (handler превратит в nil).
+	// Удаляем конкретную привязку. Если её нет — NotFound.
 	usages, err := s.mediaRepo.DeleteAttachment(ctx, mediaID, callerID)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {

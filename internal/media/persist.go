@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 // compensateTimeout — отдельный дедлайн для DeleteObject после сбоя DB.

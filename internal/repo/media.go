@@ -74,6 +74,9 @@ type MediaCursor struct {
 
 type MediaRepo interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Media, error)
+
+	// ListByOwner возвращает media владельца, исключая записи в статусе deleting.
+	// Media со статусом failed остаются в выдаче.
 	ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSize int, cursor *MediaCursor) (*MediaPage, error)
 	GetByOwnerIdempotency(ctx context.Context, ownerID uuid.UUID, idempotencyKey string) (*Media, error)
 	InsertWithJobs(ctx context.Context, m Media, jobTypes []string) (*Media, error)
@@ -205,6 +208,7 @@ func (r *PgMediaRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID, pageSi
 		       m.expires_at, COALESCE(m.error, ''), m.created_at
 		FROM media m
 		WHERE m.owner_id = $1
+		  AND m.status <> 'deleting'
 		  AND ($2::timestamptz IS NULL OR (m.created_at, m.id) < ($2, $3))
 		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT $4
@@ -319,6 +323,21 @@ func (r *PgMediaRepo) InsertWithJobs(ctx context.Context, m Media, jobTypes []st
 		if _, err := tx.Exec(ctx, insertJob, uuid.New(), created.ID, jt); err != nil {
 			return nil, fmt.Errorf("insert job %q: %w", jt, err)
 		}
+	}
+
+	// Владелец upload'а сразу получает attachment (как backfill 000005):
+	// без этого DeleteMedia после чистого Upload не находит привязку.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO media_attachments (media_id, owner_id)
+		VALUES ($1, $2)
+		ON CONFLICT (media_id, owner_id) DO NOTHING
+	`, created.ID, created.OwnerID); err != nil {
+		return nil, fmt.Errorf("insert owner attachment: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE media SET usages_count = 1 WHERE id = $1 AND usages_count = 0
+	`, created.ID); err != nil {
+		return nil, fmt.Errorf("set initial usages_count: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

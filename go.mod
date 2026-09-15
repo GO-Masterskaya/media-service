@@ -1,15 +1,4 @@
-// TODO(#29): заменить на github.com/GO-Masterskaya/media-service.
-// Имя без домена делает модуль неустанавливаемым: подключить библиотеку
-// через go get нельзя, только через replace на локальный путь. Это блокирует
-// критерий приёмки #29 про отдельный тестовый модуль, импортирующий
-// pkg/mediaservice.
-//
-// Правка механическая: go mod edit -module, затем замена префикса импорта
-// "mediaservice/" на "github.com/GO-Masterskaya/media-service/" в 59 строках
-// 27 файлов, затем go mod tidy. Но она конфликтует с каждой открытой веткой,
-// поэтому делать её надо одним коммитом в main в момент, когда открытых PR
-// минимум, и с предупреждением команды.
-module mediaservice
+module github.com/GO-Masterskaya/media-service
 
 go 1.24.4
 
@@ -25,7 +14,10 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/testcontainers/testcontainers-go/modules/redpanda v0.40.0
 	github.com/twmb/franz-go v1.20.7
+	github.com/twmb/franz-go/pkg/kadm v1.11.0
+	golang.org/x/time v0.12.0
 )
 
 require (
@@ -37,12 +29,14 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/prometheus/common v0.60.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.12.0 // indirect
 	golang.org/x/exp v0.0.0-20250813145105-42675adae3e6 // indirect
+	golang.org/x/mod v0.32.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	olympos.io/encoding/edn v0.0.0-20201019073823-d3554ca0b0a3 // indirect

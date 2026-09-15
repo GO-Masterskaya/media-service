@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"mediaservice/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
 )
 
 // BackoffConfig задаёт exponential backoff для retry processing jobs.

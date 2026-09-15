@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"mediaservice/pkg/mediaservice"
+	"github.com/GO-Masterskaya/media-service/pkg/mediaservice"
 
 	"github.com/golang-migrate/migrate/v4"
 	migratepgx "github.com/golang-migrate/migrate/v4/database/pgx/v5"

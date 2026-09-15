@@ -5,14 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 type persistMediaRepo struct {

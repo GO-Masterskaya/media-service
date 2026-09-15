@@ -11,7 +11,7 @@ import (
 
 	"github.com/ilyakaznacheev/cleanenv"
 
-	"mediaservice/internal/events"
+	"github.com/GO-Masterskaya/media-service/internal/events"
 )
 
 // withCleanEnv очищает окружение на время теста и восстанавливает его после.
@@ -23,7 +23,7 @@ func withCleanEnv(t *testing.T) {
 	t.Cleanup(func() {
 		os.Clearenv()
 		for _, e := range oldEnv {
-			if i := strings.IndexByte(e, '='); i >= 0 {
+			if i := strings.IndexByte(e, '='); i > 0 {
 				if err := os.Setenv(e[:i], e[i+1:]); err != nil {
 					t.Fatalf("restore env: %v", err)
 				}
@@ -82,6 +82,46 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.JobReapBatchSize != 100 {
 		t.Errorf("JobReapBatchSize: want 100, got %d", cfg.JobReapBatchSize)
 	}
+	if cfg.RateLimitRPS != 50 {
+		t.Errorf("RateLimitRPS: want 50, got %d", cfg.RateLimitRPS)
+	}
+	if cfg.RateLimitBurst != 50 {
+		t.Errorf("RateLimitBurst: want 50, got %d", cfg.RateLimitBurst)
+	}
+	if cfg.MaxConcurrentStreams != 8 {
+		t.Errorf("MaxConcurrentStreams: want 8, got %d", cfg.MaxConcurrentStreams)
+	}
+}
+
+func TestLoadCallerIDAllowlist(t *testing.T) {
+	t.Setenv("GRPC_AUTH_TOKEN", "test-token")
+	t.Setenv("CALLER_ID_ALLOWLIST", "astro-backend,crm")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.CallerIDAllowlist) != 2 {
+		t.Fatalf(
+			"CallerIDAllowlist: want 2 items, got %d",
+			len(cfg.CallerIDAllowlist),
+		)
+	}
+
+	if cfg.CallerIDAllowlist[0] != "astro-backend" {
+		t.Errorf(
+			"CallerIDAllowlist[0]: want astro-backend, got %q",
+			cfg.CallerIDAllowlist[0],
+		)
+	}
+
+	if cfg.CallerIDAllowlist[1] != "crm" {
+		t.Errorf(
+			"CallerIDAllowlist[1]: want crm, got %q",
+			cfg.CallerIDAllowlist[1],
+		)
+	}
 }
 
 func TestLoadAuthTokenRequiredWhenEnabled(t *testing.T) {
@@ -132,6 +172,23 @@ func TestLoadValidationError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MAX_UPLOAD_BYTES") {
 		t.Errorf("error should contain field name, got: %v", err)
+	}
+}
+
+func TestValidateRateLimitBurst(t *testing.T) {
+	cfg := configFromDefaults(t)
+	cfg.RateLimitBurst = 0
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for RateLimitBurst=0")
+	}
+
+	if !strings.Contains(err.Error(), "RATE_LIMIT_BURST") {
+		t.Errorf(
+			"error should mention RATE_LIMIT_BURST, got: %v",
+			err,
+		)
 	}
 }
 

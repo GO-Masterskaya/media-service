@@ -3,7 +3,7 @@ package mediaservice
 import (
 	"io"
 
-	"mediaservice/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/media"
 )
 
 // uploadChunkSize - размер порции, которой библиотека читает reader.

@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"mediaservice/internal/config"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
+	"github.com/GO-Masterskaya/media-service/internal/config"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
 )
 
 func TestTranscodeHandler_ValidationError(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"mediaservice/internal/processing"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/upload"
+	"github.com/GO-Masterskaya/media-service/internal/processing"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/upload"
 )
 
 type mockProber struct {

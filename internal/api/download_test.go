@@ -6,9 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"mediaservice/internal/media"
-	"mediaservice/internal/repo"
-	"mediaservice/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -20,7 +17,10 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	v1 "mediaservice/proto/media/v1"
+	"github.com/GO-Masterskaya/media-service/internal/media"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/storage"
+	v1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
 )
 
 func newTestServerWithStrict(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st storage.Interface, strict bool) *MediaServer {

@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"mediaservice/internal/repo"
+	"github.com/GO-Masterskaya/media-service/internal/repo"
 )
 
 var (

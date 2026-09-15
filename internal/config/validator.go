@@ -100,6 +100,9 @@ func (c *Config) validate() error {
 	if c.RateLimitRPS <= 0 {
 		return fmt.Errorf("RATE_LIMIT_RPS must be > 0, got %d", c.RateLimitRPS)
 	}
+	if c.RateLimitBurst <= 0 {
+		return fmt.Errorf("RATE_LIMIT_BURST must be > 0, got %d", c.RateLimitBurst)
+	}
 	if c.MaxConcurrentStreams <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT_STREAMS must be > 0, got %d", c.MaxConcurrentStreams)
 	}

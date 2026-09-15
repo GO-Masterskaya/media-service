@@ -4,25 +4,12 @@
 через ffmpeg, бинари в MinIO, метаданные в Postgres. Медиа привязывается к
 внешнему `owner_id`, который передаёт вызывающий проект.
 
-Подключается двумя способами: вызовом по gRPC и встраиванием Go-библиотекой
-`pkg/mediaservice`. Kafka-слушатель опционален, включается тоглом.
+Внешний контракт — только gRPC. Kafka-слушатель опционален, включается тоглом.
 
 ## Документация
 
-Интегратору:
-
-- [Подключение](docs/INTEGRATION.md) - с чего начать, оба способа, сквозной сценарий
-- [gRPC API](docs/API.md) - контракт, коды ошибок, идемпотентность, повторные попытки
-- [Конфигурация](docs/CONFIG.md) - все env: назначение, default, security note
-- [Runbooks](docs/RUNBOOKS.md) - ENOSPC, зависшая обработка, сверка удалений, Kafka DLQ
-
-Разработчику:
-
-- [ТЗ](docs/TZ.md) - требования и критерии приёмки
-- [SPEC](docs/SPEC.md) - стек, структура, gRPC-контракт, схема БД, конфиг
-
-Где SPEC расходится с поведением кода, права реализация: известные расхождения
-перечислены в конце [docs/API.md](docs/API.md).
+- [ТЗ](docs/TZ.md) — требования и критерии приёмки
+- [SPEC](docs/SPEC.md) — стек, структура, gRPC-контракт, схема БД, конфиг
 
 ## Стек
 
@@ -38,9 +25,7 @@ internal/storage   адаптер MinIO
 internal/repo      репозитории Postgres
 internal/processing воркер-пул и ffmpeg
 internal/events    Kafka consumer
-internal/upload    приём во временное хранилище
 internal/config    конфиг из env
-pkg/mediaservice   встраиваемая библиотека
 proto/media/v1     gRPC-контракт
 migrations         миграции БД
 ```
@@ -50,16 +35,8 @@ migrations         миграции БД
 ```bash
 cp .env.example .env
 make up
-curl -fsS localhost:8080/readyz
+make test
 ```
-
-Порты: `9090` - gRPC, `8080` - health-пробы (`/livez`, `/readyz`) и `/metrics`.
-
-> **Опережает main.** `/metrics` приезжает с [#21](../../issues/21) (PR #95).
-
-Перед использованием вне своей машины поменять `GRPC_AUTH_TOKEN`, ключи MinIO
-и пароль в `POSTGRES_DSN`: дефолты общеизвестные. См.
-[docs/CONFIG.md](docs/CONFIG.md).
 
 ## Команды
 
@@ -70,97 +47,20 @@ make test    # тесты
 make help    # все команды
 ```
 
-## Встраивание библиотекой
-
-```bash
-go get github.com/GO-Masterskaya/media-service
-```
-
-```go
-import "github.com/GO-Masterskaya/media-service/pkg/mediaservice"
-
-client, err := mediaservice.New(ctx, mediaservice.Config{
-    PostgresDSN: os.Getenv("POSTGRES_DSN"),
-    MinIO: mediaservice.MinIOConfig{
-        Endpoint:  "localhost:9000",
-        AccessKey: os.Getenv("MINIO_ACCESS_KEY"),
-        SecretKey: os.Getenv("MINIO_SECRET_KEY"),
-        Bucket:    "media",
-    },
-}, mediaservice.WithAutoMigrate())
-if err != nil {
-    return err
-}
-defer func() { _ = client.Close() }()
-
-res, err := client.Upload(ctx, mediaservice.UploadParams{
-    OwnerID:        ownerID,
-    Filename:       "photo.jpg",
-    MIMEType:       "image/jpeg",
-    IdempotencyKey: key,
-}, file)
-```
-
-> **Опережает main.** В `go.mod` сейчас `module mediaservice`: такой путь не
-> резолвится как адрес репозитория, и `go get` на него не работает. Импорты
-> станут рабочими после [#93](../../issues/93). До тех пор - `mediaservice/...`
-> или `replace` в своём `go.mod`.
-
-Библиотека сама создаёт пул Postgres и клиент MinIO и сама закрывает их в
-`Close()`. Если соединения у приложения уже есть, передайте их через
-`NewWithDeps` - тогда `Close()` их не тронет.
-
-Ограничения встроенного режима (ffmpeg в вашем процессе, reaper и reconciler не
-запускаются, путь модуля пока не резолвится снаружи) описаны в
-[docs/INTEGRATION.md](docs/INTEGRATION.md). Компилируемые примеры на все
-основные методы - в `pkg/mediaservice/example_test.go`.
-
-## Вызов по gRPC
-
-Сервер не регистрирует gRPC reflection, поэтому схему для `grpcurl` нужно
-собрать заранее:
-
-```bash
-buf build -o media.protoset.binpb
-grpcurl -protoset media.protoset.binpb -plaintext \
-  -H "authorization: Bearer $GRPC_AUTH_TOKEN" \
-  localhost:9090 list media.v1.MediaService
-```
-
-Go-клиентам генерировать ничего не нужно: stubs лежат в `proto/media/v1`
-(пакет `mediav1`).
-
-```go
-import mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
-
-conn, err := grpc.NewClient("localhost:9090",
-    grpc.WithTransportCredentials(insecure.NewCredentials()))
-if err != nil {
-    return err
-}
-defer func() { _ = conn.Close() }()
-
-client := mediav1.NewMediaServiceClient(conn)
-resp, err := client.GetMedia(ctx, &mediav1.GetMediaRequest{MediaId: mediaID})
-```
-
-Примеры на каждый RPC - в [docs/API.md](docs/API.md).
-
 ## Миграции
 
-Схема БД меняется **только новыми миграциями** - уже применённые файлы в
+Схема БД меняется **только новыми миграциями** — уже применённые файлы в
 `migrations/` править нельзя. Это гарантирует воспроизводимость и безопасный
 повторный накат на любой БД.
 
 - Формат имён: `NNNNNN_описание.up.sql` и парный `NNNNNN_описание.down.sql`
-  (например `000002_add_tags.up.sql`). Номер - следующий по порядку.
+  (например `000002_add_tags.up.sql`). Номер — следующий по порядку.
 - Каждая `up`-миграция должна иметь обратную `down`, полностью её откатывающую.
 - Файлы встраиваются в бинарь через `//go:embed` (см. `migrations/embed.go`),
-  поэтому новые `*.sql` подхватываются автоматически - код менять не нужно.
+  поэтому новые `*.sql` подхватываются автоматически — код менять не нужно.
 - В standalone-режиме миграции применяются автоматически при старте сервиса
   (`repo.RunMigrations`). При встраивании как библиотеки схемой управляет
-  вызывающее приложение: `WithAutoMigrate()`, `Migrate(dsn)` или `Migrations()`
-  для своего мигратора.
+  вызывающее приложение.
 
 ## Proto toolchain
 
@@ -187,8 +87,17 @@ go get buf.build/go/protovalidate
 В корне репозитория уже есть `buf.yaml` и `buf.gen.yaml` — они фиксируют
 версии плагинов и зависимостей proto. Менять их не нужно для повторной генерации.
 
-`make proto` и `buf build` ходят в Buf Schema Registry за
-`buf.build/bufbuild/protovalidate`: сам `.proto` этой зависимости в репозитории
-нет, в отличие от её Go-рантайма, который приезжает модулем. Поэтому `go build`
-работает офлайн, а генерация - нет. Под VPN BSR может отвечать 403 (Cloudflare
-режет выходные узлы); признак - `buf registry whoami` тоже отдаёт 403.
+### Использование сгенерированных stubs
+
+Сгенерированные типы лежат в `proto/media/v1` (пакет `mediav1`). Пример клиента:
+
+```go
+import (
+    "google.golang.org/grpc"
+	mediav1 "github.com/GO-Masterskaya/media-service/proto/media/v1"
+)
+
+conn, _ := grpc.Dial("localhost:9090", grpc.WithTransportCredentials(...))
+client := mediav1.NewMediaServiceClient(conn)
+resp, _ := client.GetMedia(ctx, &mediav1.GetMediaRequest{MediaId: "..."})
+```

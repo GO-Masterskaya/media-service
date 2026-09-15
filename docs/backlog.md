@@ -36,7 +36,7 @@ GitHub Issues в `GO-Masterskaya/media-service`.
 
 **Что делать.** Инициализировать `go.mod` (`module mediaservice`, Go 1.22+),
 минимальный `cmd/mediaservice/main.go`, линтер и CI на сборку, `go vet`, линтер
-и тесты каждого PR.
+и тесты каждого PR. Имя модуля переименовано в #93.
 
 **Трогает.** `go.mod`, `cmd/mediaservice`, `.golangci.yml`, `.github/workflows`.
 
