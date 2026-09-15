@@ -68,10 +68,6 @@ func (s *AcceptanceSuite) TestTTL_ReaperDeletesExpiredMedia() {
 	s.waitMediaGone(t, up.MediaId)
 }
 
-func (s *AcceptanceSuite) TestDeferred_RateLimitAndMetrics() {
-	s.T().Skip("blocked on #21: rate/stream limits and /metrics scrape")
-}
-
 func (s *AcceptanceSuite) TestDeferred_EngineConcurrencyAndCrashRecovery() {
 	s.T().Skip("engine concurrency/crash-recovery acceptance is a dedicated follow-up")
 }
