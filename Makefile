@@ -36,6 +36,13 @@ test: ## Прогнать тесты с race-детектором
 test-acceptance: ## Приёмочные интеграционные тесты (#19); нужен Docker + ffmpeg
 	go test -race -count=1 -timeout 15m ./test/acceptance/
 
+# test/library - отдельный модуль, PKG := ./... в него не заходит.
+# Это не оплошность, а условие проверки: тест обязан видеть только
+# публичный API, как настоящий потребитель.
+.PHONY: test-library
+test-library: ## Тесты библиотеки из внешнего модуля (#94); нужен Docker + ffmpeg
+	cd test/library && go test -race -count=1 -timeout 15m ./...
+
 .PHONY: test-cover
 test-cover: ## Тесты с отчётом о покрытии
 	go test -race -count=1 -coverprofile=coverage.out $(PKG)

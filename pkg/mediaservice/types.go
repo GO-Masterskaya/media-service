@@ -154,6 +154,12 @@ type ProcessingOptions struct {
 // Пагинация курсорная: PageToken из предыдущего ответа указывает позицию,
 // с которой продолжить. В отличие от offset, не сбивается при вставках
 // и удалениях между запросами.
+type ListParams struct {
+	OwnerID   uuid.UUID // Владелец, чьи объекты запрашиваются.
+	PageSize  uint32    // Максимальное число объектов в ответе. 0 означает DefaultPageSize, потолок - MaxPageSize.
+	PageToken string    // Позиция для продолжения. Пустая строка означает начало выборки.
+}
+
 const (
 	// DefaultPageSize - размер страницы, который выбирает сервер,
 	// если ListParams.PageSize оставлен нулевым.
@@ -163,12 +169,6 @@ const (
 	// даёт ErrInvalidArgument.
 	MaxPageSize = 1000
 )
-
-type ListParams struct {
-	OwnerID   uuid.UUID // Владелец, чьи объекты запрашиваются.
-	PageSize  uint32    // Максимальное число объектов в ответе. 0 означает DefaultPageSize, потолок - MaxPageSize.
-	PageToken string    // Позиция для продолжения. Пустая строка означает начало выборки.
-}
 
 // ListResult - страница результатов ListByOwner.
 type ListResult struct {

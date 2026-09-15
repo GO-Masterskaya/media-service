@@ -75,6 +75,29 @@ func ExampleNewWithDeps() {
 	defer func() { _ = client.Close() }()
 }
 
+// Загрузка идёт потоком: тело передаётся io.Reader и в память целиком
+// не поднимается. IdempotencyKey защищает от дублей при повторе запроса.
+func ExampleClient_Upload() {
+	ctx := context.Background()
+
+	f, err := os.Open("photo.jpg")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	res, err := client.Upload(ctx, mediaservice.UploadParams{
+		OwnerID:        ownerID,
+		Filename:       "photo.jpg",
+		MIMEType:       "image/jpeg",
+		IdempotencyKey: "order-42-photo-1",
+	}, f)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.ID, res.Status)
+}
+
 // Временная ссылка на скачивание. Срок жизни задаётся при создании клиента
 // опцией WithPresignTTL, а не аргументом метода.
 func ExampleClient_GetDownloadURL() {

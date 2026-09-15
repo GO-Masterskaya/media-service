@@ -76,3 +76,6 @@ jobs:
 
       - name: Test
         run: make test
+
+      - name: Test library module
+        run: make test-library
