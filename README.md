@@ -75,7 +75,13 @@ go get github.com/GO-Masterskaya/media-service
 ```
 
 ```go
-import "github.com/GO-Masterskaya/media-service/pkg/mediaservice"
+import (
+    "fmt"
+    "io"
+    "os"
+
+    "github.com/GO-Masterskaya/media-service/pkg/mediaservice"
+)
 
 client, err := mediaservice.New(ctx, mediaservice.Config{
     PostgresDSN: os.Getenv("POSTGRES_DSN"),
@@ -97,15 +103,37 @@ res, err := client.Upload(ctx, mediaservice.UploadParams{
     MIMEType:       "image/jpeg",
     IdempotencyKey: key,
 }, file)
+if err != nil {
+    return err
+}
+
+m, err := client.GetMedia(ctx, ownerID, res.ID)
+if err != nil {
+    return err
+}
+fmt.Println(m.Kind, m.MIMEType, m.SizeBytes, m.Status)
+
+rc, err := client.DownloadStream(ctx, ownerID, res.ID, mediaservice.VariantOriginal)
+if err != nil {
+    return err
+}
+defer func() { _ = rc.Close() }()
+
+_, err = io.Copy(dst, rc)
 ```
+
+Загрузка и скачивание идут потоком: файл в память целиком не поднимается ни на
+одном из направлений. Это проверяется тестом в отдельном модуле `test/library`.
 
 Библиотека сама создаёт пул Postgres и клиент MinIO и сама закрывает их в
 `Close()`. Если соединения у приложения уже есть, передайте их через
 `NewWithDeps` - тогда `Close()` их не тронет.
 
 Ограничения встроенного режима (ffmpeg в вашем процессе, reaper и reconciler не
-запускаются) описаны в [docs/INTEGRATION.md](docs/INTEGRATION.md). Компилируемые
-примеры на все основные методы - в `pkg/mediaservice/example_test.go`.
+запускаются) описаны в [docs/INTEGRATION.md](docs/INTEGRATION.md).
+
+Источник правды для примеров - `pkg/mediaservice/example_test.go`: они
+проверяются компилятором при каждой сборке, в отличие от кода в README.
 
 ## Вызов по gRPC
 
