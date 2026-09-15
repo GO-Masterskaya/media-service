@@ -77,14 +77,13 @@ func (s *recStubMediaRepo) ExistsBatch(ctx context.Context, ids []uuid.UUID) (ma
 func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
 }
-func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
-	return nil
-}
+
 func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
-func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
-	return 0, nil
+
+func (s *recStubMediaRepo) GetStorageUsage(ctx context.Context, ownerID uuid.UUID) (usedBytes int64, quotaBytes int64, err error) {
+	return 0, 0, nil
 }
 
 type recStubStorage struct {
