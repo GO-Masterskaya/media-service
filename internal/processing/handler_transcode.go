@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -112,8 +113,14 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 
 	ext, mime, variant := h.resolveTranscodeFormat(media.Kind)
 	outputPath := filepath.Join(workDir, fmt.Sprintf("transcode_%s.%s", media.ID, ext))
+	var rendition int
+	var timeout time.Duration
+	if h.cfg != nil {
+		rendition = h.cfg.Rendition
+		timeout = h.cfg.FFMPEGTimeout
+	}
 
-	actualOutputPath, err := Transcode(ctx, workDir, inputPath, outputPath, media.Kind)
+	actualOutputPath, err := Transcode(ctx, workDir, inputPath, outputPath, media.Kind, rendition, timeout)
 	if err != nil {
 		h.logError("failed to transcode media via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error transcoding: %w", err)

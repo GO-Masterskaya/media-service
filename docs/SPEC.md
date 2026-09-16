@@ -152,53 +152,45 @@ client stream ──> handler
 
 ## 5. Горутин-движок обработки
 
-Не polling-луп, а движок на каналах + пул воркеров. Компоненты:
+Движок реализован на **опросе БД** (pull-on-demand): буферизованного
+`jobCh` и переменной `QUEUE_BUFFER` нет. Каждый свободный воркер сам
+забирает одну задачу через `ClaimOne` с интервалом `POLL_INTERVAL`.
 
 ```
 Engine
-├─ jobCh    chan Job              // буферизованный, размер = QUEUE_BUFFER
-├─ feeder   goroutine             // доливает из БД в jobCh при свободных слотах
-├─ workers  [WORKER_CONCURRENCY]  // читают jobCh, гоняют ffmpeg
-├─ reaper   goroutine             // TTL-чистка (expires_at<=now)
-└─ ctx, errgroup                  // единый lifecycle, graceful drain
+├─ workers  [WORKER_CONCURRENCY]  // ClaimOne → ffmpeg → MarkDone/Fail/Retry
+├─ reaper   goroutine             // протухшие lease → queued; отдельно TTL expires_at
+└─ ctx                            // единый lifecycle, graceful drain
 ```
 
 Логика воркера:
 ```
-for job := range jobCh {
-  ctx := context.WithTimeout(engineCtx, FFMPEG_TIMEOUT)
+for {
+  job := repo.ClaimOne(lease)          // queued → running, либо nil
+  if job == nil { sleep(POLL_INTERVAL); continue }
+
+  jobCtx := context.WithTimeout(engineCtx, JOB_TIMEOUT)
+  // внутри handler каждый запуск ffmpeg дополнительно ограничен FFMPEG_TIMEOUT
   switch job.type {
     thumbnail: ffmpeg -> temp -> minio.Put(thumb) -> repo.InsertDerivative
-    transcode: ffmpeg 720p -> minio.Put(r_720) -> repo.InsertDerivative
+    transcode: ffmpeg scale=-2:RENDITION -> minio.Put(r_720) -> repo.InsertDerivative
   }
   on success: repo.MarkJobDone; if last job -> media.status=READY
-  on error:   attempts++; if attempts<max: repo.Reschedule(backoff, status=queued)
-              else repo.MarkFailed + media.status=FAILED(error)
+  on error:   attempts++; if attempts<max: repo.ReleaseForRetry(backoff)
+              else repo.FailJob + media.status=FAILED(error)
 }
 ```
 
-Feeder:
-```
-for {
-  free := cap(jobCh) - len(jobCh)
-  if free > 0 {
-    jobs := repo.ClaimQueued(free)   // UPDATE ... SET status=running WHERE status=queued ... RETURNING (batch)
-    for j := range jobs { jobCh <- j }
-  }
-  select { case <-ctx.Done(): return; case <-tick: }   // короткий интервал/сигнал
-}
-```
-
-- **Startup recovery**: `UPDATE processing_jobs SET status=queued WHERE status=running` (сервис упал — задачи вернуть).
-- **Graceful shutdown**: `cancel(ctx)` → feeder стоп, `close(jobCh)`, воркеры доделывают текущее в пределах `SHUTDOWN_TIMEOUT`, недоделанное остаётся `running` → при следующем старте recovery вернёт в `queued`. `errgroup.Wait()`.
-- **Метрики**: `len(jobCh)`, in-flight воркеров, длительность ffmpeg, ретраи, размер БД-очереди.
-- **Без утечек**: все горутины под `errgroup`/`ctx`; временные файлы `defer os.Remove` + чистка на панике.
-- **Reaper**: тик по `TTL_REAP_INTERVAL`, `SELECT ... WHERE expires_at<=now` → `DeleteMedia` каждому.
+- **Startup recovery**: `running` с протухшим lease → `queued` (`RecoverStaleJobs`).
+- **Graceful shutdown**: `cancel(ctx)` → воркеры отпускают in-flight через `ReleaseJobOnShutdown` в пределах `SHUTDOWN_TIMEOUT`.
+- **Метрики**: in-flight воркеров, длительность обработки, ретраи, глубина БД-очереди.
+- **Без утечек**: временные файлы `defer os.Remove` + recover в handler.
+- **TTL reaper**: тик по `TTL_REAP_INTERVAL`, `expires_at<=now` → `DeleteMedia`.
 
 ffmpeg — аргументы массивом, без `sh -c`, `-nostdin -y`, таймаут через `context`:
 - probe: `ffprobe -v quiet -print_format json -show_format -show_streams <in>`
 - thumb video: `ffmpeg -nostdin -y -ss 1 -i <in> -frames:v 1 -vf scale='min(320,iw)':-2 <out.jpg>`
-- transcode 720: `ffmpeg -nostdin -y -i <in> -vf scale=-2:720 -c:v libx264 -preset veryfast -c:a aac <out.mp4>`
+- transcode: `ffmpeg -nostdin -y -i <in> -vf scale=-2:<RENDITION> -c:v libx264 -preset veryfast -c:a aac <out.mp4>`
 - waveform: `ffmpeg -nostdin -y -i <in> -filter_complex showwavespic=s=640x120 -frames:v 1 <out.png>`
 
 ## 6. Схема БД
@@ -213,8 +205,9 @@ GRPC_AUTH_TOKEN=change-me            # token обязателен в контр�
 MAX_UPLOAD_BYTES=524288000           # 500MB
 MIME_ALLOWLIST=image/*,video/*,audio/*
 WORKER_CONCURRENCY=2                  # горутин-воркеров обработки
-QUEUE_BUFFER=64                       # размер jobCh
-FFMPEG_TIMEOUT=10m
+POLL_INTERVAL=1s                      # опрос БД на новые задачи (pull-on-demand)
+JOB_TIMEOUT=12m                       # потолок на задачу целиком
+FFMPEG_TIMEOUT=10m                    # потолок на один запуск ffmpeg
 SHUTDOWN_TIMEOUT=30s
 RENDITION=720                         # v1: единственная рендиция
 THUMB_SECOND=1

@@ -34,7 +34,6 @@ type Config struct {
 
 	// Processing
 	WorkerConcurrency int           `env:"WORKER_CONCURRENCY"    env-default:"2"`
-	QueueBuffer       int           `env:"QUEUE_BUFFER"          env-default:"64"`
 	JobTimeout        time.Duration `env:"JOB_TIMEOUT"           env-default:"12m"`
 	JobLease          time.Duration `env:"JOB_LEASE"             env-default:"30s"`
 	PollInterval      time.Duration `env:"POLL_INTERVAL"         env-default:"1s"`
@@ -155,7 +154,6 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "StorageQuotaBytes:%d, ", c.StorageQuotaBytes)
 	fmt.Fprintf(&b, "UploadIdleTimeout:%s, ", c.UploadIdleTimeout)
 	fmt.Fprintf(&b, "WorkerConcurrency:%d, ", c.WorkerConcurrency)
-	fmt.Fprintf(&b, "QueueBuffer:%d, ", c.QueueBuffer)
 	fmt.Fprintf(&b, "JobTimeout:%s, ", c.JobTimeout)
 	fmt.Fprintf(&b, "JobLease:%s, ", c.JobLease)
 	fmt.Fprintf(&b, "PollInterval:%s, ", c.PollInterval)

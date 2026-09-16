@@ -46,9 +46,6 @@ func (c *Config) validate() error {
 	if c.WorkerConcurrency <= 0 {
 		return fmt.Errorf("WORKER_CONCURRENCY must be > 0, got %d", c.WorkerConcurrency)
 	}
-	if c.QueueBuffer <= 0 {
-		return fmt.Errorf("QUEUE_BUFFER must be > 0, got %d", c.QueueBuffer)
-	}
 	if c.JobTimeout <= 0 {
 		return fmt.Errorf("JOB_TIMEOUT must be > 0, got %s", c.JobTimeout)
 	}
@@ -84,6 +81,9 @@ func (c *Config) validate() error {
 	}
 	if c.Rendition <= 0 {
 		return fmt.Errorf("RENDITION must be > 0, got %d", c.Rendition)
+	}
+	if c.Rendition%2 != 0 {
+		return fmt.Errorf("RENDITION must be an even number, got %d", c.Rendition)
 	}
 	if c.ThumbSecond < 0 {
 		return fmt.Errorf("THUMB_SECOND must be >= 0, got %d", c.ThumbSecond)
