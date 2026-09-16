@@ -340,6 +340,24 @@ func TestValidate_RetentionKafkaEnabled(t *testing.T) {
 	}
 }
 
+// TestValidate_RenditionEven мутирует глобальное окружение процесса.
+// Не использовать t.Parallel().
+func TestValidate_RenditionEven(t *testing.T) {
+	cfg := configFromDefaults(t)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("defaults must pass validate: %v", err)
+	}
+
+	cfg.Rendition = 721
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected validation error for Rendition=721")
+	}
+	if !strings.Contains(err.Error(), "RENDITION") || !strings.Contains(err.Error(), "even") {
+		t.Errorf("error should mention RENDITION and even number, got: %v", err)
+	}
+}
+
 // TestValidate_JobReapBatchSize мутирует глобальное окружение процесса.
 // Не использовать t.Parallel().
 func TestValidate_JobReapBatchSize(t *testing.T) {

@@ -82,6 +82,9 @@ func (c *Config) validate() error {
 	if c.Rendition <= 0 {
 		return fmt.Errorf("RENDITION must be > 0, got %d", c.Rendition)
 	}
+	if c.Rendition%2 != 0 {
+		return fmt.Errorf("RENDITION must be an even number, got %d", c.Rendition)
+	}
 	if c.ThumbSecond < 0 {
 		return fmt.Errorf("THUMB_SECOND must be >= 0, got %d", c.ThumbSecond)
 	}
