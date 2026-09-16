@@ -46,9 +46,6 @@ func (c *Config) validate() error {
 	if c.WorkerConcurrency <= 0 {
 		return fmt.Errorf("WORKER_CONCURRENCY must be > 0, got %d", c.WorkerConcurrency)
 	}
-	if c.QueueBuffer <= 0 {
-		return fmt.Errorf("QUEUE_BUFFER must be > 0, got %d", c.QueueBuffer)
-	}
 	if c.JobTimeout <= 0 {
 		return fmt.Errorf("JOB_TIMEOUT must be > 0, got %s", c.JobTimeout)
 	}

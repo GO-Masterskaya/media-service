@@ -15,7 +15,7 @@ func TestGenerateThumbnailVideo(t *testing.T) {
 	outputPath := filepath.Join(outDir, "thumb.jpg")
 
 	ctx := context.Background()
-	_, err := GenerateThumbnail(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 0, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(outputPath)
@@ -28,7 +28,7 @@ func TestGenerateThumbnailAudio(t *testing.T) {
 	outputPath := filepath.Join(outDir, "waveform.png")
 
 	ctx := context.Background()
-	_, err := GenerateThumbnail(ctx, outDir, "testdata/audio.mp3", outputPath, KindAudio, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/audio.mp3", outputPath, KindAudio, 0, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(outputPath)
@@ -41,7 +41,7 @@ func TestGenerateThumbnailImage(t *testing.T) {
 	outputPath := filepath.Join(outDir, "thumb.jpg")
 
 	ctx := context.Background()
-	_, err := GenerateThumbnail(ctx, outDir, "testdata/image.png", outputPath, KindImage, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/image.png", outputPath, KindImage, 0, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(outputPath)
@@ -54,7 +54,7 @@ func TestTranscodeVideo(t *testing.T) {
 	outputPath := filepath.Join(outDir, "output.mp4")
 
 	ctx := context.Background()
-	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo)
+	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 720, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(outputPath)
@@ -69,7 +69,7 @@ func TestGenerateThumbnailCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := GenerateThumbnail(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 0)
+	_, err := GenerateThumbnail(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 0, 0)
 	require.Error(t, err)
 }
 
@@ -80,12 +80,25 @@ func TestTranscodeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo)
+	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 720, 0)
 	require.Error(t, err)
+}
+
+func TestTranscodeUsesConfiguredRendition(t *testing.T) {
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "output.mp4")
+	_, err := Transcode(context.Background(), outDir, "testdata/video.mp4", outputPath, KindVideo, 360, 0)
+	require.NoError(t, err)
+
+	info, err := Probe(context.Background(), outputPath)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Equal(t, 360, info.Height)
 }
 
 func TestResolveSafePath(t *testing.T) {
 	tmpDir := t.TempDir()
+	outsideAbs := filepath.Join(filepath.VolumeName(tmpDir)+string(filepath.Separator), "Windows", "win.ini")
 
 	test := []struct {
 		name       string
@@ -120,7 +133,7 @@ func TestResolveSafePath(t *testing.T) {
 		{
 			name:       "absolute path outside root",
 			outputRoot: tmpDir,
-			outputPath: "/etc/passwd",
+			outputPath: outsideAbs,
 			wantErr:    true,
 		},
 		{

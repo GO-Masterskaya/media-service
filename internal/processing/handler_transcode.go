@@ -112,8 +112,18 @@ func (h *TranscodeHandler) ProcessTranscode(ctx context.Context, media MediaReco
 
 	ext, mime, variant := h.resolveTranscodeFormat(media.Kind)
 	outputPath := filepath.Join(workDir, fmt.Sprintf("transcode_%s.%s", media.ID, ext))
+	rendition := 720
+	timeout := defaultTranscodeTimeout
+	if h.cfg != nil {
+		if h.cfg.Rendition > 0 {
+			rendition = h.cfg.Rendition
+		}
+		if h.cfg.FFMPEGTimeout > 0 {
+			timeout = h.cfg.FFMPEGTimeout
+		}
+	}
 
-	actualOutputPath, err := Transcode(ctx, workDir, inputPath, outputPath, media.Kind)
+	actualOutputPath, err := Transcode(ctx, workDir, inputPath, outputPath, media.Kind, rendition, timeout)
 	if err != nil {
 		h.logError("failed to transcode media via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error transcoding: %w", err)

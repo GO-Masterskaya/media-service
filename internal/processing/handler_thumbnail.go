@@ -143,11 +143,15 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	outputPath := filepath.Join(tempDir, fmt.Sprintf("thumb_%s.%s", media.ID, ext))
 
 	sec := 0
+	timeout := defaultThumbnailTimeout
 	if h.cfg != nil && h.cfg.ThumbSecond > 0 {
 		sec = h.cfg.ThumbSecond
 	}
+	if h.cfg != nil && h.cfg.FFMPEGTimeout > 0 {
+		timeout = h.cfg.FFMPEGTimeout
+	}
 
-	actualOutputPath, err := GenerateThumbnail(ctx, tempDir, sourcePath, outputPath, media.Kind, sec)
+	actualOutputPath, err := GenerateThumbnail(ctx, tempDir, sourcePath, outputPath, media.Kind, sec, timeout)
 	if err != nil {
 		h.logError("failed to generate thumbnail via ffmpeg", media.ID, err)
 		return nil, fmt.Errorf("error call ffmpeg: %w", err)

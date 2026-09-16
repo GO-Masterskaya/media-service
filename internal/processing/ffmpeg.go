@@ -18,13 +18,15 @@ const (
 )
 
 // GenerateThumbnail создаёт превью через ffmpeg.
-// Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 2m.
-func GenerateThumbnail(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind, sec int) (string, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultThumbnailTimeout)
-		defer cancel()
+// timeout применяется поверх родительского контекста; если timeout <= 0,
+// используется внутренний дефолт.
+func GenerateThumbnail(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind, sec int, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = defaultThumbnailTimeout
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	safePath, err := resolveSafePath(outputRoot, outputPath)
 	if err != nil {
@@ -74,13 +76,18 @@ func GenerateThumbnail(ctx context.Context, outputRoot, inputPath, outputPath st
 }
 
 // Transcode создаёт рендицию через ffmpeg.
-// Caller должен передавать ctx с deadline; иначе применяется внутренний таймаут 10m.
-func Transcode(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind) (string, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultTranscodeTimeout)
-		defer cancel()
+// timeout применяется поверх родительского контекста; если timeout <= 0,
+// используется внутренний дефолт.
+func Transcode(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind, rendition int, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = defaultTranscodeTimeout
 	}
+	if rendition <= 0 {
+		rendition = 720
+	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	safePath, err := resolveSafePath(outputRoot, outputPath)
 	if err != nil {
@@ -93,7 +100,7 @@ func Transcode(ctx context.Context, outputRoot, inputPath, outputPath string, ki
 		args = []string{
 			"-nostdin", "-y",
 			"-i", inputPath,
-			"-vf", "scale=-2:720",
+			"-vf", fmt.Sprintf("scale=-2:%d", rendition),
 			"-c:v", "libx264",
 			"-preset", "veryfast",
 			"-c:a", "aac",
