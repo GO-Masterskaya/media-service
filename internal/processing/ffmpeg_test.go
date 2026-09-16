@@ -2,9 +2,13 @@ package processing
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +58,7 @@ func TestTranscodeVideo(t *testing.T) {
 	outputPath := filepath.Join(outDir, "output.mp4")
 
 	ctx := context.Background()
-	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 720, 0)
+	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, defaultRendition, 0)
 	require.NoError(t, err)
 
 	stat, err := os.Stat(outputPath)
@@ -80,7 +84,7 @@ func TestTranscodeCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, 720, 0)
+	_, err := Transcode(ctx, outDir, "testdata/video.mp4", outputPath, KindVideo, defaultRendition, 0)
 	require.Error(t, err)
 }
 
@@ -96,15 +100,80 @@ func TestTranscodeUsesConfiguredRendition(t *testing.T) {
 	assert.Equal(t, 360, info.Height)
 }
 
+func TestTranscodeDefaultRenditionWhenZero(t *testing.T) {
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "output.mp4")
+	_, err := Transcode(context.Background(), outDir, "testdata/video.mp4", outputPath, KindVideo, 0, 0)
+	require.NoError(t, err)
+
+	info, err := Probe(context.Background(), outputPath)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Equal(t, defaultRendition, info.Height)
+}
+
+func TestTranscodeFFMPEGTimeoutBeforeParentDeadline(t *testing.T) {
+	// Реальный клип слишком короткий: 50ms часто успевает завершиться.
+	// Stub ffmpeg висит дольше родителя, чтобы сработал именно ffmpeg timeout.
+	installSlowFFmpegStub(t)
+
+	outDir := t.TempDir()
+	outputPath := filepath.Join(outDir, "output.mp4")
+
+	parentTimeout := 5 * time.Second
+	ffmpegTimeout := 50 * time.Millisecond
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), parentTimeout)
+	defer parentCancel()
+
+	started := time.Now()
+	_, err := Transcode(parentCtx, outDir, "testdata/video.mp4", outputPath, KindVideo, defaultRendition, ffmpegTimeout)
+	elapsed := time.Since(started)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "want deadline in error chain, got: %v", err)
+	assert.Less(t, elapsed, parentTimeout/2, "should fail on FFMPEG_TIMEOUT, not parent JOB_TIMEOUT")
+	assert.GreaterOrEqual(t, elapsed, ffmpegTimeout)
+}
+
+func installSlowFFmpegStub(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "slow.go")
+	require.NoError(t, os.WriteFile(src, []byte(`package main
+
+import (
+	"os"
+	"time"
+)
+
+func main() {
+	time.Sleep(10 * time.Second)
+	os.Exit(1)
+}
+`), 0o644))
+
+	outName := "ffmpeg"
+	if runtime.GOOS == "windows" {
+		outName = "ffmpeg.exe"
+	}
+	out := filepath.Join(dir, outName)
+	build := exec.Command("go", "build", "-o", out, src)
+	build.Env = os.Environ()
+	outBytes, err := build.CombinedOutput()
+	require.NoError(t, err, "build slow ffmpeg stub: %s", outBytes)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestResolveSafePath(t *testing.T) {
 	tmpDir := t.TempDir()
 	outsideAbs := filepath.Join(filepath.VolumeName(tmpDir)+string(filepath.Separator), "Windows", "win.ini")
 
 	test := []struct {
-		name       string
-		outputRoot string
-		outputPath string
-		wantErr    bool
+		name        string
+		outputRoot  string
+		outputPath  string
+		wantErr     bool
+		skipWindows bool
 	}{
 		{
 			name:       "valid relative path",
@@ -131,7 +200,14 @@ func TestResolveSafePath(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:       "absolute path outside root",
+			name:        "absolute unix-style path outside root",
+			outputRoot:  tmpDir,
+			outputPath:  "/etc/passwd",
+			wantErr:     true,
+			skipWindows: true, // на Windows "/etc/passwd" не абсолютный и Join кладёт его внутрь root
+		},
+		{
+			name:       "absolute path outside root (volume-rooted)",
 			outputRoot: tmpDir,
 			outputPath: outsideAbs,
 			wantErr:    true,
@@ -152,6 +228,9 @@ func TestResolveSafePath(t *testing.T) {
 
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.skipWindows && runtime.GOOS == "windows" {
+				t.Skip("unix-absolute path semantics differ on Windows")
+			}
 			_, err := resolveSafePath(tt.outputRoot, tt.outputPath)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("resolveSavePath() error = %v, wantErr = %v", err, tt.wantErr)

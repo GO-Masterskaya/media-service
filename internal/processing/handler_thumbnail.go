@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -143,11 +144,11 @@ func (h *ThumbnailHandler) ProcessThumbnail(ctx context.Context, media MediaReco
 	outputPath := filepath.Join(tempDir, fmt.Sprintf("thumb_%s.%s", media.ID, ext))
 
 	sec := 0
-	timeout := defaultThumbnailTimeout
-	if h.cfg != nil && h.cfg.ThumbSecond > 0 {
-		sec = h.cfg.ThumbSecond
-	}
-	if h.cfg != nil && h.cfg.FFMPEGTimeout > 0 {
+	var timeout time.Duration
+	if h.cfg != nil {
+		if h.cfg.ThumbSecond > 0 {
+			sec = h.cfg.ThumbSecond
+		}
 		timeout = h.cfg.FFMPEGTimeout
 	}
 

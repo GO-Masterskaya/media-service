@@ -15,6 +15,7 @@ import (
 const (
 	defaultThumbnailTimeout = 2 * time.Minute
 	defaultTranscodeTimeout = 10 * time.Minute
+	defaultRendition        = 720
 )
 
 // GenerateThumbnail создаёт превью через ffmpeg.
@@ -69,7 +70,7 @@ func GenerateThumbnail(ctx context.Context, outputRoot, inputPath, outputPath st
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		_ = os.Remove(safePath)
-		return "", fmt.Errorf("ffmpeg thumbnail failed: %w, stderr: %s", err, stderr.String())
+		return "", fmt.Errorf("ffmpeg thumbnail failed: %w, stderr: %s", wrapCmdErr(ctx, err), stderr.String())
 	}
 
 	return safePath, nil
@@ -77,13 +78,13 @@ func GenerateThumbnail(ctx context.Context, outputRoot, inputPath, outputPath st
 
 // Transcode создаёт рендицию через ffmpeg.
 // timeout применяется поверх родительского контекста; если timeout <= 0,
-// используется внутренний дефолт.
+// используется внутренний дефолт. rendition <= 0 → defaultRendition.
 func Transcode(ctx context.Context, outputRoot, inputPath, outputPath string, kind Kind, rendition int, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = defaultTranscodeTimeout
 	}
 	if rendition <= 0 {
-		rendition = 720
+		rendition = defaultRendition
 	}
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -128,10 +129,19 @@ func Transcode(ctx context.Context, outputRoot, inputPath, outputPath string, ki
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		_ = os.Remove(safePath)
-		return "", fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", err, stderr.String())
+		return "", fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", wrapCmdErr(ctx, err), stderr.String())
 	}
 
 	return safePath, nil
+}
+
+// wrapCmdErr добавляет ctx.Err() поверх ошибки процесса, чтобы таймаут
+// был отличим от обычного падения ffmpeg (signal: killed без контекста).
+func wrapCmdErr(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%w: %w", ctxErr, err)
+	}
+	return err
 }
 
 // resolveSafePath гарантирует, что итоговый путь находиться строго внутри outputRoot
