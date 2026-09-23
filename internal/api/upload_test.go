@@ -185,6 +185,10 @@ func (r *apiUploadMediaRepo) CreateAttachment(ctx context.Context, mediaID, owne
 	return nil
 }
 
+func (r *apiUploadMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 func (r *apiUploadMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (int, error) {
 	return 0, nil
 }

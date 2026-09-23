@@ -256,7 +256,7 @@ $GRPCURL -H "authorization: Bearer $TOKEN" -H "x-owner-id: $OWNER" \
 |---|---|
 | `INVALID_ARGUMENT` | `media_id` пуст или не UUID. |
 | `NOT_FOUND` | Записи нет. |
-| `PERMISSION_DENIED` | `x-owner-id` задан и не совпадает с владельцем. |
+| `PERMISSION_DENIED` | `x-owner-id` задан и не совпадает с `media.owner_id`, и нет строки в `media_attachments` для вызывающего. |
 | `INTERNAL` | Сбой БД; либо `metadata` не разбирается в `google.protobuf.Struct`. |
 
 ---
@@ -335,7 +335,7 @@ $GRPCURL -H "authorization: Bearer $TOKEN" -H "x-owner-id: $OWNER" \
 | `INVALID_ARGUMENT` | `media_id` не UUID; вариант неизвестен или `r_360`. |
 | `NOT_FOUND` | Нет записи media либо нет запрошенной производной. |
 | `FAILED_PRECONDITION` | `original` при `FAILED`/`DELETING`; производная при статусе не `READY` |
-| `PERMISSION_DENIED` | `x-owner-id` задан и не совпадает с владельцем. |
+| `PERMISSION_DENIED` | `x-owner-id` задан и не совпадает с `media.owner_id`, и нет строки в `media_attachments` для вызывающего. |
 | `INTERNAL` | Сбой presign или пустой ключ хранилища. |
 
 ---
@@ -361,7 +361,7 @@ $GRPCURL -H "authorization: Bearer $TOKEN" -H "x-owner-id: $OWNER" \
 
 Когда что выбирать: `GetDownloadURL` дешевле для сервиса и даёт клиенту
 докачку средствами хранилища; `DownloadStream` не выпускает наружу адрес
-хранилища и уважает проверку владельца на каждом байте.
+хранилища и уважает проверку доступа (owner или attachment) на каждом байте.
 
 ---
 

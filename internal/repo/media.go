@@ -127,6 +127,11 @@ type MediaRepo interface {
 	// Идемпотентна: если привязка уже есть — возвращает nil.
 	CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error
 
+	// HasAttachment проверяет, есть ли строка в media_attachments для пары
+	// (media_id, owner_id). Используется ACL чтения (GetMedia / OpenMedia /
+	// GetDownloadURL): доступ разрешён владельцу media.owner_id или attacher'у.
+	HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error)
+
 	// GetStorageUsage возвращает текущий объём занятого места (storage_used_bytes)
 	// и установленную квоту (storage_quota_bytes) для организации (owner_id).
 	// Если запись отсутствует, возвращает (0, 0, nil).
@@ -540,6 +545,20 @@ func (r *PgMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uui
 		return fmt.Errorf("commit attachment: %w", err)
 	}
 	return nil
+}
+
+func (r *PgMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM media_attachments
+			WHERE media_id = $1 AND owner_id = $2
+		)
+	`, mediaID, ownerID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("has attachment: %w", err)
+	}
+	return exists, nil
 }
 
 func (r *PgMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (int, error) {

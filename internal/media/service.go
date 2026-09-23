@@ -110,6 +110,23 @@ func (s *Service) checkQuota(ctx context.Context, ownerID uuid.UUID, additionalB
 	return nil
 }
 
+// authorizeRead разрешает чтение медиа, если caller анонимен (uuid.Nil),
+// является media.owner_id, либо имеет строку в media_attachments.
+// ListMediaByOwner эту логику не использует — там по-прежнему только owner_id.
+func (s *Service) authorizeRead(ctx context.Context, callerID, mediaID, ownerID uuid.UUID) error {
+	if callerID == uuid.Nil || ownerID == callerID {
+		return nil
+	}
+	ok, err := s.mediaRepo.HasAttachment(ctx, mediaID, callerID)
+	if err != nil {
+		return fmt.Errorf("has attachment: %w", err)
+	}
+	if !ok {
+		return ErrAccessDenied
+	}
+	return nil
+}
+
 func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaID uuid.UUID, variant storage.Variant) (*storage.PresignedURL, error) {
 	media, err := s.mediaRepo.GetByID(ctx, mediaID)
 	if err != nil {
@@ -120,8 +137,12 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
-	if callerID != uuid.Nil && media.OwnerID != callerID {
-		return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
+	if err := s.authorizeRead(ctx, callerID, media.ID, media.OwnerID); err != nil {
+		if errors.Is(err, ErrAccessDenied) {
+			return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
+		}
+		s.log.Error("authorize read failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
+		return nil, status.Error(codes.Internal, "internal error")
 	}
 
 	var storageKey string
@@ -174,10 +195,10 @@ func (s *Service) GetDownloadURL(ctx context.Context, callerID uuid.UUID, mediaI
 
 // GetMedia возвращает метаданные медиаобъекта.
 //
-// Проверка владельца применяется так же, как в GetDownloadURL: при нулевом
-// callerID она пропускается - это анонимный режим, включаемый отсутствием
-// STRICT_OWNER_CHECK. Непустой callerID, не совпадающий с владельцем, даёт
-// PermissionDenied.
+// Проверка доступа как у GetDownloadURL / OpenMedia: при нулевом callerID
+// пропускается (анонимный режим без STRICT_OWNER_CHECK). Непустой callerID
+// допускается, если это media.owner_id или есть строка в media_attachments;
+// иначе PermissionDenied.
 //
 // Деривативы не возвращаются: они лежат в отдельной таблице и читаются
 // отдельным запросом.
@@ -191,8 +212,12 @@ func (s *Service) GetMedia(ctx context.Context, callerID, mediaID uuid.UUID) (*r
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
-	if callerID != uuid.Nil && m.OwnerID != callerID {
-		return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
+	if err := s.authorizeRead(ctx, callerID, m.ID, m.OwnerID); err != nil {
+		if errors.Is(err, ErrAccessDenied) {
+			return nil, status.Error(codes.PermissionDenied, ErrAccessDenied.Error())
+		}
+		s.log.Error("authorize read failed", slog.Any("error", err), slog.String("media_id", mediaID.String()))
+		return nil, status.Error(codes.Internal, "internal error")
 	}
 	return m, nil
 }

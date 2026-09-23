@@ -26,7 +26,8 @@ var ErrInvalidArgument = errors.New("mediaservice: invalid argument")
 // ErrNotReady возвращается, когда операция невозможна в текущем статусе объекта.
 var ErrNotReady = errors.New("mediaservice: media not ready")
 
-// ErrAccessDenied возвращается, когда caller не является владельцем объекта.
+// ErrAccessDenied возвращается, когда caller не является владельцем объекта
+// и не имеет привязки в media_attachments.
 var ErrAccessDenied = errors.New("mediaservice: access denied")
 
 // ErrClosed возвращается, когда метод вызван после Close().

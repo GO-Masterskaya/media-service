@@ -23,8 +23,9 @@ func newTestService(mediaRepo repo.MediaRepo, derivRepo repo.DerivativeRepo, st 
 }
 
 type mockMediaRepo struct {
-	media    *repo.Media
-	mediaErr error
+	media       *repo.Media
+	mediaErr    error
+	attachments map[uuid.UUID]map[uuid.UUID]struct{}
 }
 
 func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, error) {
@@ -69,6 +70,18 @@ func (m *mockMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.U
 
 func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
+}
+
+func (s *mockMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	if s.attachments == nil {
+		return false, nil
+	}
+	owners, ok := s.attachments[mediaID]
+	if !ok {
+		return false, nil
+	}
+	_, ok = owners[ownerID]
+	return ok, nil
 }
 
 func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
@@ -244,6 +257,30 @@ func TestDownloadStream_AccessDenied_NonStrict_WithCallerID(t *testing.T) {
 	err := newTestService(mediaRepo, &mockDerivRepo{}, &mockStorage{}).
 		DownloadStream(context.Background(), callerID, id, "original", func([]byte) error { return nil })
 	require.ErrorIs(t, err, ErrAccessDenied)
+}
+
+func TestDownloadStream_AttacherAllowed(t *testing.T) {
+	data := []byte("attacher download")
+	id := uuid.New()
+	ownerID := uuid.New()
+	attacher := uuid.New()
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+		attachments: map[uuid.UUID]map[uuid.UUID]struct{}{
+			id: {attacher: {}},
+		},
+	}
+	storageMock := &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}
+
+	var received []byte
+	err := newTestService(mediaRepo, &mockDerivRepo{}, storageMock).
+		DownloadStream(context.Background(), attacher, id, "original", func(chunk []byte) error {
+			received = append(received, chunk...)
+			return nil
+		})
+	require.NoError(t, err)
+	assert.Equal(t, data, received)
 }
 
 func TestDownloadStream_VariantNotFound(t *testing.T) {
