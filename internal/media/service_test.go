@@ -25,6 +25,10 @@ type svcStubMediaRepo struct {
 	media *repo.Media
 	err   error
 
+	// attachments: mediaID → set of ownerIDs with a media_attachments row.
+	// Used by authorizeRead / HasAttachment in ACL tests (#104).
+	attachments map[uuid.UUID]map[uuid.UUID]struct{}
+
 	// --- delete/TTL (issues #13, #17) ---
 	markDeletingClaim repo.ClaimState
 	markDeletingErr   error
@@ -103,6 +107,18 @@ func (s *svcStubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uui
 
 func (s *svcStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
+}
+
+func (s *svcStubMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	if s.attachments == nil {
+		return false, nil
+	}
+	owners, ok := s.attachments[mediaID]
+	if !ok {
+		return false, nil
+	}
+	_, ok = owners[ownerID]
+	return ok, nil
 }
 
 func (s *svcStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
@@ -286,7 +302,48 @@ func TestGetDownloadURL_WrongOwner_PermissionDenied(t *testing.T) {
 	svc := NewService(mr, &svcStubDerivRepo{}, &svcStubStorage{}, time.Minute, svcTestLogger())
 
 	_, err := svc.GetDownloadURL(context.Background(), otherOwnerID(), mr.media.ID, storage.VariantOriginal)
-	require.Error(t, err, ErrAccessDenied)
+	requireGRPCCode(t, err, codes.PermissionDenied)
+}
+
+func TestGetDownloadURL_AttacherAllowed(t *testing.T) {
+	m := mediaWithStatus(repo.MediaStatusStored)
+	attacher := otherOwnerID()
+	mr := &svcStubMediaRepo{
+		media: m,
+		attachments: map[uuid.UUID]map[uuid.UUID]struct{}{
+			m.ID: {attacher: {}},
+		},
+	}
+	sr := &svcStubStorage{url: &storage.PresignedURL{URL: "http://minio/presign", ExpiresAt: time.Now().Add(time.Minute)}}
+	svc := NewService(mr, &svcStubDerivRepo{}, sr, time.Minute, svcTestLogger())
+
+	url, err := svc.GetDownloadURL(context.Background(), attacher, m.ID, storage.VariantOriginal)
+	require.NoError(t, err)
+	assert.Equal(t, "http://minio/presign", url.URL)
+}
+
+func TestGetMedia_AttacherAllowed(t *testing.T) {
+	m := mediaWithStatus(repo.MediaStatusStored)
+	attacher := otherOwnerID()
+	mr := &svcStubMediaRepo{
+		media: m,
+		attachments: map[uuid.UUID]map[uuid.UUID]struct{}{
+			m.ID: {attacher: {}},
+		},
+	}
+	svc := NewService(mr, &svcStubDerivRepo{}, &svcStubStorage{}, time.Minute, svcTestLogger())
+
+	got, err := svc.GetMedia(context.Background(), attacher, m.ID)
+	require.NoError(t, err)
+	assert.Equal(t, m.ID, got.ID)
+}
+
+func TestGetMedia_StrangerDenied(t *testing.T) {
+	mr := &svcStubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
+	svc := NewService(mr, &svcStubDerivRepo{}, &svcStubStorage{}, time.Minute, svcTestLogger())
+
+	_, err := svc.GetMedia(context.Background(), otherOwnerID(), mr.media.ID)
+	requireGRPCCode(t, err, codes.PermissionDenied)
 }
 
 func TestGetDownloadURL_StorageError(t *testing.T) {

@@ -50,7 +50,8 @@ func (s *MinIOSuite) SetupSuite() {
 	s.bucket = "media"
 
 	req := testcontainers.ContainerRequest{
-		Image:        "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+		// MinIO CE больше не отдаётся с Docker Hub/Quay анонимно; Chainguard — публичный rebuild.
+		Image:        "cgr.dev/chainguard/minio:latest",
 		ExposedPorts: []string{"9000/tcp"},
 		Cmd:          []string{"server", "/data"},
 		Env: map[string]string{

@@ -38,8 +38,9 @@ func incomingCtxWithOwnerID(ctx context.Context, ownerID string) context.Context
 }
 
 type mockMediaRepo struct {
-	media    *repo.Media
-	mediaErr error
+	media       *repo.Media
+	mediaErr    error
+	attachments map[uuid.UUID]map[uuid.UUID]struct{}
 }
 
 func (m *mockMediaRepo) GetByID(_ context.Context, _ uuid.UUID) (*repo.Media, error) {
@@ -84,6 +85,18 @@ func (m *mockMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.U
 
 func (s *mockMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
+}
+
+func (s *mockMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	if s.attachments == nil {
+		return false, nil
+	}
+	owners, ok := s.attachments[mediaID]
+	if !ok {
+		return false, nil
+	}
+	_, ok = owners[ownerID]
+	return ok, nil
 }
 
 func (s *mockMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
@@ -351,6 +364,30 @@ func TestDownloadStream_Handler_PermissionDenied_NonStrict_WrongOwner(t *testing
 	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
 	require.Error(t, err)
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+}
+
+func TestDownloadStream_Handler_AttacherAllowed(t *testing.T) {
+	id := uuid.New()
+	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	attacher := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	data := []byte("ok")
+
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+		attachments: map[uuid.UUID]map[uuid.UUID]struct{}{
+			id: {attacher: {}},
+		},
+	}
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{reader: io.NopCloser(bytes.NewReader(data))}, true)
+	stream := &mockStream{
+		ctx: incomingCtxWithOwnerID(context.Background(), attacher.String()),
+		send: func(c *v1.DownloadChunk) error {
+			return nil
+		},
+	}
+
+	err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
+	require.NoError(t, err)
 }
 
 func TestDownloadStream_Handler_InvalidVariant(t *testing.T) {

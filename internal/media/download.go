@@ -59,9 +59,12 @@ func (s *Service) OpenMedia(ctx context.Context, callerID uuid.UUID, mediaID uui
 		return nil, fmt.Errorf("get media: %w", err)
 	}
 
-	// 2. Проверяем владельца до открытия объекта.
-	if callerID != uuid.Nil && media.OwnerID != callerID {
-		return nil, ErrAccessDenied
+	// 2. ACL чтения: owner или attachment (см. authorizeRead).
+	if err := s.authorizeRead(ctx, callerID, media.ID, media.OwnerID); err != nil {
+		if errors.Is(err, ErrAccessDenied) {
+			return nil, ErrAccessDenied
+		}
+		return nil, fmt.Errorf("authorize read: %w", err)
 	}
 
 	// 3. Определяем storage key.

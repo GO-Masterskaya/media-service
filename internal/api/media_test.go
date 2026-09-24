@@ -27,6 +27,9 @@ type stubMediaRepo struct {
 	err      error
 	listPage *repo.MediaPage
 
+	// attachments: mediaID → set of ownerIDs (#104 ACL).
+	attachments map[uuid.UUID]map[uuid.UUID]struct{}
+
 	// --- delete (issue #13) ---
 	markDeletingClaim repo.ClaimState
 	markDeletingErr   error
@@ -90,6 +93,18 @@ func (s *stubMediaRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uuid.U
 
 func (s *stubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
+}
+
+func (s *stubMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	if s.attachments == nil {
+		return false, nil
+	}
+	owners, ok := s.attachments[mediaID]
+	if !ok {
+		return false, nil
+	}
+	_, ok = owners[ownerID]
+	return ok, nil
 }
 
 func (s *stubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
@@ -269,6 +284,39 @@ func TestGetMedia_OwnerAllowed(t *testing.T) {
 		},
 	)
 
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, owner.String(), got.OwnerId)
+}
+
+func TestGetMedia_AttacherAllowed(t *testing.T) {
+	owner := ownerID()
+	attacher := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	mediaID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	mr := &stubMediaRepo{
+		media: &repo.Media{
+			ID:        mediaID,
+			OwnerID:   owner,
+			Kind:      repo.MediaKindImage,
+			Mime:      "image/png",
+			Status:    repo.MediaStatusStored,
+			CreatedAt: time.Now(),
+		},
+		attachments: map[uuid.UUID]map[uuid.UUID]struct{}{
+			mediaID: {attacher: {}},
+		},
+	}
+
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		true,
+	)
+
+	got, err := server.GetMedia(
+		ctxWithOwner(attacher.String()),
+		&mediav1.GetMediaRequest{MediaId: mediaID.String()},
+	)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, owner.String(), got.OwnerId)
@@ -573,6 +621,27 @@ func TestGetDownloadURL_WrongOwner(t *testing.T) {
 	})
 
 	requireGRPCCode(t, err, codes.PermissionDenied)
+}
+
+func TestGetDownloadURL_AttacherAllowed(t *testing.T) {
+	m := mediaWithStatus(repo.MediaStatusStored)
+	attacher := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	mr := &stubMediaRepo{
+		media: m,
+		attachments: map[uuid.UUID]map[uuid.UUID]struct{}{
+			m.ID: {attacher: {}},
+		},
+	}
+	sr := &stubStorage{url: &storage.PresignedURL{URL: "http://minio/attacher", ExpiresAt: time.Now().Add(time.Minute)}}
+	svc := media.NewService(mr, &stubDerivRepo{}, sr, time.Minute, testLogger())
+	server := NewMediaServer(svc, false)
+
+	resp, err := server.GetDownloadURL(ctxWithOwner(attacher.String()), &mediav1.GetDownloadURLRequest{
+		MediaId: m.ID.String(),
+		Variant: "original",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "http://minio/attacher", resp.Url)
 }
 
 func TestGetDownloadURL_ServiceError(t *testing.T) {

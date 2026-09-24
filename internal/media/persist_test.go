@@ -107,6 +107,10 @@ func (s *persistMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerI
 	return nil
 }
 
+func (s *persistMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 func (s *persistMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
@@ -658,6 +662,10 @@ func (r *raceAfterPutRepo) ListExpiredIDs(ctx context.Context, limit int) ([]uui
 
 func (s *raceAfterPutRepo) CreateAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) error {
 	return nil
+}
+
+func (s *raceAfterPutRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	return false, nil
 }
 
 func (s *raceAfterPutRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {

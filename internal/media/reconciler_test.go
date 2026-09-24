@@ -79,6 +79,10 @@ func (s *recStubMediaRepo) CreateAttachment(ctx context.Context, mediaID, ownerI
 	return nil
 }
 
+func (s *recStubMediaRepo) HasAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 func (s *recStubMediaRepo) DeleteAttachment(ctx context.Context, mediaID, ownerID uuid.UUID) (usagesRemaining int, err error) {
 	return 0, nil
 }
