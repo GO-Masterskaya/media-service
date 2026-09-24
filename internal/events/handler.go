@@ -261,6 +261,8 @@ func (h *Handler) handleAttach(ctx context.Context, env *Envelope) error {
 	if err != nil {
 		return err
 	}
+	// owner_id из payload не сверяется с издателем события: топик — доверенный
+	// периметр (см. docs/CONFIG.md / INTEGRATION.md). Attach выдаёт ACL на чтение.
 	if err := h.mediaSvc.AttachMedia(ctx, payload.MediaID, payload.OwnerID); err != nil {
 		st, ok := status.FromError(err)
 		if ok && st.Code() == codes.NotFound {

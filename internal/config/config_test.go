@@ -91,6 +91,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxConcurrentStreams != 8 {
 		t.Errorf("MaxConcurrentStreams: want 8, got %d", cfg.MaxConcurrentStreams)
 	}
+	if !cfg.StrictOwnerCheck {
+		t.Error("StrictOwnerCheck: want true by default")
+	}
 }
 
 func TestLoadCallerIDAllowlist(t *testing.T) {

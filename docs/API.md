@@ -40,7 +40,7 @@ OWNER=$(uuidgen)
 | Заголовок | Обязателен |
 |---|---|
 | `authorization` | Да, если `GRPC_AUTH_ENABLED=true` |
-| `x-owner-id` | Да, если `STRICT_OWNER_CHECK=true` |
+| `x-owner-id` | Да, если `STRICT_OWNER_CHECK=true` (дефолт) |
 | `x-caller-id` | Нет, но см. ниже |
 | `x-correlation-id` | Нет |
 | `x-caller-id` | Нет, но см. ниже |

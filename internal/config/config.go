@@ -108,10 +108,10 @@ type Config struct {
 	// раз в три секунды, поэтому дефолт — warn.
 	KafkaLogLevel string `env:"KAFKA_LOG_LEVEL"       env-default:"warn"`
 
-	// StrictOwnerCheck включает строгую проверку владельца.
-	// При true требуется валидный auth interceptor (TODO #5).
-	// Пока используется как feature-flag для deploy-модели за gateway.
-	StrictOwnerCheck bool `env:"STRICT_OWNER_CHECK" env-default:"false"`
+	// StrictOwnerCheck требует валидный x-owner-id на каждом RPC.
+	// Дефолт true: без заголовка анонимный обход ACL недоступен.
+	// false оставляем только для локальных демо за доверенным периметром.
+	StrictOwnerCheck bool `env:"STRICT_OWNER_CHECK" env-default:"true"`
 
 	ReconcilerInterval    time.Duration `env:"RECONCILER_INTERVAL"     env-default:"5m"`
 	ReconcilerGracePeriod time.Duration `env:"RECONCILER_GRACE_PERIOD" env-default:"1h"` // 1h для orphan safety
