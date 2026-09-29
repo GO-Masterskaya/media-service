@@ -209,7 +209,8 @@ func (s *NoKafkaSuite) startServerNoKafka() {
 			)...,
 		),
 	)
-	mediav1.RegisterMediaServiceServer(s.grpcServer, api.NewMediaServer(mediaSvc, false, 30*time.Second))
+	// strict=true совпадает с дефолтом сервиса; authCtx всегда шлёт x-owner-id.
+	mediav1.RegisterMediaServiceServer(s.grpcServer, api.NewMediaServer(mediaSvc, true, 30*time.Second))
 
 	s.lis = bufconn.Listen(bufSize)
 	go func() { _ = s.grpcServer.Serve(s.lis) }()
