@@ -328,6 +328,24 @@ func TestDownloadStream_Handler_Unauthenticated_StrictMissingMetadata(t *testing
 	assert.Equal(t, codes.Unauthenticated, status.Code(err))
 }
 
+func TestDownloadStream_Handler_StrictBlankOwner_InvalidArgument(t *testing.T) {
+	id := uuid.New()
+	ownerID := uuid.New()
+	mediaRepo := &mockMediaRepo{
+		media: &repo.Media{ID: id, OwnerID: ownerID, Status: repo.MediaStatusStored, StorageKey: "key"},
+	}
+	srv := newTestServerWithStrict(mediaRepo, &mockDerivRepo{}, &mockStorage{}, true)
+	for _, raw := range []string{"", "   "} {
+		stream := &mockStream{
+			ctx:  incomingCtxWithOwnerID(context.Background(), raw),
+			send: func(*v1.DownloadChunk) error { return nil },
+		}
+		err := srv.DownloadStream(&v1.DownloadStreamRequest{MediaId: id.String(), Variant: "original"}, stream)
+		require.Error(t, err)
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	}
+}
+
 func TestDownloadStream_Handler_PermissionDenied_Strict(t *testing.T) {
 	id := uuid.New()
 	ownerID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")

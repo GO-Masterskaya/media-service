@@ -261,7 +261,8 @@ func (s *AcceptanceSuite) newLimitedClient(t *testing.T, opts limitedClientOpts)
 			)...,
 		),
 	)
-	mediav1.RegisterMediaServiceServer(srv, api.NewMediaServer(s.mediaSvc, false, 30*time.Second))
+	// strict=true совпадает с дефолтом сервиса; клиенты suite всегда шлют x-owner-id.
+	mediav1.RegisterMediaServiceServer(srv, api.NewMediaServer(s.mediaSvc, true, 30*time.Second))
 
 	lis := bufconn.Listen(bufSize)
 	go func() { _ = srv.Serve(lis) }()
@@ -324,7 +325,7 @@ func (s *AcceptanceSuite) newQuotaLimitedClient(t *testing.T, quotaBytes int64) 
 			)...,
 		),
 	)
-	mediav1.RegisterMediaServiceServer(srv, api.NewMediaServer(svc, false, 30*time.Second))
+	mediav1.RegisterMediaServiceServer(srv, api.NewMediaServer(svc, true, 30*time.Second))
 
 	lis := bufconn.Listen(bufSize)
 	go func() { _ = srv.Serve(lis) }()
@@ -534,7 +535,7 @@ func (s *AcceptanceSuite) startServer() {
 		),
 	)
 	s.health = api.NewHealthServer(pool)
-	mediav1.RegisterMediaServiceServer(s.grpcServer, api.NewMediaServer(mediaSvc, false, 30*time.Second))
+	mediav1.RegisterMediaServiceServer(s.grpcServer, api.NewMediaServer(mediaSvc, true, 30*time.Second))
 
 	s.lis = bufconn.Listen(bufSize)
 	go func() {

@@ -258,6 +258,34 @@ func TestGetMedia_ForeignOwnerDenied(t *testing.T) {
 	requireGRPCCode(t, err, codes.PermissionDenied)
 }
 
+func TestGetMedia_StrictMissingOwner_Unauthenticated(t *testing.T) {
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		true,
+	)
+	req := &mediav1.GetMediaRequest{MediaId: mr.media.ID.String()}
+
+	_, err := server.GetMedia(context.Background(), req)
+	requireGRPCCode(t, err, codes.Unauthenticated)
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD{})
+	_, err = server.GetMedia(ctx, req)
+	requireGRPCCode(t, err, codes.Unauthenticated)
+}
+
+func TestGetMedia_StrictBlankOwner_InvalidArgument(t *testing.T) {
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		true,
+	)
+	for _, raw := range []string{"", "   "} {
+		_, err := server.GetMedia(ctxWithOwner(raw), &mediav1.GetMediaRequest{MediaId: mr.media.ID.String()})
+		requireGRPCCode(t, err, codes.InvalidArgument)
+	}
+}
+
 func TestGetMedia_OwnerAllowed(t *testing.T) {
 	owner := ownerID()
 
@@ -609,10 +637,25 @@ func TestGetDownloadURL_MissingOwnerID(t *testing.T) {
 	requireGRPCCode(t, err, codes.Unauthenticated)
 }
 
+func TestGetDownloadURL_StrictBlankOwner_InvalidArgument(t *testing.T) {
+	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
+	server := NewMediaServer(
+		media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger()),
+		true,
+	)
+	for _, raw := range []string{"", "   "} {
+		_, err := server.GetDownloadURL(ctxWithOwner(raw), &mediav1.GetDownloadURLRequest{
+			MediaId: mr.media.ID.String(),
+			Variant: "original",
+		})
+		requireGRPCCode(t, err, codes.InvalidArgument)
+	}
+}
+
 func TestGetDownloadURL_WrongOwner(t *testing.T) {
 	mr := &stubMediaRepo{media: mediaWithStatus(repo.MediaStatusStored)}
 	svc := media.NewService(mr, &stubDerivRepo{}, &stubStorage{}, time.Minute, testLogger())
-	server := NewMediaServer(svc, false)
+	server := NewMediaServer(svc, true)
 
 	otherOwner := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	_, err := server.GetDownloadURL(ctxWithOwner(otherOwner), &mediav1.GetDownloadURLRequest{
